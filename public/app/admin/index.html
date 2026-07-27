@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>سِجل — لوحة الموارد البشرية</title>
+    <meta name="theme-color" content="#16150f" />
+    <link rel="icon" href="/app/icon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Reem+Kufi:wght@500;700&family=IBM+Plex+Sans+Arabic:wght@300;400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/app/styles.css" />
+  </head>
+  <body class="body--admin">
+    <div class="grain" aria-hidden="true"></div>
+
+    <header class="topbar topbar--admin">
+      <div class="topbar__who">
+        <p class="topbar__name">لوحة الموارد البشرية</p>
+        <p id="admin-who" class="topbar__meta">—</p>
+      </div>
+      <div class="topbar__actions">
+        <a class="btn btn--ghost btn--sm" href="/app/">تطبيق الحضور</a>
+        <button id="admin-logout" class="btn btn--ghost btn--sm" type="button">خروج</button>
+      </div>
+    </header>
+
+    <p id="admin-alert" class="alert" role="status" hidden></p>
+
+    <nav class="tabs tabs--main" id="admin-tabs" role="tablist">
+      <button class="tab is-active" type="button" data-panel="attendance">الحضور</button>
+      <button class="tab" type="button" data-panel="forms">النماذج</button>
+      <button class="tab" type="button" data-panel="payroll">الرواتب</button>
+      <button class="tab" type="button" data-panel="people">الموظفون</button>
+      <button class="tab" type="button" data-panel="branches">الفروع</button>
+      <button class="tab" type="button" data-panel="reports">التقارير</button>
+      <button class="tab" type="button" data-panel="audit">سجل التدقيق</button>
+    </nav>
+
+    <!-- ── الحضور ─────────────────────────────────────────────── -->
+    <main id="panel-attendance" class="panel">
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">الورديات المفتوحة</h2>
+          <button id="close-stale" class="btn btn--ghost btn--xs" type="button">
+            إقفال المتأخرة الآن
+          </button>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="open-table">
+            <thead>
+              <tr><th>الموظف</th><th>بدأت</th><th></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="open-empty" class="empty" hidden>لا توجد ورديات مفتوحة.</p>
+      </section>
+
+      <section id="manual-card" class="card" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">إدخال حضور يدوي</h2>
+          <span class="badge badge--warn">صلاحية الموارد البشرية</span>
+        </div>
+
+        <form id="manual-form" class="form-grid" novalidate>
+          <div class="form-grid__fields">
+            <label class="field field--sm">
+              <span class="field__label">الموظف *</span>
+              <select id="manual-employee" required></select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">نوع الحركة *</span>
+              <select id="manual-type" required>
+                <option value="check_in">حضور</option>
+                <option value="check_out">انصراف</option>
+              </select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">الفرع</span>
+              <select id="manual-branch"></select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">الوقت *</span>
+              <input id="manual-time" type="datetime-local" required />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">الحالة</span>
+              <select id="manual-status">
+                <option value="approved">معتمد</option>
+                <option value="flagged">بحاجة مراجعة</option>
+                <option value="rejected">مرفوض</option>
+              </select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">ساعات الخصم</span>
+              <input id="manual-deduct" type="number" min="0" step="0.25" value="0" />
+            </label>
+            <label class="field field--sm field--wide">
+              <span class="field__label">سبب الإدخال *</span>
+              <textarea id="manual-reason" rows="2" required></textarea>
+            </label>
+          </div>
+          <div class="row row--wrap">
+            <button id="manual-submit" class="btn btn--primary btn--sm" type="submit">حفظ السجل</button>
+            <button id="manual-reset" class="btn btn--ghost btn--sm" type="button" hidden>
+              إلغاء التعديل
+            </button>
+          </div>
+        </form>
+        <p id="manual-result" class="alert" role="status" hidden></p>
+      </section>
+
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">سجلات الحضور</h2>
+        </div>
+
+        <div class="filters">
+          <label class="field field--sm">
+            <span class="field__label">الموظف</span>
+            <select id="filter-employee"><option value="">الكل</option></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">من</span>
+            <input id="filter-from" type="date" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">إلى</span>
+            <input id="filter-to" type="date" />
+          </label>
+          <button id="filter-apply" class="btn btn--ghost btn--sm" type="button">تحديث</button>
+        </div>
+
+        <div class="table-wrap">
+          <table class="table" id="logs-table">
+            <thead>
+              <tr>
+                <th>الموظف</th>
+                <th>الحركة</th>
+                <th>الوقت</th>
+                <th>الفرع</th>
+                <th>الحالة</th>
+                <th>المصدر</th>
+                <th>المسافة</th>
+                <th>الوجه</th>
+                <th>خصم</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="logs-empty" class="empty" hidden>لا توجد سجلات مطابقة.</p>
+      </section>
+
+      <section id="correct-card" class="card" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">تصحيح وقت الانصراف</h2>
+          <span id="correct-target" class="badge">—</span>
+        </div>
+        <form id="correct-form" class="form-grid" novalidate>
+          <div class="form-grid__fields">
+            <label class="field field--sm">
+              <span class="field__label">وقت الانصراف الفعلي *</span>
+              <input id="correct-time" type="datetime-local" required />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">خصم ساعات (اختياري)</span>
+              <input id="correct-deduct" type="number" min="0" step="0.25" value="0" />
+            </label>
+            <label class="field field--sm field--wide">
+              <span class="field__label">سبب التصحيح *</span>
+              <textarea id="correct-reason" rows="2" required></textarea>
+            </label>
+          </div>
+          <div class="row row--wrap">
+            <button class="btn btn--primary btn--sm" type="submit">حفظ التصحيح</button>
+            <button id="correct-cancel" class="btn btn--ghost btn--sm" type="button">إلغاء</button>
+          </div>
+        </form>
+        <p id="correct-result" class="alert" role="status" hidden></p>
+      </section>
+    </main>
+
+    <!-- ── النماذج ────────────────────────────────────────────── -->
+    <main id="panel-forms" class="panel" hidden>
+      <section class="card">
+        <div class="tabs" id="forms-tabs" role="tablist">
+          <button class="tab is-active" type="button" data-resource="advances">السلف</button>
+          <button class="tab" type="button" data-resource="overtime">الأوفرتايم</button>
+          <button class="tab" type="button" data-resource="leaves">الإجازات</button>
+          <button class="tab" type="button" data-resource="bonuses">المكافآت</button>
+          <button class="tab" type="button" data-resource="custody">العهد</button>
+          <button class="tab" type="button" data-resource="vouchers">السندات</button>
+          <button class="tab" type="button" data-resource="contracts">العقود</button>
+        </div>
+
+        <form id="forms-create" class="form-grid" novalidate>
+          <div class="form-grid__fields">
+            <label class="field field--sm">
+              <span class="field__label">الموظف</span>
+              <select id="forms-employee"></select>
+            </label>
+          </div>
+          <div id="forms-fields" class="form-grid__fields"></div>
+          <button id="forms-submit" class="btn btn--primary btn--sm" type="submit">حفظ النموذج</button>
+        </form>
+
+        <p id="forms-result" class="alert" role="status" hidden></p>
+
+        <div class="table-wrap">
+          <table class="table" id="forms-table">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="forms-empty" class="empty" hidden>لا توجد سجلات.</p>
+      </section>
+    </main>
+
+    <!-- ── الرواتب ────────────────────────────────────────────── -->
+    <main id="panel-payroll" class="panel" hidden>
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">تعريف الراتب</h2>
+        </div>
+        <form id="salary-form" class="form-grid" novalidate>
+          <div class="form-grid__fields">
+            <label class="field field--sm">
+              <span class="field__label">الموظف *</span>
+              <select id="salary-employee" required></select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">الراتب الأساسي *</span>
+              <input id="salary-basic" type="number" min="0" step="0.01" required />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">بدل سكن</span>
+              <input id="salary-housing" type="number" min="0" step="0.01" value="0" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">بدل نقل</span>
+              <input id="salary-transport" type="number" min="0" step="0.01" value="0" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">بدلات أخرى</span>
+              <input id="salary-other" type="number" min="0" step="0.01" value="0" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">ساعات العقد شهرياً</span>
+              <input id="salary-hours" type="number" min="1" step="1" value="240" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">معامل الأوفرتايم</span>
+              <input id="salary-multiplier" type="number" min="1" step="0.1" value="1.5" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">أجر الساعة (اختياري)</span>
+              <input id="salary-hourly" type="number" min="0" step="0.01" />
+            </label>
+          </div>
+          <button class="btn btn--primary btn--sm" type="submit">حفظ التعريف</button>
+        </form>
+        <p id="salary-result" class="alert" role="status" hidden></p>
+
+        <div class="table-wrap">
+          <table class="table" id="salary-table">
+            <thead>
+              <tr>
+                <th>الموظف</th>
+                <th>الأساسي</th>
+                <th>سكن</th>
+                <th>نقل</th>
+                <th>أخرى</th>
+                <th>أجر الساعة</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">مسير الرواتب الشهري</h2>
+        </div>
+        <div class="filters">
+          <label class="field field--sm">
+            <span class="field__label">الشهر</span>
+            <input id="payroll-period" type="month" />
+          </label>
+          <button id="payroll-preview" class="btn btn--ghost btn--sm" type="button">معاينة</button>
+        </div>
+        <p id="payroll-result" class="alert" role="status" hidden></p>
+
+        <div class="table-wrap">
+          <table class="table" id="payroll-table">
+            <thead>
+              <tr>
+                <th>الموظف</th>
+                <th>الأساسي</th>
+                <th>البدلات</th>
+                <th>ساعات العمل</th>
+                <th>أوفرتايم</th>
+                <th>مكافآت</th>
+                <th>سلف</th>
+                <th>خصم ساعات</th>
+                <th>الصافي</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="payroll-empty" class="empty" hidden>اختر شهراً واضغط معاينة.</p>
+      </section>
+
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">المسيّرات المحفوظة</h2>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="saved-slips">
+            <thead>
+              <tr><th>الشهر</th><th>الموظف</th><th>الصافي</th><th>الحالة</th><th></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <!-- ── الموظفون ───────────────────────────────────────────── -->
+    <main id="panel-people" class="panel" hidden>
+      <section id="employee-card" class="card" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">ملف الموظف — إضافة أو تعديل</h2>
+          <span id="employee-target" class="badge">موظف جديد</span>
+        </div>
+
+        <form id="employee-form" class="form-grid" novalidate>
+          <div class="form-grid__fields">
+            <label class="field field--sm">
+              <span class="field__label">الرقم الوظيفي *</span>
+              <input id="employee-code" type="text" required autocomplete="off" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">الاسم الكامل *</span>
+              <input id="employee-name" type="text" required autocomplete="off" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">الجنسية</span>
+              <input id="employee-nationality" type="text" autocomplete="off" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">رقم الهوية / الإقامة</span>
+              <input id="employee-national-id" type="text" inputmode="numeric" autocomplete="off" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">رقم الجوال</span>
+              <input id="employee-phone" type="tel" autocomplete="off" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">البريد الإلكتروني</span>
+              <input id="employee-email" type="email" autocomplete="off" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">تاريخ الانضمام</span>
+              <input id="employee-join" type="date" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">المسمى الوظيفي</span>
+              <input id="employee-title" type="text" autocomplete="off" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">القسم</span>
+              <input id="employee-department" type="text" autocomplete="off" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">الفرع</span>
+              <select id="employee-branch"></select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">الدور (RBAC)</span>
+              <select id="employee-role"></select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">الحالة</span>
+              <select id="employee-active">
+                <option value="true">مُفعّل</option>
+                <option value="false">موقوف</option>
+              </select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">كلمة المرور (اختياري)</span>
+              <input id="employee-password" type="text" autocomplete="new-password" />
+            </label>
+            <label class="field field--sm field--wide">
+              <span class="field__label">سبب الإضافة/التعديل</span>
+              <input id="employee-reason" type="text" autocomplete="off" />
+            </label>
+          </div>
+          <div class="row row--wrap">
+            <button id="employee-submit" class="btn btn--primary btn--sm" type="submit">
+              حفظ الموظف
+            </button>
+            <button id="employee-reset" class="btn btn--ghost btn--sm" type="button">
+              موظف جديد
+            </button>
+          </div>
+        </form>
+        <p id="employee-result" class="alert" role="status" hidden></p>
+        <p class="hint">
+          إن تُركت كلمة المرور فارغة عند الإضافة، تُستخدم كلمة المرور الافتراضية ويُطلب
+          تغييرها من الموظف عند أول دخول.
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">الموظفون وبصمات الوجه</h2>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="people-table">
+            <thead>
+              <tr>
+                <th>الرقم</th>
+                <th>الاسم</th>
+                <th>المسمى</th>
+                <th>القسم</th>
+                <th>الجوال</th>
+                <th>الهوية</th>
+                <th>الانضمام</th>
+                <th>الفرع</th>
+                <th>مدير الفرع</th>
+                <th>الدور</th>
+                <th>بصمة الوجه</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="people-result" class="alert" role="status" hidden></p>
+      </section>
+
+      <section id="schedule-card" class="card" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">جدول الدوام</h2>
+          <span class="badge badge--warn">يُستخدم في حساب التأخير والإضافي</span>
+        </div>
+
+        <form id="schedule-form" class="form-grid" novalidate>
+          <div class="form-grid__fields">
+            <label class="field field--sm">
+              <span class="field__label">الموظف *</span>
+              <select id="schedule-employee" required></select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">بداية الدوام *</span>
+              <input id="schedule-start" type="time" required value="09:00" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">نهاية الدوام *</span>
+              <input id="schedule-end" type="time" required value="17:00" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">ساعات العمل اليومية *</span>
+              <input id="schedule-hours" type="number" min="1" max="24" step="0.5" value="8" required />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">دقائق الراحة</span>
+              <input id="schedule-break" type="number" min="0" step="5" value="0" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">سماح التأخير (دقيقة)</span>
+              <input id="schedule-grace" type="number" min="0" step="1" value="10" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">أيام الإجازة شهرياً *</span>
+              <select id="schedule-days-off">
+                <option value="4">4 أيام (يومان أسبوعياً)</option>
+                <option value="2">يومان (يوم أسبوعياً)</option>
+              </select>
+            </label>
+            <fieldset class="field field--sm field--wide">
+              <span class="field__label">أيام الإجازة تحديداً</span>
+              <div id="schedule-off-days" class="row row--wrap"></div>
+            </fieldset>
+            <label class="field field--sm field--wide">
+              <span class="field__label">ملاحظة</span>
+              <input id="schedule-note" type="text" autocomplete="off" />
+            </label>
+          </div>
+          <div class="row row--wrap">
+            <button class="btn btn--primary btn--sm" type="submit">حفظ الجدول</button>
+          </div>
+        </form>
+        <p id="schedule-result" class="alert" role="status" hidden></p>
+
+        <div class="table-wrap">
+          <table class="table" id="schedules-table">
+            <thead>
+              <tr>
+                <th>الرقم</th>
+                <th>الموظف</th>
+                <th>من</th>
+                <th>إلى</th>
+                <th>ساعات/يوم</th>
+                <th>سماح</th>
+                <th>إجازات/شهر</th>
+                <th>أيام الإجازة</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="perm-card" class="card" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">صلاحيات عرض لموظف بعينه</h2>
+          <span class="badge badge--warn">تخصيص فوق صلاحيات الدور</span>
+        </div>
+
+        <div class="filters">
+          <label class="field field--sm">
+            <span class="field__label">الموظف</span>
+            <select id="perm-employee"></select>
+          </label>
+          <button id="perm-load" class="btn btn--ghost btn--sm" type="button">تحميل</button>
+        </div>
+
+        <form id="perm-form" novalidate>
+          <div id="perm-sections" class="stack"></div>
+          <label class="field field--sm field--wide">
+            <span class="field__label">سبب التخصيص</span>
+            <input id="perm-reason" type="text" autocomplete="off" />
+          </label>
+          <div class="row row--wrap">
+            <button class="btn btn--primary btn--sm" type="submit">حفظ التخصيص</button>
+          </div>
+        </form>
+        <p id="perm-result" class="alert" role="status" hidden></p>
+        <p class="hint">
+          «افتراضي الدور» يعني الاعتماد على صلاحيات دور الموظف. «مسموح» يمنحه القسم فوق
+          دوره، و«ممنوع» يسحبه منه حتى لو كان دوره يملكه.
+        </p>
+      </section>
+    </main>
+
+    <!-- ── الفروع ─────────────────────────────────────────────── -->
+    <main id="panel-branches" class="panel" hidden>
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">الفروع والمدير المسؤول</h2>
+          <button id="branches-refresh" class="btn btn--ghost btn--xs" type="button">تحديث</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="branches-table">
+            <thead>
+              <tr>
+                <th>الرمز</th>
+                <th>الفرع</th>
+                <th>النطاق</th>
+                <th>التوقيت</th>
+                <th>المدير المسؤول</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="branches-result" class="alert" role="status" hidden></p>
+        <p class="hint">
+          المدير المسؤول يُختار من الموظفين بدور «مدير فرع»، ويظهر اسمه في ملف كل موظف
+          تابع للفرع. إحداثيات الفرع تُضبط من تطبيق الحضور ولا تتأثر بهذه الشاشة.
+        </p>
+      </section>
+    </main>
+
+    <!-- ── التقارير ───────────────────────────────────────────── -->
+    <main id="panel-reports" class="panel" hidden>
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">التقارير</h2>
+        </div>
+
+        <div class="filters">
+          <label class="field field--sm">
+            <span class="field__label">التقرير</span>
+            <select id="report-kind">
+              <option value="attendance">الحضور والانصراف</option>
+              <option value="payroll">الرواتب</option>
+              <option value="advances">السلف</option>
+              <option value="overtime">الأوفرتايم</option>
+              <option value="bonuses">المكافآت</option>
+              <option value="leaves">الإجازات</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الفرع</span>
+            <select id="report-branch"><option value="">الكل</option></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الموظف</span>
+            <select id="report-employee"><option value="">الكل</option></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">من</span>
+            <input id="report-from" type="date" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">إلى</span>
+            <input id="report-to" type="date" />
+          </label>
+          <button id="report-run" class="btn btn--primary btn--sm" type="button">عرض</button>
+          <button id="report-csv" class="btn btn--ghost btn--sm" type="button">تصدير CSV</button>
+          <button id="report-print" class="btn btn--ghost btn--sm" type="button">طباعة</button>
+        </div>
+
+        <p id="report-summary" class="row row--wrap"></p>
+
+        <div class="table-wrap">
+          <table class="table" id="report-table">
+            <thead><tr></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="report-empty" class="empty" hidden>لا توجد بيانات مطابقة للتصفية.</p>
+        <p id="report-result" class="alert" role="status" hidden></p>
+        <p class="hint">
+          تقرير الرواتب يُصفّى بالشهر المستخرج من «من/إلى». باقي التقارير تُصفّى بالتاريخ
+          مباشرة.
+        </p>
+      </section>
+    </main>
+
+    <!-- ── سجل التدقيق ────────────────────────────────────────── -->
+    <main id="panel-audit" class="panel" hidden>
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">سجل التدقيق</h2>
+          <button id="audit-refresh" class="btn btn--ghost btn--xs" type="button">تحديث</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="audit-table">
+            <thead>
+              <tr>
+                <th>الوقت</th>
+                <th>المستخدم</th>
+                <th>الإجراء</th>
+                <th>الكيان</th>
+                <th>السبب</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="audit-empty" class="empty" hidden>لا توجد قيود تدقيق بعد.</p>
+      </section>
+    </main>
+
+    <script src="/app/admin/admin.js" type="module"></script>
+  </body>
+</html>

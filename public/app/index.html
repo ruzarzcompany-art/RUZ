@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>سِجل — حضور موظفي المطعم</title>
+    <meta name="description" content="تسجيل حضور وانصراف موظفي المطعم بالموقع الجغرافي ومطابقة الوجه وتوقيت الخادم." />
+    <meta name="theme-color" content="#16150f" />
+    <link rel="manifest" href="/app/manifest.webmanifest" />
+    <link rel="icon" href="/app/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/app/icon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Reem+Kufi:wght@500;700&family=IBM+Plex+Sans+Arabic:wght@300;400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/app/styles.css" />
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+
+    <!-- ── شاشة الدخول ───────────────────────────────────────────── -->
+    <main id="screen-login" class="screen screen--login">
+      <header class="brand">
+        <svg class="brand__mark" viewBox="0 0 48 48" aria-hidden="true">
+          <circle cx="24" cy="24" r="21" fill="none" stroke="currentColor" stroke-width="2" />
+          <path d="M24 12v13l9 5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
+          <circle cx="24" cy="24" r="2.5" fill="currentColor" />
+        </svg>
+        <div>
+          <h1 class="brand__name">سِجل</h1>
+          <p class="brand__tag">حضور فريق المطعم — بالموقع والوجه والتوقيت الرسمي</p>
+        </div>
+      </header>
+
+      <form id="login-form" class="card card--form" novalidate>
+        <h2 class="card__title">دخول الموظف</h2>
+
+        <label class="field">
+          <span class="field__label">رقم الموظف أو البريد</span>
+          <input
+            id="identifier"
+            name="identifier"
+            type="text"
+            inputmode="email"
+            autocomplete="username"
+            dir="ltr"
+            placeholder="EMP-1001"
+            required
+          />
+        </label>
+
+        <label class="field">
+          <span class="field__label">كلمة المرور</span>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            placeholder="••••••••"
+            required
+          />
+        </label>
+
+        <p id="login-error" class="alert alert--error" role="alert" hidden></p>
+
+        <button id="login-submit" class="btn btn--primary" type="submit">
+          <span class="btn__label">تسجيل الدخول</span>
+          <span class="btn__spinner" aria-hidden="true"></span>
+        </button>
+
+        <p class="hint">
+          الحسابات التجريبية بعد البذر:
+          <code dir="ltr">EMP-1001</code> (موظف)،
+          <code dir="ltr">EMP-1000</code> (مدير فرع)،
+          <code dir="ltr">EMP-1002</code> (موارد بشرية).
+        </p>
+      </form>
+    </main>
+
+    <!-- ── شاشة تسجيل الحضور ─────────────────────────────────────── -->
+    <main id="screen-punch" class="screen screen--punch" hidden>
+      <header class="topbar">
+        <div class="topbar__who">
+          <p id="who-name" class="topbar__name">—</p>
+          <p id="who-meta" class="topbar__meta">—</p>
+        </div>
+        <div class="topbar__actions">
+          <a id="admin-link" class="btn btn--ghost btn--sm" href="/app/admin/" hidden>لوحة الإدارة</a>
+          <button id="logout" class="btn btn--ghost btn--sm" type="button">خروج</button>
+        </div>
+      </header>
+
+      <section class="clock" aria-live="off">
+        <p class="clock__label">توقيت الخادم</p>
+        <p id="clock-time" class="clock__time" dir="ltr">--:--:--</p>
+        <p id="clock-date" class="clock__date">—</p>
+      </section>
+
+      <section class="punch">
+        <button id="punch-btn" class="punch__btn" type="button" disabled>
+          <span class="punch__ring" aria-hidden="true"></span>
+          <span id="punch-label" class="punch__label">تسجيل حضور</span>
+          <span id="punch-sub" class="punch__sub">اضغط للسماح بالموقع</span>
+        </button>
+      </section>
+
+      <p id="punch-result" class="alert" role="status" hidden></p>
+
+      <!-- ── مطابقة الوجه ──────────────────────────────────────── -->
+      <section id="face-card" class="card card--face" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">مطابقة الوجه</h2>
+          <span id="face-badge" class="badge">—</span>
+        </div>
+
+        <div class="face__stage">
+          <video id="face-video" class="face__video" playsinline muted></video>
+          <p id="face-hint" class="face__hint">تُستخرج بصمة الوجه على جهازك، ولا تُرسل أي صورة إلى الخادم.</p>
+        </div>
+
+        <label class="check">
+          <input id="face-toggle" type="checkbox" checked />
+          <span>استخدام الوجه مع تسجيل الحضور</span>
+        </label>
+
+        <div class="row row--wrap">
+          <button id="face-enroll" class="btn btn--ghost btn--sm" type="button" hidden>
+            تسجيل بصمة وجهي الآن
+          </button>
+          <button id="face-warm" class="btn btn--ghost btn--sm" type="button">
+            تحميل محرّك الوجه مسبقاً
+          </button>
+        </div>
+
+        <p id="face-status" class="hint">—</p>
+      </section>
+
+      <section class="card card--geo">
+        <div class="geo__row">
+          <span class="geo__key">الفرع</span>
+          <span id="geo-branch" class="geo__val">—</span>
+        </div>
+        <div class="geo__row">
+          <span class="geo__key">المسافة عن الفرع</span>
+          <span id="geo-distance" class="geo__val" dir="ltr">—</span>
+        </div>
+        <div class="geo__row">
+          <span class="geo__key">النطاق المسموح</span>
+          <span id="geo-radius" class="geo__val" dir="ltr">—</span>
+        </div>
+        <button id="set-branch" class="btn btn--ghost btn--sm" type="button" hidden>
+          اعتماد موقعي الحالي كموقع الفرع
+        </button>
+      </section>
+
+      <section class="card card--log">
+        <h2 class="card__title card__title--sm">سجل اليوم</h2>
+        <ul id="today-list" class="log"></ul>
+        <p id="today-empty" class="empty" hidden>لا توجد حركات مسجّلة اليوم بعد.</p>
+        <p id="open-shift" class="alert alert--warn" hidden></p>
+      </section>
+
+      <!-- ── طلباتي ────────────────────────────────────────────── -->
+      <section class="card card--forms">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">طلباتي ونماذجي</h2>
+        </div>
+
+        <div class="tabs" id="my-tabs" role="tablist">
+          <button class="tab is-active" type="button" data-resource="advances">سلفة</button>
+          <button class="tab" type="button" data-resource="overtime">أوفرتايم</button>
+          <button class="tab" type="button" data-resource="leaves">إجازة</button>
+        </div>
+
+        <form id="my-form" class="form-grid" novalidate>
+          <div id="my-fields" class="form-grid__fields"></div>
+          <button id="my-submit" class="btn btn--primary btn--sm" type="submit">إرسال الطلب</button>
+        </form>
+
+        <p id="my-result" class="alert" role="status" hidden></p>
+
+        <div class="table-wrap">
+          <table class="table" id="my-table">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="my-empty" class="empty" hidden>لا توجد طلبات بعد.</p>
+      </section>
+
+      <!-- ── ملفي ──────────────────────────────────────────────── -->
+      <section id="file-card" class="card card--geo">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">ملفي الوظيفي</h2>
+          <button id="file-refresh" class="btn btn--ghost btn--xs" type="button">تحديث</button>
+        </div>
+        <div class="geo__row">
+          <span class="geo__key">الاسم والرقم الوظيفي</span>
+          <span id="file-name" class="geo__val">—</span>
+        </div>
+        <div class="geo__row">
+          <span class="geo__key">الجنسية / الهوية</span>
+          <span id="file-identity" class="geo__val">—</span>
+        </div>
+        <div class="geo__row">
+          <span class="geo__key">الجوال / البريد</span>
+          <span id="file-contact" class="geo__val">—</span>
+        </div>
+        <div class="geo__row">
+          <span class="geo__key">القسم والمسمى</span>
+          <span id="file-job" class="geo__val">—</span>
+        </div>
+        <div class="geo__row">
+          <span class="geo__key">تاريخ الانضمام</span>
+          <span id="file-join" class="geo__val">—</span>
+        </div>
+        <div class="geo__row">
+          <span class="geo__key">الفرع ومديره المسؤول</span>
+          <span id="file-branch" class="geo__val">—</span>
+        </div>
+        <div class="geo__row">
+          <span class="geo__key">جدول دوامي</span>
+          <span id="file-schedule" class="geo__val">—</span>
+        </div>
+        <div class="geo__row">
+          <span class="geo__key">أيام إجازتي</span>
+          <span id="file-off-days" class="geo__val">—</span>
+        </div>
+      </section>
+
+      <!-- ── مستنداتي ──────────────────────────────────────────── -->
+      <section id="slips-card" class="card card--docs">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">مسيّرات رواتبي</h2>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="slips-table">
+            <thead>
+              <tr>
+                <th>الشهر</th>
+                <th>الأساسي</th>
+                <th>البدلات</th>
+                <th>الأوفرتايم</th>
+                <th>الخصومات</th>
+                <th>الصافي</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="slips-empty" class="empty" hidden>لا توجد مسيّرات رواتب منشورة بعد.</p>
+      </section>
+    </main>
+
+    <script src="/app/app.js" type="module"></script>
+  </body>
+</html>

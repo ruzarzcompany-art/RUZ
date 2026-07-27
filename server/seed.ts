@@ -1,0 +1,317 @@
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { getDb } from "../db/index.js";
+import {
+  branches,
+  employees,
+  permissions,
+  rolePermissions,
+  roles,
+  salaryDefinitions,
+  workSchedules,
+} from "../db/schema.js";
+import { env, getSeedPassword } from "./config.js";
+import { hashPassword } from "./passwords.js";
+import { PERMISSION_CATALOG, PERMISSIONS } from "./rbac.js";
+
+/** يُعاد تصديرها حفاظاً على التوافق مع الاستدعاءات السابقة. */
+export { PERMISSIONS };
+
+const ROLE_SEED: Array<{
+  name: string;
+  nameAr: string;
+  description: string;
+  permissions: string[];
+}> = [
+  {
+    name: "super_admin",
+    nameAr: "مدير النظام",
+    description: "صلاحيات كاملة على النظام",
+    permissions: Object.values(PERMISSIONS),
+  },
+  {
+    /**
+     * مدير الموارد البشرية هو الوحيد (مع مدير النظام) الذي يملك
+     * `attendance.manual_write`: إضافة/تعديل/حذف أي سجل حضور بكل حقوله.
+     */
+    name: "hr_manager",
+    nameAr: "مدير الموارد البشرية",
+    description: "إدارة الموظفين والحضور والنماذج والرواتب",
+    permissions: [
+      PERMISSIONS.attendanceCheckIn,
+      PERMISSIONS.attendanceReadOwn,
+      PERMISSIONS.attendanceReadAll,
+      PERMISSIONS.attendanceApprove,
+      PERMISSIONS.attendanceManualWrite,
+      PERMISSIONS.attendanceCorrectCheckout,
+      PERMISSIONS.employeesRead,
+      PERMISSIONS.employeesWrite,
+      PERMISSIONS.branchesRead,
+      PERMISSIONS.branchesWrite,
+      PERMISSIONS.reportsView,
+      PERMISSIONS.auditRead,
+      PERMISSIONS.formsSubmit,
+      PERMISSIONS.formsReadOwn,
+      PERMISSIONS.formsReadAll,
+      PERMISSIONS.formsApprove,
+      PERMISSIONS.bonusesManage,
+      PERMISSIONS.contractsManage,
+      PERMISSIONS.salaryManage,
+      PERMISSIONS.payrollManage,
+      PERMISSIONS.vouchersManage,
+      PERMISSIONS.custodyManage,
+      PERMISSIONS.schedulesManage,
+      PERMISSIONS.permissionsManage,
+      PERMISSIONS.sectionPayroll,
+      PERMISSIONS.sectionCashierClosing,
+      PERMISSIONS.sectionReports,
+      PERMISSIONS.sectionEmployeeFile,
+    ],
+  },
+  {
+    /** مدير الفرع: يصحّح انصراف الورديات المُقفلة تلقائياً، لكن بلا إدخال يدوي كامل. */
+    name: "branch_manager",
+    nameAr: "مدير فرع",
+    description: "إدارة موظفي الفرع وحضورهم واعتماد طلباتهم",
+    permissions: [
+      PERMISSIONS.attendanceCheckIn,
+      PERMISSIONS.attendanceReadOwn,
+      PERMISSIONS.attendanceReadAll,
+      PERMISSIONS.attendanceApprove,
+      PERMISSIONS.attendanceCorrectCheckout,
+      PERMISSIONS.employeesRead,
+      PERMISSIONS.branchesRead,
+      PERMISSIONS.branchesWrite,
+      PERMISSIONS.reportsView,
+      PERMISSIONS.formsSubmit,
+      PERMISSIONS.formsReadOwn,
+      PERMISSIONS.formsReadAll,
+      PERMISSIONS.formsApprove,
+      PERMISSIONS.custodyManage,
+      PERMISSIONS.sectionReports,
+      PERMISSIONS.sectionCashierClosing,
+      PERMISSIONS.sectionEmployeeFile,
+    ],
+  },
+  {
+    name: "shift_supervisor",
+    nameAr: "مشرف وردية",
+    description: "متابعة حضور الوردية والطلبات",
+    permissions: [
+      PERMISSIONS.attendanceCheckIn,
+      PERMISSIONS.attendanceReadOwn,
+      PERMISSIONS.attendanceReadAll,
+      PERMISSIONS.employeesRead,
+      PERMISSIONS.branchesRead,
+      PERMISSIONS.formsSubmit,
+      PERMISSIONS.formsReadOwn,
+      PERMISSIONS.formsReadAll,
+      PERMISSIONS.sectionPayroll,
+      PERMISSIONS.sectionEmployeeFile,
+    ],
+  },
+  {
+    name: "staff",
+    nameAr: "موظف",
+    description: "تسجيل الحضور وعرض سجله ونماذجه الشخصية",
+    permissions: [
+      PERMISSIONS.attendanceCheckIn,
+      PERMISSIONS.attendanceReadOwn,
+      PERMISSIONS.branchesRead,
+      PERMISSIONS.formsSubmit,
+      PERMISSIONS.formsReadOwn,
+      /**
+       * الموظف يرى مسيّرات رواتبه وملفه الشخصي بشكل افتراضي؛ وللموارد البشرية
+       * تعطيل أي قسم منها لموظف بعينه عبر التخصيص الفردي (`deny`).
+       */
+      PERMISSIONS.sectionPayroll,
+      PERMISSIONS.sectionEmployeeFile,
+    ],
+  },
+];
+
+function seedNumber(name: string, fallback: number): number {
+  const parsed = Number.parseFloat(env(name) ?? "");
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/**
+ * بذر البيانات الأساسية. العملية idempotent بالكامل: تستخدم
+ * `ON CONFLICT DO NOTHING` فلا تُكرّر الصفوف ولا تُعيد كتابة أي تعديل لاحق.
+ */
+async function runSeed(): Promise<void> {
+  const db = getDb();
+
+  await db.insert(permissions).values(PERMISSION_CATALOG).onConflictDoNothing();
+
+  await db
+    .insert(roles)
+    .values(
+      ROLE_SEED.map(({ name, nameAr, description }) => ({
+        name,
+        nameAr,
+        description,
+      })),
+    )
+    .onConflictDoNothing();
+
+  const allRoles = await db.select({ id: roles.id, name: roles.name }).from(roles);
+  const allPermissions = await db
+    .select({ id: permissions.id, code: permissions.code })
+    .from(permissions);
+
+  const roleIdByName = new Map(allRoles.map((r) => [r.name, r.id]));
+  const permissionIdByCode = new Map(allPermissions.map((p) => [p.code, p.id]));
+
+  const links = ROLE_SEED.flatMap((role) => {
+    const roleId = roleIdByName.get(role.name);
+    if (!roleId) return [];
+    return role.permissions.flatMap((code) => {
+      const permissionId = permissionIdByCode.get(code);
+      return permissionId ? [{ roleId, permissionId }] : [];
+    });
+  });
+
+  if (links.length > 0) {
+    await db.insert(rolePermissions).values(links).onConflictDoNothing();
+  }
+
+  // الفرع الافتراضي — إحداثياته قابلة للتعديل عبر متغيّرات البيئة أو الواجهة
+  await db
+    .insert(branches)
+    .values({
+      code: "BR-001",
+      name: env("SEED_BRANCH_NAME") ?? "الفرع الرئيسي",
+      address: env("SEED_BRANCH_ADDRESS") ?? "الرياض، المملكة العربية السعودية",
+      latitude: seedNumber("SEED_BRANCH_LAT", 24.7136),
+      longitude: seedNumber("SEED_BRANCH_LNG", 46.6753),
+      radiusMeters: Math.round(seedNumber("SEED_BRANCH_RADIUS_METERS", 150)),
+    })
+    .onConflictDoNothing();
+
+  const [branch] = await db
+    .select({ id: branches.id })
+    .from(branches)
+    .where(sql`${branches.code} = 'BR-001'`)
+    .limit(1);
+
+  const passwordHash = hashPassword(getSeedPassword());
+
+  await db
+    .insert(employees)
+    .values([
+      {
+        employeeCode: "EMP-1000",
+        fullName: "سالم المدير",
+        email: "manager@restaurant-hr.local",
+        phone: "0500000000",
+        nationality: "سعودي",
+        nationalId: "1000000000",
+        department: "الإدارة",
+        passwordHash,
+        jobTitle: "مدير الفرع",
+        roleId: roleIdByName.get("branch_manager") ?? null,
+        branchId: branch?.id ?? null,
+        hiredAt: new Date(),
+      },
+      {
+        employeeCode: "EMP-1001",
+        fullName: "أحمد الموظف",
+        email: "staff@restaurant-hr.local",
+        phone: "0500000001",
+        nationality: "سعودي",
+        nationalId: "1000000001",
+        department: "الكاشير",
+        passwordHash,
+        jobTitle: "كاشير",
+        roleId: roleIdByName.get("staff") ?? null,
+        branchId: branch?.id ?? null,
+        hiredAt: new Date(),
+      },
+      {
+        employeeCode: "EMP-1002",
+        fullName: "نورة الموارد البشرية",
+        email: "hr@restaurant-hr.local",
+        phone: "0500000002",
+        nationality: "سعودي",
+        nationalId: "1000000002",
+        department: "الموارد البشرية",
+        passwordHash,
+        jobTitle: "مدير الموارد البشرية",
+        roleId: roleIdByName.get("hr_manager") ?? null,
+        branchId: branch?.id ?? null,
+        hiredAt: new Date(),
+      },
+    ])
+    .onConflictDoNothing();
+
+  // تعريفات رواتب تجريبية للحسابات المبذورة حتى يعمل مسير الرواتب من أول تشغيل
+  const seededEmployees = await db
+    .select({ id: employees.id, code: employees.employeeCode })
+    .from(employees)
+    .where(sql`${employees.employeeCode} in ('EMP-1000', 'EMP-1001', 'EMP-1002')`);
+
+  const demoSalaries: Record<string, { basic: number; housing: number; transport: number }> = {
+    "EMP-1000": { basic: 9000, housing: 1500, transport: 500 },
+    "EMP-1001": { basic: 4500, housing: 750, transport: 300 },
+    "EMP-1002": { basic: 11000, housing: 2000, transport: 600 },
+  };
+
+  const salaryRows = seededEmployees.flatMap((employee) => {
+    const demo = demoSalaries[employee.code];
+    if (!demo) return [];
+    return [
+      {
+        employeeId: employee.id,
+        basicSalary: demo.basic,
+        housingAllowance: demo.housing,
+        transportAllowance: demo.transport,
+        note: "تعريف راتب تجريبي — عدّله من شاشة الموارد البشرية.",
+      },
+    ];
+  });
+
+  if (salaryRows.length > 0) {
+    await db.insert(salaryDefinitions).values(salaryRows).onConflictDoNothing();
+  }
+
+  // جداول دوام تجريبية (8 ساعات، إجازتان أسبوعياً = 4 أيام شهرياً: الجمعة والسبت)
+  const scheduleRows = seededEmployees.map((employee) => ({
+    employeeId: employee.id,
+    shiftStart: "09:00",
+    shiftEnd: "17:00",
+    dailyHours: 8,
+    daysOffPerMonth: 4,
+    offDays: "5,6",
+    graceMinutes: 10,
+    note: "جدول دوام تجريبي — عدّله من شاشة الموارد البشرية.",
+  }));
+
+  if (scheduleRows.length > 0) {
+    await db.insert(workSchedules).values(scheduleRows).onConflictDoNothing();
+  }
+
+  // مدير الفرع الافتراضي — يُضبط مرة واحدة فقط ولا يُعاد كتابته بعد أي تعديل
+  const manager = seededEmployees.find((item) => item.code === "EMP-1000");
+  if (branch && manager) {
+    await db
+      .update(branches)
+      .set({ managerEmployeeId: manager.id })
+      .where(and(eq(branches.id, branch.id), isNull(branches.managerEmployeeId)));
+  }
+}
+
+let seedPromise: Promise<void> | undefined;
+
+/**
+ * يُنفّذ البذر مرة واحدة لكل نسخة من الخادم (عند الإقلاع/أول طلب).
+ * الترحيلات نفسها تُطبّقها منصّة Netlify تلقائياً قبل نشر أي إصدار.
+ */
+export function ensureSeeded(): Promise<void> {
+  if (!seedPromise) {
+    seedPromise = runSeed().catch((error) => {
+      seedPromise = undefined; // اسمح بإعادة المحاولة في الطلب التالي
+      throw error;
+    });
+  }
+  return seedPromise;
+}

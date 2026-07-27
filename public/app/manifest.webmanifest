@@ -1,0 +1,21 @@
+{
+  "name": "سِجل — حضور موظفي المطعم",
+  "short_name": "سِجل",
+  "description": "تسجيل حضور وانصراف موظفي المطعم بالموقع الجغرافي وتوقيت الخادم.",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#16150f",
+  "theme_color": "#16150f",
+  "icons": [
+    {
+      "src": "/app/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

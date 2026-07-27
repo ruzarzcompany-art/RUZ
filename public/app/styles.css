@@ -1,0 +1,1129 @@
+/* ───────────────────────────────────────────────────────────────
+   سِجل — واجهة حضور الموظفين
+   لوحة دافئة صناعية: حبر زيتوني داكن + نحاس/زعفران، طباعة كوفية.
+   ─────────────────────────────────────────────────────────────── */
+
+:root {
+  --ink-900: #12120c;
+  --ink-800: #16150f;
+  --ink-700: #1e1d15;
+  --ink-600: #2a2820;
+  --ink-500: #3b382c;
+  --line: rgba(214, 199, 165, 0.14);
+
+  --bone: #ece4d2;
+  --bone-dim: #a99f88;
+
+  --saffron: #d9a13b;
+  --saffron-deep: #a97522;
+  --olive: #7f8b5a;
+  --clay: #b9573f;
+
+  --ok: #7f9d63;
+  --bad: #c25c44;
+
+  --radius: 14px;
+  --shadow-lift: 0 18px 40px -22px rgba(0, 0, 0, 0.9);
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(120% 70% at 88% -10%, rgba(217, 161, 59, 0.16), transparent 60%),
+    radial-gradient(90% 60% at 5% 110%, rgba(127, 139, 90, 0.14), transparent 62%),
+    var(--ink-800);
+  color: var(--bone);
+  font-family: "IBM Plex Sans Arabic", "Segoe UI", sans-serif;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.6;
+}
+
+/* حبيبات ثابتة تعطي إحساس الورق الصناعي */
+.grain {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.screen {
+  position: relative;
+  z-index: 1;
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: clamp(1.1rem, 4vw, 2rem) clamp(1rem, 4vw, 1.75rem) 3rem;
+  display: grid;
+  gap: 1.15rem;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* ── الهوية ─────────────────────────────────────────────────── */
+
+.screen--login {
+  min-height: 100dvh;
+  align-content: center;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  animation: rise 0.7s var(--ease) both;
+}
+
+.brand__mark {
+  width: 3rem;
+  height: 3rem;
+  flex: none;
+  color: var(--saffron);
+  filter: drop-shadow(0 4px 14px rgba(217, 161, 59, 0.3));
+}
+
+.brand__name {
+  font-family: "Reem Kufi", sans-serif;
+  font-weight: 700;
+  font-size: clamp(2rem, 9vw, 2.9rem);
+  letter-spacing: 0.02em;
+  margin: 0;
+  line-height: 1;
+}
+
+.brand__tag {
+  margin: 0.35rem 0 0;
+  color: var(--bone-dim);
+  font-size: 0.85rem;
+  font-weight: 300;
+}
+
+/* ── البطاقات ───────────────────────────────────────────────── */
+
+.card {
+  background: linear-gradient(168deg, var(--ink-700), var(--ink-600));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  box-shadow: var(--shadow-lift);
+  animation: rise 0.7s var(--ease) both;
+  animation-delay: 0.08s;
+}
+
+.card--form {
+  display: grid;
+  gap: 0.95rem;
+}
+
+.card--geo {
+  animation-delay: 0.16s;
+}
+
+.card--log {
+  animation-delay: 0.22s;
+}
+
+.card__title {
+  font-family: "Reem Kufi", sans-serif;
+  font-weight: 500;
+  font-size: 1.2rem;
+  margin: 0 0 0.2rem;
+}
+
+.card__title--sm {
+  font-size: 1rem;
+  color: var(--bone-dim);
+}
+
+/* ── الحقول ─────────────────────────────────────────────────── */
+
+.field {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.field__label {
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  color: var(--bone-dim);
+}
+
+input {
+  width: 100%;
+  padding: 0.8rem 0.9rem;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--bone);
+  background: var(--ink-900);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+input::placeholder {
+  color: #5e594a;
+}
+
+input:focus-visible {
+  outline: none;
+  border-color: var(--saffron);
+  box-shadow: 0 0 0 3px rgba(217, 161, 59, 0.16);
+}
+
+/* ── الأزرار ────────────────────────────────────────────────── */
+
+.btn {
+  position: relative;
+  font: inherit;
+  font-weight: 500;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 0.85rem 1.1rem;
+  cursor: pointer;
+  transition: transform 0.15s var(--ease), filter 0.2s, background-color 0.2s;
+}
+
+.btn:active {
+  transform: scale(0.985);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  filter: saturate(0.4) brightness(0.8);
+}
+
+.btn--primary {
+  background: linear-gradient(180deg, var(--saffron), var(--saffron-deep));
+  color: #201a0c;
+  letter-spacing: 0.01em;
+}
+
+.btn--primary:hover:not(:disabled) {
+  filter: brightness(1.07);
+}
+
+.btn--ghost {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--bone-dim);
+}
+
+.btn--ghost:hover {
+  color: var(--bone);
+  border-color: rgba(214, 199, 165, 0.32);
+}
+
+.btn--sm {
+  padding: 0.5rem 0.8rem;
+  font-size: 0.82rem;
+}
+
+.btn__spinner {
+  display: none;
+  width: 1rem;
+  height: 1rem;
+  margin-inline-start: 0.5rem;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  vertical-align: -0.2em;
+  animation: spin 0.7s linear infinite;
+}
+
+.btn.is-busy .btn__spinner {
+  display: inline-block;
+}
+
+/* ── الشريط العلوي ──────────────────────────────────────────── */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--line);
+  animation: rise 0.6s var(--ease) both;
+}
+
+.topbar__name {
+  font-family: "Reem Kufi", sans-serif;
+  font-size: 1.15rem;
+  margin: 0;
+}
+
+.topbar__meta {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--bone-dim);
+}
+
+/* ── ساعة الخادم ────────────────────────────────────────────── */
+
+.clock {
+  text-align: center;
+  animation: rise 0.6s var(--ease) both;
+  animation-delay: 0.05s;
+}
+
+.clock__label {
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.22em;
+  color: var(--saffron);
+  text-transform: uppercase;
+}
+
+.clock__time {
+  font-family: "Reem Kufi", sans-serif;
+  font-size: clamp(2.6rem, 15vw, 4rem);
+  font-weight: 700;
+  margin: 0.1rem 0 0;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.clock__date {
+  margin: 0.3rem 0 0;
+  color: var(--bone-dim);
+  font-size: 0.85rem;
+}
+
+/* ── زر البصمة ──────────────────────────────────────────────── */
+
+.punch {
+  display: grid;
+  place-items: center;
+  padding: 0.5rem 0 0.25rem;
+}
+
+.punch__btn {
+  position: relative;
+  width: min(15rem, 62vw);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: grid;
+  place-content: center;
+  gap: 0.3rem;
+  color: #1d1708;
+  background:
+    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.28), transparent 55%),
+    linear-gradient(160deg, var(--saffron), var(--saffron-deep));
+  box-shadow:
+    0 0 0 1px rgba(217, 161, 59, 0.5),
+    0 22px 44px -18px rgba(217, 161, 59, 0.55),
+    inset 0 -6px 14px rgba(94, 61, 12, 0.35);
+  transition: transform 0.18s var(--ease), box-shadow 0.25s, filter 0.25s;
+  animation: rise 0.7s var(--ease) both;
+  animation-delay: 0.1s;
+}
+
+.punch__btn:active:not(:disabled) {
+  transform: scale(0.955);
+  box-shadow:
+    0 0 0 1px rgba(217, 161, 59, 0.5),
+    0 8px 18px -12px rgba(217, 161, 59, 0.5),
+    inset 0 -3px 10px rgba(94, 61, 12, 0.45);
+}
+
+.punch__btn:disabled {
+  cursor: progress;
+  filter: saturate(0.35) brightness(0.72);
+}
+
+/* حالة الانصراف — تبديل اللون إلى الطين المحروق */
+.punch__btn.is-out {
+  background:
+    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.22), transparent 55%),
+    linear-gradient(160deg, #c76a4f, #8e3a26);
+  color: #fdf1eb;
+  box-shadow:
+    0 0 0 1px rgba(185, 87, 63, 0.55),
+    0 22px 44px -18px rgba(185, 87, 63, 0.5),
+    inset 0 -6px 14px rgba(70, 24, 14, 0.4);
+}
+
+.punch__ring {
+  position: absolute;
+  inset: -0.7rem;
+  border-radius: 50%;
+  border: 1px dashed rgba(236, 228, 210, 0.28);
+  animation: breathe 4.5s ease-in-out infinite;
+}
+
+.punch__label {
+  font-family: "Reem Kufi", sans-serif;
+  font-size: clamp(1.3rem, 6vw, 1.7rem);
+  font-weight: 700;
+}
+
+.punch__sub {
+  font-size: 0.78rem;
+  opacity: 0.75;
+  padding-inline: 1.2rem;
+}
+
+/* ── التنبيهات ──────────────────────────────────────────────── */
+
+.alert {
+  margin: 0;
+  padding: 0.8rem 1rem;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  border: 1px solid var(--line);
+  background: var(--ink-700);
+  animation: rise 0.35s var(--ease) both;
+}
+
+.alert--error {
+  border-color: rgba(194, 92, 68, 0.5);
+  background: rgba(194, 92, 68, 0.12);
+  color: #f0c6ba;
+}
+
+.alert--ok {
+  border-color: rgba(127, 157, 99, 0.5);
+  background: rgba(127, 157, 99, 0.13);
+  color: #d3e3c4;
+}
+
+/* ── تفاصيل الموقع ──────────────────────────────────────────── */
+
+.card--geo {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.geo__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  font-size: 0.88rem;
+}
+
+.geo__key {
+  color: var(--bone-dim);
+}
+
+.geo__val {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.geo__val.is-far {
+  color: var(--bad);
+}
+
+.geo__val.is-near {
+  color: var(--ok);
+}
+
+#set-branch {
+  margin-top: 0.35rem;
+}
+
+/* ── سجل اليوم ──────────────────────────────────────────────── */
+
+.log {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.log__item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: 10px;
+  background: rgba(18, 18, 12, 0.55);
+  border-inline-start: 3px solid var(--olive);
+  font-size: 0.86rem;
+}
+
+.log__item.is-rejected {
+  border-inline-start-color: var(--bad);
+}
+
+.log__item.is-flagged {
+  border-inline-start-color: var(--saffron);
+}
+
+.log__time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.log__meta {
+  color: var(--bone-dim);
+  font-size: 0.78rem;
+}
+
+.empty {
+  margin: 0.6rem 0 0;
+  color: var(--bone-dim);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 0.9rem;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+}
+
+/* ── نصوص مساعدة ────────────────────────────────────────────── */
+
+.hint {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--bone-dim);
+  line-height: 1.8;
+}
+
+code {
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 0.85em;
+  background: var(--ink-900);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0.05em 0.35em;
+}
+
+/* ── الحركة ─────────────────────────────────────────────────── */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(0.7rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1.045);
+    opacity: 0.9;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   إضافات: بصمة الوجه، النماذج، لوحة الإدارة، الطباعة
+   ═══════════════════════════════════════════════════════════════ */
+
+/* `hidden` يجب أن يتغلّب على العناصر ذات display: grid */
+[hidden] {
+  display: none !important;
+}
+
+/* ── حقول إضافية (قوائم ومناطق نص) ─────────────────────────── */
+
+select,
+textarea {
+  width: 100%;
+  padding: 0.8rem 0.9rem;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--bone);
+  background: var(--ink-900);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+textarea {
+  min-height: 4.5rem;
+  resize: vertical;
+  line-height: 1.7;
+}
+
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--saffron);
+  box-shadow: 0 0 0 3px rgba(217, 161, 59, 0.16);
+}
+
+select option {
+  background: var(--ink-900);
+  color: var(--bone);
+}
+
+.field--sm input,
+.field--sm select,
+.field--sm textarea {
+  padding: 0.55rem 0.7rem;
+  font-size: 0.9rem;
+}
+
+.field--wide {
+  grid-column: 1 / -1;
+}
+
+.check {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--bone-dim);
+  cursor: pointer;
+}
+
+.check input {
+  width: auto;
+  accent-color: var(--saffron);
+}
+
+/* ── ترتيبات عامة ───────────────────────────────────────────── */
+
+.card__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.card__head .card__title,
+.card__head .card__title--sm {
+  margin: 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.row--wrap {
+  flex-wrap: wrap;
+}
+
+.row--tight {
+  gap: 0.35rem;
+}
+
+.topbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.topbar__who {
+  min-width: 0;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  background: rgba(18, 18, 12, 0.6);
+  border: 1px solid var(--line);
+  color: var(--bone-dim);
+  white-space: nowrap;
+}
+
+.badge--ok {
+  color: var(--ok);
+  border-color: rgba(127, 157, 99, 0.45);
+  background: rgba(127, 157, 99, 0.12);
+}
+
+.badge--warn {
+  color: var(--saffron);
+  border-color: rgba(217, 161, 59, 0.45);
+  background: rgba(217, 161, 59, 0.12);
+}
+
+.alert--warn {
+  color: var(--saffron);
+  border-color: rgba(217, 161, 59, 0.4);
+  background: rgba(217, 161, 59, 0.1);
+}
+
+.btn--xs {
+  padding: 0.3rem 0.55rem;
+  font-size: 0.74rem;
+  border-radius: 8px;
+}
+
+.btn--danger {
+  background: transparent;
+  border-color: rgba(194, 92, 68, 0.5);
+  color: var(--bad);
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: rgba(194, 92, 68, 0.14);
+  color: #e08670;
+}
+
+/* ── بطاقة بصمة الوجه ───────────────────────────────────────── */
+
+.card--face {
+  display: grid;
+  gap: 0.8rem;
+  animation-delay: 0.12s;
+}
+
+.face__stage {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--ink-900);
+  border: 1px solid var(--line);
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+}
+
+.face__video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* الكاميرا الأمامية معكوسة — نقلبها ليبدو العرض طبيعياً */
+  transform: scaleX(-1);
+  opacity: 0;
+  transition: opacity 0.3s var(--ease);
+}
+
+.face__video.is-live {
+  opacity: 1;
+}
+
+.face__hint {
+  position: absolute;
+  inset-block-end: 0.5rem;
+  inset-inline: 0.5rem;
+  margin: 0;
+  text-align: center;
+  font-size: 0.76rem;
+  color: var(--bone-dim);
+  background: rgba(18, 18, 12, 0.72);
+  border-radius: 8px;
+  padding: 0.3rem 0.5rem;
+}
+
+/* ── التبويبات ──────────────────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0 0 0.9rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--bone-dim);
+  cursor: pointer;
+  transition: color 0.2s, background-color 0.2s, border-color 0.2s;
+}
+
+.tab:hover {
+  color: var(--bone);
+}
+
+.tab.is-active {
+  color: #201a0c;
+  background: linear-gradient(180deg, var(--saffron), var(--saffron-deep));
+  border-color: transparent;
+}
+
+.tabs--main {
+  gap: 0.5rem;
+  margin-bottom: 1.1rem;
+}
+
+.tabs--main .tab {
+  font-family: "Reem Kufi", sans-serif;
+  font-size: 0.95rem;
+}
+
+.tabs--main .tab:not(.is-active) {
+  border-color: var(--line);
+}
+
+.panel {
+  display: grid;
+  gap: 1rem;
+  animation: rise 0.5s var(--ease) both;
+}
+
+/* ── شبكات النماذج والمرشّحات ───────────────────────────────── */
+
+.form-grid {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.form-grid__fields {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.filters {
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  align-items: end;
+  padding: 0.75rem;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+}
+
+.filters .btn {
+  align-self: end;
+}
+
+/* ── الجداول ────────────────────────────────────────────────── */
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.table th,
+.table td {
+  padding: 0.55rem 0.7rem;
+  text-align: start;
+  border-bottom: 1px solid var(--line);
+}
+
+.table thead th {
+  position: sticky;
+  inset-block-start: 0;
+  background: var(--ink-700);
+  font-weight: 500;
+  font-size: 0.76rem;
+  letter-spacing: 0.03em;
+  color: var(--bone-dim);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.table tbody tr:hover td {
+  background: rgba(217, 161, 59, 0.05);
+}
+
+.table td {
+  font-variant-numeric: tabular-nums;
+}
+
+.table tr.is-rejected td {
+  color: #d99a86;
+  background: rgba(194, 92, 68, 0.08);
+}
+
+/* الورديات المُقفلة تلقائياً — تحتاج تصحيح وقت الانصراف */
+.table tr.is-flagged td {
+  color: #e0bd7c;
+  background: rgba(217, 161, 59, 0.08);
+}
+
+/* ── لوحة الإدارة ───────────────────────────────────────────── */
+
+.body--admin .screen {
+  max-width: 1180px;
+}
+
+.topbar--admin {
+  margin-bottom: 0.5rem;
+}
+
+.card--forms,
+.card--docs {
+  display: grid;
+  gap: 0.8rem;
+  animation-delay: 0.26s;
+}
+
+/* ── صفحة الطباعة ───────────────────────────────────────────── */
+
+.body--print {
+  background: #f3eee2;
+  color: #1a180f;
+}
+
+.print-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding: 0.75rem 1rem;
+  background: var(--ink-700);
+  color: var(--bone);
+  border-bottom: 1px solid var(--line);
+}
+
+.print-toolbar .hint {
+  color: var(--bone-dim);
+}
+
+.sheet {
+  display: block;
+  max-width: 800px;
+  margin: 1.5rem auto;
+  padding: 2.4rem 2.2rem;
+  background: #fff;
+  color: #1a180f;
+  border-radius: 6px;
+  box-shadow: 0 14px 40px -26px rgba(0, 0, 0, 0.5);
+}
+
+.sheet__head {
+  text-align: center;
+  border-bottom: 2px solid #1a180f;
+  padding-bottom: 0.9rem;
+  margin-bottom: 1.4rem;
+}
+
+.sheet__org {
+  margin: 0;
+  font-size: 0.8rem;
+  letter-spacing: 0.14em;
+  color: #6d6449;
+}
+
+.sheet__title {
+  font-family: "Reem Kufi", sans-serif;
+  font-size: 1.6rem;
+  margin: 0.3rem 0 0.15rem;
+}
+
+.sheet__sub {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #4a442f;
+}
+
+.sheet__pairs,
+.sheet__table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1.4rem;
+  font-size: 0.9rem;
+}
+
+.sheet__pairs th,
+.sheet__pairs td,
+.sheet__table th,
+.sheet__table td {
+  border: 1px solid #cfc7b0;
+  padding: 0.5rem 0.7rem;
+  text-align: start;
+  vertical-align: top;
+}
+
+.sheet__pairs th,
+.sheet__table thead th {
+  width: 34%;
+  background: #f3eee2;
+  font-weight: 600;
+  color: #4a442f;
+}
+
+.sheet__table thead th {
+  width: auto;
+}
+
+.sheet__table td {
+  font-variant-numeric: tabular-nums;
+}
+
+.sheet__table tr.is-total td {
+  background: #f3eee2;
+  font-weight: 700;
+  font-size: 1rem;
+  border-top: 2px solid #1a180f;
+}
+
+.sheet__terms {
+  margin-bottom: 1.4rem;
+}
+
+.sheet__terms h2 {
+  font-family: "Reem Kufi", sans-serif;
+  font-size: 1.05rem;
+  margin: 0 0 0.4rem;
+}
+
+.sheet__terms p,
+.sheet__note {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.9;
+  white-space: pre-wrap;
+  color: #3a3423;
+}
+
+.sheet__note {
+  margin-bottom: 1.4rem;
+}
+
+.sheet__signs {
+  display: grid;
+  gap: 1.2rem;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin-top: 2.6rem;
+}
+
+.sheet__sign {
+  text-align: center;
+}
+
+.sheet__sign p {
+  margin: 0 0 2.2rem;
+  font-size: 0.84rem;
+  color: #4a442f;
+}
+
+.sheet__line {
+  display: block;
+  border-top: 1px solid #1a180f;
+}
+
+.body--print .empty,
+.body--print .alert {
+  color: #4a442f;
+}
+
+/* ── تخصيص الصلاحيات ومُلخّص التقارير ───────────────────────── */
+
+.stack {
+  display: grid;
+  gap: 0.5rem;
+  margin-bottom: 0.9rem;
+}
+
+.perm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(18, 18, 12, 0.35);
+}
+
+.perm__label {
+  font-size: 0.85rem;
+}
+
+.perm__hint {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--bone-dim);
+}
+
+.perm select {
+  min-width: 9.5rem;
+}
+
+.chip {
+  display: inline-block;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(18, 18, 12, 0.5);
+  font-size: 0.78rem;
+  color: var(--bone-dim);
+}
+
+.chip strong {
+  color: var(--bone);
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  .body--print {
+    background: #fff;
+  }
+
+  .sheet {
+    margin: 0;
+    max-width: none;
+    padding: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .sheet__pairs,
+  .sheet__table,
+  .sheet__signs {
+    break-inside: avoid;
+  }
+
+  @page {
+    margin: 16mm;
+  }
+}
