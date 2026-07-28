@@ -23,6 +23,7 @@
         <p id="admin-who" class="topbar__meta">—</p>
       </div>
       <div class="topbar__actions">
+        <span id="admin-idle-note" class="badge badge--warn" hidden></span>
         <a class="btn btn--ghost btn--sm" href="/app/">تطبيق الحضور</a>
         <button id="admin-logout" class="btn btn--ghost btn--sm" type="button">خروج</button>
       </div>
@@ -224,6 +225,37 @@
         </div>
         <p id="forms-empty" class="empty" hidden>لا توجد سجلات.</p>
       </section>
+
+      <section class="card" id="forms-purge-card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">تنظيف النماذج السابقة أو التجريبية</h2>
+        </div>
+
+        <p class="hint">
+          يحذف مجموعة سجلات من النموذج المعروض في التبويب أعلاه. اضغط «حساب العدد»
+          لمعرفة عدد السجلات المطابقة قبل التنفيذ — الحذف نهائي ويُسجَّل في سجل التدقيق.
+        </p>
+
+        <div class="filters">
+          <label class="field field--sm">
+            <span class="field__label">النطاق</span>
+            <select id="forms-purge-scope">
+              <option value="before">قبل تاريخ</option>
+              <option value="decided">المعتمدة والمرفوضة</option>
+              <option value="demo">سجلات الحسابات التجريبية</option>
+              <option value="all">كل سجلات هذا النموذج</option>
+            </select>
+          </label>
+          <label class="field field--sm" id="forms-purge-date-wrap">
+            <span class="field__label">يُحذف ما قبل</span>
+            <input id="forms-purge-before" type="date" />
+          </label>
+          <button id="forms-purge-count" class="btn btn--ghost btn--sm" type="button">حساب العدد</button>
+          <button id="forms-purge-run" class="btn btn--danger btn--sm" type="button">حذف المطابق</button>
+        </div>
+
+        <p id="forms-purge-result" class="alert" role="status" hidden></p>
+      </section>
     </main>
 
     <!-- ── الرواتب ────────────────────────────────────────────── -->
@@ -400,6 +432,13 @@
               </select>
             </label>
             <label class="field field--sm">
+              <span class="field__label">بصمة الوجه</span>
+              <select id="employee-face">
+                <option value="true">مُفعّلة</option>
+                <option value="false">معطّلة</option>
+              </select>
+            </label>
+            <label class="field field--sm">
               <span class="field__label">كلمة المرور (اختياري)</span>
               <input id="employee-password" type="text" autocomplete="new-password" />
             </label>
@@ -415,6 +454,9 @@
             <button id="employee-reset" class="btn btn--ghost btn--sm" type="button">
               موظف جديد
             </button>
+            <button id="employee-delete" class="btn btn--danger btn--sm" type="button" hidden>
+              حذف الموظف
+            </button>
           </div>
         </form>
         <p id="employee-result" class="alert" role="status" hidden></p>
@@ -427,6 +469,14 @@
       <section class="card">
         <div class="card__head">
           <h2 class="card__title card__title--sm">الموظفون وبصمات الوجه</h2>
+          <div id="face-bulk" class="row row--wrap" hidden>
+            <button id="face-enable-all" class="btn btn--ghost btn--xs" type="button">
+              تفعيل البصمة للكل
+            </button>
+            <button id="face-disable-all" class="btn btn--ghost btn--xs" type="button">
+              تعطيل البصمة للكل
+            </button>
+          </div>
         </div>
         <div class="table-wrap">
           <table class="table" id="people-table">
@@ -442,6 +492,7 @@
                 <th>الفرع</th>
                 <th>مدير الفرع</th>
                 <th>الدور</th>
+                <th>تفعيل البصمة</th>
                 <th>بصمة الوجه</th>
                 <th></th>
               </tr>
@@ -450,6 +501,56 @@
           </table>
         </div>
         <p id="people-result" class="alert" role="status" hidden></p>
+        <p class="hint">
+          «تفعيل البصمة» علامة صح لكل موظف: عند إزالتها يُسجَّل حضوره بالموقع الجغرافي
+          فقط دون التحقق بالوجه، حتى لو كانت المطابقة إلزامية على مستوى النظام.
+        </p>
+      </section>
+
+      <!-- ── استعادة كلمات المرور ─────────────────────────────── -->
+      <section id="reset-queue-card" class="card" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">طلبات استعادة كلمة المرور</h2>
+          <div class="row row--wrap">
+            <label class="check">
+              <input id="reset-show-all" type="checkbox" />
+              <span>عرض السجل الكامل</span>
+            </label>
+            <button id="reset-refresh" class="btn btn--ghost btn--xs" type="button">تحديث</button>
+          </div>
+        </div>
+
+        <div class="row row--wrap">
+          <label class="field field--sm">
+            <span class="field__label">إصدار رمز لموظف</span>
+            <select id="reset-employee"></select>
+          </label>
+          <button id="reset-issue" class="btn btn--primary btn--xs" type="button">
+            إصدار رمز الآن
+          </button>
+        </div>
+
+        <p id="reset-code-box" class="alert alert--ok" role="status" hidden></p>
+
+        <div class="table-wrap">
+          <table class="table" id="reset-table">
+            <thead>
+              <tr>
+                <th>الوقت</th>
+                <th>الموظف</th>
+                <th>البريد</th>
+                <th>القناة</th>
+                <th>الحالة</th>
+                <th>المحاولات</th>
+                <th>ينتهي</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="reset-empty" class="empty" hidden>لا توجد طلبات استعادة معلّقة.</p>
+        <p id="reset-mail-note" class="hint"></p>
       </section>
 
       <section id="schedule-card" class="card" hidden>
@@ -486,14 +587,57 @@
             </label>
             <label class="field field--sm">
               <span class="field__label">أيام الإجازة شهرياً *</span>
-              <select id="schedule-days-off">
-                <option value="4">4 أيام (يومان أسبوعياً)</option>
-                <option value="2">يومان (يوم أسبوعياً)</option>
+              <input
+                id="schedule-days-off"
+                type="number"
+                min="0"
+                max="15"
+                step="1"
+                value="4"
+                list="schedule-days-off-presets"
+                required
+              />
+              <datalist id="schedule-days-off-presets">
+                <option value="2"></option>
+                <option value="4"></option>
+                <option value="6"></option>
+                <option value="8"></option>
+              </datalist>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">طريقة تحديد الإجازة *</span>
+              <select id="schedule-off-mode">
+                <option value="weekly">أيام أسبوعية متكرّرة</option>
+                <option value="dates">تواريخ محدّدة في الشهر</option>
               </select>
             </label>
-            <fieldset class="field field--sm field--wide">
-              <span class="field__label">أيام الإجازة تحديداً</span>
+            <fieldset id="schedule-weekly-wrap" class="field field--sm field--wide">
+              <span class="field__label">أيام الإجازة الأسبوعية</span>
               <div id="schedule-off-days" class="row row--wrap"></div>
+            </fieldset>
+            <fieldset id="schedule-dates-wrap" class="field field--sm field--wide" hidden>
+              <span class="field__label">أيام الإجازة بتواريخها</span>
+              <div class="row row--wrap">
+                <label class="field field--sm">
+                  <span class="field__label">الشهر</span>
+                  <input id="schedule-off-month" type="month" />
+                </label>
+                <button id="schedule-dates-load" class="btn btn--ghost btn--xs" type="button">
+                  تحميل الشهر
+                </button>
+                <button id="schedule-dates-save" class="btn btn--primary btn--xs" type="button">
+                  حفظ تواريخ الشهر
+                </button>
+                <button id="schedule-dates-clear" class="btn btn--ghost btn--xs" type="button">
+                  مسح اختيار الشهر
+                </button>
+                <span id="schedule-dates-count" class="badge">0 / 0</span>
+              </div>
+              <div id="schedule-off-calendar" class="calendar"></div>
+              <p class="hint">
+                اختر عدد أيام الإجازة الشهرية أعلاه ثم اضغط على تواريخ الشهر في التقويم
+                لتحديدها. تُحفظ تواريخ كل شهر على حدة، ويُحسب الغياب والراتب على أساسها.
+              </p>
             </fieldset>
             <label class="field field--sm field--wide">
               <span class="field__label">ملاحظة</span>
@@ -807,12 +951,31 @@
                 <th>الموظف</th>
                 <th>الفرع</th>
                 <th>أصدره</th>
+                <th></th>
               </tr>
             </thead>
             <tbody></tbody>
           </table>
         </div>
         <p id="doc-issues-empty" class="empty" hidden>لم يُصدر أي نموذج بعد.</p>
+
+        <div class="filters" id="doc-issues-purge" hidden>
+          <label class="field field--sm">
+            <span class="field__label">تنظيف السجل</span>
+            <select id="doc-issues-purge-scope">
+              <option value="before">قبل تاريخ</option>
+              <option value="demo">مستندات الحسابات التجريبية</option>
+              <option value="all">كل السجل</option>
+            </select>
+          </label>
+          <label class="field field--sm" id="doc-issues-purge-date-wrap">
+            <span class="field__label">يُحذف ما قبل</span>
+            <input id="doc-issues-purge-before" type="date" />
+          </label>
+          <button id="doc-issues-purge-run" class="btn btn--danger btn--sm" type="button">حذف المطابق</button>
+        </div>
+
+        <p id="doc-issues-result" class="alert" role="status" hidden></p>
       </section>
     </main>
 
@@ -1236,6 +1399,44 @@
         <p id="entity-empty" class="empty" hidden>لا توجد سجلات في هذا الكيان بعد.</p>
         <p class="hint">
           الحذف يُرفض إذا كان السجل مرتبطاً بموظفين أو حركات قائمة — عطّله بدل حذفه.
+        </p>
+      </section>
+
+      <!-- ── البيانات التجريبية ───────────────────────────────── -->
+      <section id="demo-card" class="card" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">حذف البيانات التجريبية</h2>
+          <button id="demo-refresh" class="btn btn--ghost btn--xs" type="button">تحديث</button>
+        </div>
+
+        <p id="demo-status" class="row row--wrap"></p>
+
+        <div class="row row--wrap">
+          <label class="field field--sm">
+            <span class="field__label">نطاق الحذف</span>
+            <select id="demo-scope">
+              <option value="demo">الحسابات والأصناف التجريبية</option>
+              <option value="records">حركات التجربة (حضور، طلبات، رواتب، سندات…)</option>
+              <option value="all">الاثنان معاً</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">اكتب «حذف» للتأكيد</span>
+            <input id="demo-confirm" type="text" autocomplete="off" placeholder="حذف" />
+          </label>
+          <button id="demo-purge" class="btn btn--danger btn--sm" type="button">
+            حذف البيانات التجريبية
+          </button>
+          <button id="demo-restore" class="btn btn--ghost btn--sm" type="button">
+            إعادة البيانات التجريبية
+          </button>
+        </div>
+
+        <p id="demo-result" class="alert" role="status" hidden></p>
+        <p class="hint">
+          الحذف نهائي ولا يمكن الرجوع عنه، ولا يُحذف حسابك الذي تعمل به الآن. بعد الحذف
+          يُمنع بذر البيانات التجريبية مرة أخرى عند إقلاع الموقع، وتبقى الكيانات
+          الأساسية (الصلاحيات والأدوار والفرع والإعدادات) كما هي.
         </p>
       </section>
     </main>

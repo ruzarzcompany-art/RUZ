@@ -56,6 +56,43 @@ export function getSeedPassword(): string {
 }
 
 /**
+ * مدة الخمول المسموحة قبل الخروج التلقائي من النظام (بالثواني).
+ * تُطبَّق في الخادم (`sessions.last_seen_at`) وفي المتصفح معاً، فترك الصفحة
+ * أو إغلاق التطبيق مدةً أطول من ذلك يُبطل الجلسة ويعيد شاشة الدخول.
+ * الافتراضي 15 دقيقة، والحد الأدنى دقيقة واحدة.
+ */
+export function getSessionIdleSeconds(): number {
+  const parsed = Number.parseInt(env("SESSION_IDLE_SECONDS") ?? "", 10);
+  if (Number.isInteger(parsed) && parsed >= 60 && parsed <= 12 * 60 * 60) return parsed;
+  return 15 * 60;
+}
+
+/**
+ * مدة صلاحية رمز استعادة كلمة المرور (بالثواني، الافتراضي 30 دقيقة).
+ */
+export function getResetCodeTtlSeconds(): number {
+  const parsed = Number.parseInt(env("PASSWORD_RESET_TTL_SECONDS") ?? "", 10);
+  if (Number.isInteger(parsed) && parsed >= 300 && parsed <= 24 * 60 * 60) return parsed;
+  return 30 * 60;
+}
+
+/**
+ * إعدادات مزوّد البريد (Resend عبر HTTPS — لا يحتاج مكتبات SMTP).
+ * عند غياب المفتاح لا يُرسل بريد، ويبقى طلب الاستعادة معلّقاً لمسؤول البرنامج.
+ */
+export function getMailConfig(): {
+  configured: boolean;
+  apiKey: string;
+  from: string;
+  replyTo: string;
+} {
+  const apiKey = (env("RESEND_API_KEY") ?? "").trim();
+  const from = (env("MAIL_FROM") ?? "").trim() || "onboarding@resend.dev";
+  const replyTo = (env("MAIL_REPLY_TO") ?? "").trim();
+  return { configured: apiKey.length > 0, apiKey, from, replyTo };
+}
+
+/**
  * وضع مطابقة الوجه:
  * - `off`      : تجاهل الوجه تماماً (سلوك النسخة الأولى).
  * - `optional` : (الافتراضي) مَن سُجِّل قالبه يجب أن يطابقه؛ ومَن لم يُسجَّل بعد

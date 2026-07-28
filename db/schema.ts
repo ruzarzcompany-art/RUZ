@@ -111,6 +111,12 @@ export const employees = pgTable(
     jobTitle: text("job_title").notNull().default(""),
     isActive: boolean("is_active").notNull().default(true),
     mustChangePassword: boolean("must_change_password").notNull().default(false),
+    /**
+     * تفعيل بصمة الوجه لهذا الموظف تحديداً (علامة صح في شاشة الموظفين).
+     * عند إلغائها يُعامل الموظف كأن وضع المطابقة `off` مهما كان الإعداد العام،
+     * فيسجّل حضوره دون تحقق بالوجه.
+     */
+    faceEnabled: boolean("face_enabled").notNull().default(true),
     /** تاريخ الانضمام للعمل */
     hiredAt: timestamp("hired_at", { withTimezone: true }),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
@@ -139,6 +145,11 @@ export const sessions = pgTable(
     userAgent: text("user_agent").notNull().default(""),
     ipAddress: text("ip_address").notNull().default(""),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    /**
+     * آخر طلب موثَّق بهذه الجلسة — يُحدَّث في `requireAuth` وتُبطل الجلسة
+     * تلقائياً إذا تجاوز الخمول المدة المسموحة (خروج تلقائي بعد ترك الصفحة).
+     */
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -231,8 +242,14 @@ export const workSchedules = pgTable(
     /** عدد ساعات العمل اليومية المتعاقد عليها */
     dailyHours: doublePrecision("daily_hours").notNull().default(8),
     breakMinutes: integer("break_minutes").notNull().default(0),
-    /** عدد أيام الإجازة في الشهر — 2 أو 4 */
+    /** عدد أيام الإجازة في الشهر (0–15) */
     daysOffPerMonth: integer("days_off_per_month").notNull().default(4),
+    /**
+     * طريقة تحديد أيام الإجازة:
+     * - `weekly` : أيام أسبوعية متكرّرة تُقرأ من `off_days`.
+     * - `dates`  : تواريخ محدّدة داخل كل شهر تُقرأ من `schedule_off_dates`.
+     */
+    offMode: text("off_mode").notNull().default("weekly"),
     /** أيام الإجازة تحديداً: أرقام أيام الأسبوع 0=الأحد … 6=السبت مفصولة بفاصلة */
     offDays: text("off_days").notNull().default(""),
     /** دقائق السماح قبل اعتبار الحضور تأخيراً */
@@ -246,6 +263,34 @@ export const workSchedules = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex("work_schedules_employee_unique_idx").on(table.employeeId)],
+);
+
+/**
+ * schedule_off_dates — أيام إجازة الموظف بتواريخ محدّدة داخل الشهر.
+ *
+ * تُستخدم عندما يكون `work_schedules.off_mode = 'dates'`: يختار المسؤول عدد
+ * أيام الإجازة الشهرية (2 أو 4 أو 8 …) ثم يحدّد تواريخها فعلياً في التقويم،
+ * فلا تُفرض أياماً أسبوعية متكرّرة. الحذف يتسلسل مع الموظف.
+ */
+export const scheduleOffDates = pgTable(
+  "schedule_off_dates",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    /** تاريخ الإجازة (يوم كامل) بتوقيت الفرع */
+    offDate: date("off_date").notNull(),
+    note: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("schedule_off_dates_unique_idx").on(table.employeeId, table.offDate),
+    index("schedule_off_dates_date_idx").on(table.offDate),
+  ],
 );
 
 /**
@@ -937,3 +982,63 @@ export const documentIssues = pgTable(
     index("document_issues_employee_idx").on(table.employeeId, table.issuedAt),
   ],
 );
+
+/**
+ * password_reset_requests — طلبات «نسيت الرقم السري».
+ *
+ * لا يُخزَّن الرمز نفسه أبداً بل تجزئته (نفس دالة كلمات المرور)، ويُرسل الرمز
+ * إلى بريد الموظف عند توفّر مزوّد بريد. وإن لم يتوفّر يبقى الطلب معلّقاً
+ * (`status = pending`) في قائمة مسؤول البرنامج ليصدر رمزاً مؤقتاً بنفسه.
+ */
+export const passwordResetRequests = pgTable(
+  "password_reset_requests",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    /** ما كتبه الموظف في شاشة الدخول (رقم موظف أو بريد) — للمراجعة فقط */
+    requestedIdentifier: text("requested_identifier").notNull().default(""),
+    /** تجزئة رمز الاستعادة بصيغة scrypt$<salt>$<hash> */
+    codeHash: text("code_hash").notNull(),
+    /** عدد محاولات إدخال الرمز الخاطئة على هذا الطلب */
+    attempts: integer().notNull().default(0),
+    /** pending | sent | used | expired | cancelled */
+    status: text().notNull().default("pending"),
+    /** email | admin — كيف وصل الرمز للموظف */
+    deliveryChannel: text("delivery_channel").notNull().default(""),
+    /** البريد الذي أُرسل إليه الرمز (إن أُرسل) */
+    deliveredTo: text("delivered_to").notNull().default(""),
+    /** المسؤول الذي أصدر الرمز يدوياً */
+    issuedByEmployeeId: integer("issued_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    ipAddress: text("ip_address").notNull().default(""),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("password_reset_employee_idx").on(table.employeeId, table.createdAt),
+    index("password_reset_status_idx").on(table.status, table.createdAt),
+  ],
+);
+
+/**
+ * system_flags — أعلام تشغيلية دائمة (مفتاح/قيمة).
+ * أهم استخدامها: العلم `demo_data_purged` الذي يمنع إعادة بذر البيانات
+ * التجريبية بعد حذفها من لوحة الإعدادات.
+ */
+export const systemFlags = pgTable("system_flags", {
+  id: serial().primaryKey(),
+  flagKey: text("flag_key").notNull().unique(),
+  flagValue: text("flag_value").notNull().default(""),
+  note: text().notNull().default(""),
+  setByEmployeeId: integer("set_by_employee_id").references(() => employees.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

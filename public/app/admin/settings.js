@@ -9,6 +9,7 @@
  */
 
 import { api, button, el, formatMoney, row, setAlert, setBusy } from "../api.js";
+import { pickLocation } from "../map-picker.js";
 
 const TEXT_FIELDS = [
   ["companyName", "اسم المؤسسة"],
@@ -222,6 +223,49 @@ function readFileAsDataUrl(file) {
   });
 }
 
+/**
+ * يصغّر الصور النقطية الكبيرة داخل المتصفح حتى تنزل تحت الحد المسموح،
+ * فلا يُرفض الشعار لمجرّد أن الملف الأصلي بدقّة عالية.
+ * يُعاد نفس الـData URL إذا كان الملف SVG أو تعذّر التصغير.
+ */
+async function shrinkImageDataUrl(dataUrl, maxChars) {
+  if (dataUrl.length <= maxChars) return dataUrl;
+  if (dataUrl.startsWith("data:image/svg+xml")) return dataUrl;
+
+  const image = await new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+  if (!image || !image.width || !image.height) return dataUrl;
+
+  let width = image.width;
+  let height = image.height;
+  let out = dataUrl;
+
+  // نُنقص الأبعاد تدريجياً حتى نصل إلى حجم مقبول أو إلى حدّ أدنى معقول
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const scale = Math.min(1, 900 / Math.max(width, height)) * (attempt === 0 ? 1 : 0.8);
+    width = Math.max(60, Math.round(width * scale));
+    height = Math.max(60, Math.round(height * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return dataUrl;
+    ctx.drawImage(image, 0, 0, width, height);
+
+    out = canvas.toDataURL("image/png");
+    if (out.length > maxChars) out = canvas.toDataURL("image/jpeg", 0.82);
+    if (out.length <= maxChars) return out;
+    if (width <= 60 || height <= 60) break;
+  }
+
+  return out;
+}
+
 async function uploadLogo(file) {
   if (!file) return;
 
@@ -233,9 +277,25 @@ async function uploadLogo(file) {
     return;
   }
 
-  // الشعار يُخزَّن كـData URL داخل الصف، فنمنع الملفات الضخمة قبل الإرسال
-  if (dataUrl.length > state.meta.maxLogoChars) {
-    const kb = Math.round((state.meta.maxLogoChars * 3) / 4 / 1024);
+  if (!/^data:image\/(png|jpeg|jpg|webp|svg\+xml);base64,/.test(dataUrl)) {
+    setAlert(
+      el("settings-result"),
+      "صيغة الملف غير مدعومة. اختر صورة PNG أو JPEG أو WebP أو SVG.",
+      "error",
+    );
+    return;
+  }
+
+  // الشعار يُخزَّن كـData URL داخل الصف، فنصغّره قبل الإرسال عند الحاجة
+  const maxChars = state.meta.maxLogoChars;
+  try {
+    dataUrl = await shrinkImageDataUrl(dataUrl, maxChars);
+  } catch {
+    /* نُكمل بالملف الأصلي ويتحقّق الفحص التالي من الحجم */
+  }
+
+  if (dataUrl.length > maxChars) {
+    const kb = Math.round((maxChars * 3) / 4 / 1024);
     setAlert(
       el("settings-result"),
       `حجم الشعار كبير. اختر صورة أصغر من نحو ${kb} كيلوبايت (PNG أو SVG مضغوط).`,
@@ -256,7 +316,7 @@ async function uploadLogo(file) {
 
   setAlert(
     el("settings-result"),
-    result.ok ? "تم رفع الشعار." : (result.error ?? "تعذّر رفع الشعار"),
+    result.ok ? "تم رفع الشعار وحفظه." : (result.error ?? "تعذّر رفع الشعار"),
     result.ok ? "ok" : "error",
   );
 }
@@ -334,9 +394,102 @@ function renderEntityForm(record) {
     form.append(wrapped);
   }
 
+  renderLocationPicker(form, record);
+
   state.editingId = record?.id ?? null;
   el("entity-submit").textContent = record ? "حفظ التعديل" : `إضافة ${entity.singular}`;
   el("entity-cancel").hidden = !record;
+}
+
+/* ── تحديد الموقع على الخريطة ───────────────────────────────────
+ * الكيانات التي تحمل حقلي `latitude` و`longitude` (الفروع) يصعب تعبئتها
+ * يدوياً: من يعرف إحداثيات فرعه؟ لذلك نضيف زرّين — واحد يفتح خريطة لاختيار
+ * النقطة، وآخر يقرأ موقع الجهاز الحالي — ويكتبان الناتج في الحقلين نفسهما.
+ */
+
+const hasLocationFields = (entity) =>
+  Boolean(entity) &&
+  entity.fields.some((spec) => spec.key === "latitude") &&
+  entity.fields.some((spec) => spec.key === "longitude");
+
+function readLocationInputs() {
+  const latitude = Number(el("entity-field-latitude")?.value);
+  const longitude = Number(el("entity-field-longitude")?.value);
+  return {
+    latitude: Number.isFinite(latitude) && latitude !== 0 ? latitude : undefined,
+    longitude: Number.isFinite(longitude) && longitude !== 0 ? longitude : undefined,
+  };
+}
+
+function writeLocationInputs(point, statusNode) {
+  el("entity-field-latitude").value = String(point.latitude);
+  el("entity-field-longitude").value = String(point.longitude);
+  statusNode.textContent = `تم تحديد الموقع: ${point.latitude} ، ${point.longitude} — لا تنسَ الحفظ.`;
+}
+
+function renderLocationPicker(form, record) {
+  const entity = state.currentEntity;
+  if (!hasLocationFields(entity)) return;
+
+  const wrap = document.createElement("div");
+  wrap.className = "field field--sm";
+
+  const label = document.createElement("span");
+  label.className = "field__label";
+  label.textContent = "الموقع على الخريطة";
+
+  const buttons = document.createElement("div");
+  buttons.className = "row row--wrap";
+
+  const status = document.createElement("span");
+  status.className = "field__hint";
+  status.setAttribute("role", "status");
+  status.textContent =
+    record?.latitude || record?.longitude
+      ? `الموقع الحالي: ${record.latitude} ، ${record.longitude}`
+      : "لم يُحدَّد موقع بعد — افتح الخريطة وضع العلامة على المكان.";
+
+  buttons.append(
+    button("تحديد على الخريطة", {
+      className: "btn btn--ghost btn--sm",
+      onClick: async () => {
+        const point = await pickLocation({
+          ...readLocationInputs(),
+          title: `موقع ${entity.singular}`,
+        });
+        if (point) writeLocationInputs(point, status);
+      },
+    }),
+    button("موقعي الحالي", {
+      className: "btn btn--ghost btn--sm",
+      onClick: () => {
+        if (!navigator.geolocation) {
+          status.textContent = "المتصفح لا يدعم تحديد الموقع — استخدم الخريطة.";
+          return;
+        }
+
+        status.textContent = "جاري تحديد موقعك…";
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            writeLocationInputs(
+              {
+                latitude: Math.round(position.coords.latitude * 1e6) / 1e6,
+                longitude: Math.round(position.coords.longitude * 1e6) / 1e6,
+              },
+              status,
+            );
+          },
+          () => {
+            status.textContent = "تعذّر قراءة موقع الجهاز — حدّد المكان من الخريطة.";
+          },
+          { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 },
+        );
+      },
+    }),
+  );
+
+  wrap.append(label, buttons, status);
+  form.append(wrap);
 }
 
 function cellText(spec, value) {
@@ -570,6 +723,94 @@ async function loadEntities() {
   if (state.currentEntity) await loadEntityRows();
 }
 
+/* ── البيانات التجريبية ────────────────────────────────────────── */
+
+const DEMO_LABELS = {
+  demoEmployees: "حسابات تجريبية",
+  demoItems: "أصناف تجريبية",
+  attendanceLogs: "سجلات حضور",
+};
+
+function paintDemoStatus(status) {
+  const box = el("demo-status");
+  box.textContent = "";
+
+  for (const [key, labelText] of Object.entries(DEMO_LABELS)) {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    const strong = document.createElement("strong");
+    strong.textContent = String(status?.[key] ?? 0);
+    chip.append(document.createTextNode(`${labelText}: `), strong);
+    box.append(chip);
+  }
+
+  const flag = document.createElement("span");
+  flag.className = "chip";
+  flag.textContent = status?.purged
+    ? "البذر التجريبي موقوف — لن تعود البيانات التجريبية"
+    : "البذر التجريبي مُفعّل";
+  box.append(flag);
+}
+
+async function loadDemoData() {
+  if (!state.can("settings.manage")) return;
+
+  const result = await api("/admin/demo-data");
+  if (!result.ok) {
+    setAlert(el("demo-result"), result.error ?? "تعذّر قراءة حالة البيانات التجريبية", "error");
+    return;
+  }
+
+  paintDemoStatus(result);
+}
+
+async function purgeDemoData() {
+  const node = el("demo-purge");
+  const scope = el("demo-scope").value;
+  const confirm = el("demo-confirm").value.trim();
+
+  if (!window.confirm("حذف البيانات التجريبية نهائياً؟ لا يمكن الرجوع عن هذه العملية.")) return;
+
+  setBusy(node, true);
+  const result = await api("/admin/demo-data/purge", {
+    method: "POST",
+    body: { scope, confirm },
+  });
+  setBusy(node, false);
+
+  setAlert(
+    el("demo-result"),
+    result.ok ? result.message : (result.error ?? "تعذّر الحذف"),
+    result.ok ? "ok" : "error",
+  );
+
+  if (result.ok) {
+    el("demo-confirm").value = "";
+    await loadDemoData();
+    await loadSummary();
+  }
+}
+
+async function restoreDemoData() {
+  const node = el("demo-restore");
+  if (!window.confirm("إعادة بذر البيانات التجريبية الآن؟")) return;
+
+  setBusy(node, true);
+  const result = await api("/admin/demo-data/restore", { method: "POST" });
+  setBusy(node, false);
+
+  setAlert(
+    el("demo-result"),
+    result.ok ? result.message : (result.error ?? "تعذّر إعادة البيانات"),
+    result.ok ? "ok" : "error",
+  );
+
+  if (result.ok) {
+    await loadDemoData();
+    await loadSummary();
+  }
+}
+
 /* ── التهيئة ───────────────────────────────────────────────────── */
 
 export function initSettingsModule({ can, employees }) {
@@ -595,6 +836,12 @@ export function initSettingsModule({ can, employees }) {
 
   el("entity-form").addEventListener("submit", submitEntity);
   el("entity-cancel").addEventListener("click", () => renderEntityForm(null));
+
+  // حذف البيانات التجريبية متاح لمن يملك إدارة الإعدادات فقط
+  el("demo-card").hidden = !can("settings.manage");
+  el("demo-refresh").addEventListener("click", loadDemoData);
+  el("demo-purge").addEventListener("click", purgeDemoData);
+  el("demo-restore").addEventListener("click", restoreDemoData);
 }
 
 /** يُستدعى عند فتح تبويب الإعدادات. */
@@ -608,6 +855,7 @@ export async function refreshSettingsPanel(employees) {
 
   await loadCompany();
   await loadSummary();
+  await loadDemoData();
   if (state.entities.length === 0) {
     await loadEntities();
   } else {

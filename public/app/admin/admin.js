@@ -8,18 +8,26 @@
 import {
   api,
   button,
+  clearActivity,
   currentMonthKey,
+  DEFAULT_IDLE_SECONDS,
   el,
   formatDateTime,
   formatMoney,
   getToken,
+  idleExceeded,
   label,
+  loadRuntimeConfig,
+  markActivity,
+  onSessionExpired,
   openPrint,
   requireLogin,
   row,
   setAlert,
   setBusy,
   setToken,
+  startIdleWatch,
+  stopIdleWatch,
   toLocalInputValue,
 } from "../api.js";
 import {
@@ -50,6 +58,7 @@ const state = {
   formsResource: "advances",
   editingLogId: null,
   correctingLogId: null,
+  idleSeconds: DEFAULT_IDLE_SECONDS,
 };
 
 const can = (code) => state.permissions.includes(code);
@@ -361,7 +370,93 @@ async function renderFormsCreate() {
 
   fillEmployees(el("forms-employee"), { includeEmpty: resource.ownerOptional });
   renderFormFields(el("forms-fields"), resource, { mode: "manage" });
+  applyPurgeScope();
   await refreshFormsList();
+}
+
+/* ── تنظيف النماذج السابقة أو التجريبية ─────────────────────── */
+
+/** خيار «المعتمدة والمرفوضة» لا معنى له في النماذج بلا اعتماد (العهد، السندات). */
+function applyPurgeScope() {
+  const resource = state.schema.get(state.formsResource);
+  const scopeSelect = el("forms-purge-scope");
+  const decided = scopeSelect.querySelector('option[value="decided"]');
+
+  // بطاقة التنظيف لا تظهر إلا لمن يملك صلاحية إدارة هذا النموذج
+  el("forms-purge-card").hidden = !resource || !can(resource.managePermission);
+
+  if (decided) {
+    decided.disabled = !resource?.decidable;
+    if (decided.disabled && scopeSelect.value === "decided") scopeSelect.value = "before";
+  }
+
+  el("forms-purge-date-wrap").hidden = scopeSelect.value !== "before";
+  setAlert(el("forms-purge-result"), "");
+}
+
+/** جسم الطلب المشترك بين المعاينة والتنفيذ. */
+function purgeQuery() {
+  const scope = el("forms-purge-scope").value;
+  const before = el("forms-purge-before").value;
+  return { scope, ...(scope === "before" ? { before } : {}) };
+}
+
+async function countPurgeTargets() {
+  const query = purgeQuery();
+
+  if (query.scope === "before" && !query.before) {
+    setAlert(el("forms-purge-result"), "حدّد التاريخ الذي يُحذف ما قبله.", "error");
+    return null;
+  }
+
+  const search = new URLSearchParams(query).toString();
+  const result = await api(`/forms/${state.formsResource}/purge/preview?${search}`);
+
+  if (!result.ok) {
+    setAlert(el("forms-purge-result"), result.error ?? "تعذّر حساب العدد", "error");
+    return null;
+  }
+
+  setAlert(
+    el("forms-purge-result"),
+    result.count === 0
+      ? `لا توجد سجلات مطابقة (${result.describe}).`
+      : `عدد السجلات المطابقة (${result.describe}): ${result.count}`,
+    result.count === 0 ? "" : "warn",
+  );
+
+  return result;
+}
+
+async function runPurge() {
+  const resource = state.schema.get(state.formsResource);
+  const preview = await countPurgeTargets();
+  if (!preview || preview.count === 0) return;
+
+  const confirmed = window.prompt(
+    `سيُحذف ${preview.count} من «${resource?.labelAr ?? ""}» (${preview.describe}) نهائياً.\n` +
+      "اكتب كلمة «حذف» للتأكيد:",
+    "",
+  );
+  if (confirmed === null) return;
+
+  const reason = window.prompt("سبب الحذف (يُسجَّل في التدقيق):", "تنظيف بيانات التجربة") ?? "";
+  const button = el("forms-purge-run");
+  setBusy(button, true);
+
+  const result = await api(`/forms/${state.formsResource}/purge`, {
+    method: "POST",
+    body: { ...purgeQuery(), confirm: confirmed.trim(), reason },
+  });
+
+  setBusy(button, false);
+  setAlert(
+    el("forms-purge-result"),
+    result.ok ? result.message : (result.error ?? "تعذّر الحذف"),
+    result.ok ? "ok" : "error",
+  );
+
+  if (result.ok) await refreshFormsList();
 }
 
 /* ── الرواتب ──────────────────────────────────────────────── */
@@ -467,6 +562,75 @@ async function refreshSavedSlips() {
 
 /* ── الموظفون وبصمات الوجه ────────────────────────────────── */
 
+/**
+ * علامة صح «تفعيل البصمة» لكل موظف. التغيير يُحفظ فوراً على الخادم، وإن
+ * فشل تُرجَع العلامة إلى حالتها السابقة حتى لا تُظهر الشاشة ما لم يُحفظ.
+ */
+function faceEnabledCell(employee) {
+  const wrap = document.createElement("label");
+  wrap.className = "check";
+
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = employee.faceEnabled !== false;
+  box.disabled = !can("employees.write");
+
+  const text = document.createElement("span");
+  const paint = () => {
+    text.textContent = box.checked ? "مُفعّلة" : "معطّلة";
+  };
+  paint();
+
+  box.addEventListener("change", async () => {
+    const wanted = box.checked;
+    box.disabled = true;
+
+    const result = await api(`/employees/${employee.id}/face-enabled`, {
+      method: "PATCH",
+      body: { enabled: wanted },
+    });
+
+    box.disabled = !can("employees.write");
+
+    if (result.ok) {
+      employee.faceEnabled = wanted;
+    } else {
+      box.checked = !wanted;
+    }
+    paint();
+
+    setAlert(
+      el("people-result"),
+      result.ok ? result.message : (result.error ?? "تعذّر تغيير تفعيل البصمة"),
+      result.ok ? "ok" : "error",
+    );
+  });
+
+  wrap.append(box, text);
+  return wrap;
+}
+
+async function setFaceEnabledForAll(enabled) {
+  const node = el(enabled ? "face-enable-all" : "face-disable-all");
+  const verb = enabled ? "تفعيل" : "تعطيل";
+  if (!window.confirm(`${verb} بصمة الوجه لكل الموظفين؟`)) return;
+
+  setBusy(node, true);
+  const result = await api("/employees/face-enabled/bulk", {
+    method: "POST",
+    body: { enabled },
+  });
+  setBusy(node, false);
+
+  setAlert(
+    el("people-result"),
+    result.ok ? result.message : (result.error ?? `تعذّر ${verb} البصمة للكل`),
+    result.ok ? "ok" : "error",
+  );
+
+  if (result.ok) await refreshPeople();
+}
+
 async function refreshPeople() {
   const [employeesResult, faceResult] = await Promise.all([
     api("/employees"),
@@ -486,6 +650,14 @@ async function refreshPeople() {
   for (const employee of state.employees) {
     const face = enrolled.get(employee.id);
     const actions = employeeRowActions(employee);
+
+    if (can("employees.write")) {
+      actions.append(
+        button("رمز استعادة", {
+          onClick: () => issueResetCode(employee.id),
+        }),
+      );
+    }
 
     if (face && can("attendance.manual_write")) {
       actions.append(
@@ -520,6 +692,7 @@ async function refreshPeople() {
         employee.branchName ?? "—",
         employee.branchManagerName ?? "—",
         employee.roleNameAr ?? employee.roleName ?? "—",
+        faceEnabledCell(employee),
         face ? `مسجّلة (${formatDateTime(face.enrolledAt)})` : "غير مسجّلة",
         actions,
       ]),
@@ -529,8 +702,115 @@ async function refreshPeople() {
   fillEmployees(el("manual-employee"));
   fillEmployees(el("filter-employee"), { includeAll: true });
   fillEmployees(el("salary-employee"));
+  fillEmployees(el("reset-employee"), { placeholder: "اختر الموظف" });
   fillNewPanelSelects();
   fillPeopleSelects();
+}
+
+/* ── استعادة كلمات المرور ─────────────────────────────────── */
+
+const RESET_STATUS_LABELS = {
+  pending: "في انتظار المسؤول",
+  sent: "أُرسل الرمز",
+  used: "استُخدم",
+  expired: "منتهي",
+  cancelled: "ملغى",
+};
+
+const RESET_CHANNEL_LABELS = {
+  email: "بريد إلكتروني",
+  admin: "من المسؤول",
+};
+
+/** يصدر رمز استعادة ويعرضه مرة واحدة ليسلّمه المسؤول للموظف. */
+async function issueResetCode(employeeId) {
+  const target = employeeId ?? Number(el("reset-employee").value || 0);
+  if (!target) {
+    setAlert(el("people-result"), "اختر الموظف أولاً.", "error");
+    return;
+  }
+
+  const node = el("reset-issue");
+  setBusy(node, true);
+  const result = await api("/admin/password-resets/issue", {
+    method: "POST",
+    body: { employeeId: target },
+  });
+  setBusy(node, false);
+
+  const box = el("reset-code-box");
+  if (!result.ok) {
+    box.hidden = true;
+    setAlert(el("people-result"), result.error ?? "تعذّر إصدار الرمز", "error");
+    return;
+  }
+
+  // الرمز يظهر في هذه الاستجابة فقط ولا يُخزَّن نصاً في قاعدة البيانات
+  box.hidden = false;
+  box.textContent = `${result.message} الرمز: ${result.code} (${result.employeeCode}) — ينتهي ${formatDateTime(result.expiresAt)}`;
+  setAlert(el("people-result"), "");
+  await refreshResetRequests();
+}
+
+async function refreshResetRequests() {
+  if (!can("employees.write")) return;
+
+  const all = el("reset-show-all").checked ? "?all=1" : "";
+  const result = await api(`/admin/password-resets${all}`);
+  const body = el("reset-table").querySelector("tbody");
+  body.textContent = "";
+
+  if (!result.ok) {
+    setAlert(el("people-result"), result.error ?? "تعذّر قراءة طلبات الاستعادة", "error");
+    return;
+  }
+
+  el("reset-mail-note").textContent = result.mailConfigured
+    ? "إرسال البريد مضبوط: يصل الرمز إلى بريد الموظف تلقائياً، ويبقى الإصدار اليدوي متاحاً لمن لا بريد له."
+    : "إرسال البريد غير مضبوط على هذا الموقع، فكل طلب يبقى هنا لتصدر الرمز بنفسك وتسلّمه للموظف.";
+
+  const requests = result.requests ?? [];
+  el("reset-empty").hidden = requests.length > 0;
+
+  for (const request of requests) {
+    const cancel = button("إلغاء", {
+      className: "btn btn--danger btn--xs",
+      onClick: async () => {
+        const response = await api(`/admin/password-resets/${request.id}/cancel`, {
+          method: "POST",
+        });
+        setAlert(
+          el("people-result"),
+          response.ok ? response.message : (response.error ?? "تعذّر الإلغاء"),
+          response.ok ? "ok" : "error",
+        );
+        if (response.ok) await refreshResetRequests();
+      },
+    });
+
+    const issue = button("إصدار رمز", {
+      onClick: () => issueResetCode(request.employeeId),
+    });
+
+    const actions = document.createElement("div");
+    actions.className = "row row--tight";
+    if (request.status === "pending" || request.status === "sent") {
+      actions.append(issue, cancel);
+    }
+
+    body.append(
+      row([
+        formatDateTime(request.createdAt),
+        `${request.employeeCode ?? "—"} ${request.fullName ?? ""}`.trim(),
+        request.maskedEmail || "بلا بريد",
+        RESET_CHANNEL_LABELS[request.deliveryChannel] ?? "—",
+        RESET_STATUS_LABELS[request.status] ?? request.status,
+        String(request.attempts ?? 0),
+        formatDateTime(request.expiresAt),
+        actions,
+      ]),
+    );
+  }
 }
 
 /** قوائم الموظفين والفروع في شاشات النماذج والكاشير والمخزون. */
@@ -590,6 +870,7 @@ const PANEL_LOADERS = {
   people: async () => {
     await refreshPeople();
     await refreshSchedules();
+    await refreshResetRequests();
   },
   branches: refreshBranchesPanel,
   documents: refreshDocumentsPanel,
@@ -741,6 +1022,10 @@ el("forms-create").addEventListener("submit", async (event) => {
   if (result.ok) await refreshFormsList();
 });
 
+el("forms-purge-scope").addEventListener("change", applyPurgeScope);
+el("forms-purge-count").addEventListener("click", countPurgeTargets);
+el("forms-purge-run").addEventListener("click", runPurge);
+
 el("salary-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const employeeId = el("salary-employee").value;
@@ -772,11 +1057,47 @@ el("salary-form").addEventListener("submit", async (event) => {
 el("payroll-preview").addEventListener("click", previewPayroll);
 el("audit-refresh").addEventListener("click", refreshAudit);
 
+el("face-enable-all").addEventListener("click", () => setFaceEnabledForAll(true));
+el("face-disable-all").addEventListener("click", () => setFaceEnabledForAll(false));
+
+el("reset-refresh").addEventListener("click", refreshResetRequests);
+el("reset-show-all").addEventListener("change", refreshResetRequests);
+el("reset-issue").addEventListener("click", () => issueResetCode());
+
 el("admin-logout").addEventListener("click", async () => {
+  stopIdleWatch();
   await api("/auth/logout", { method: "POST" });
   setToken(null);
+  clearActivity();
   requireLogin();
 });
+
+/* ── الخروج التلقائي ───────────────────────────────────────── */
+
+/** انتهاء الجلسة (خمول محلي أو رفض الخادم) يُعيد المستخدم لشاشة الدخول. */
+onSessionExpired(() => requireLogin("idle"));
+
+function watchIdle() {
+  startIdleWatch({
+    idleSeconds: state.idleSeconds,
+    onWarn: (remaining) => {
+      const note = el("admin-idle-note");
+      if (remaining === null) {
+        note.hidden = true;
+        return;
+      }
+      note.hidden = false;
+      note.textContent = `خروج تلقائي بعد ${remaining} ثانية`;
+    },
+    onExpire: async () => {
+      stopIdleWatch();
+      await api("/auth/logout", { method: "POST" });
+      setToken(null);
+      clearActivity();
+      requireLogin("idle");
+    },
+  });
+}
 
 /* ── الإقلاع ───────────────────────────────────────────────── */
 
@@ -801,12 +1122,26 @@ async function boot() {
     return;
   }
 
+  const config = await loadRuntimeConfig();
+  if (config.ok) state.idleSeconds = config.session?.idleSeconds ?? state.idleSeconds;
+
+  // من غادر الصفحة أكثر من مدة الخمول يُخرج قبل أي نداء آخر
+  if (idleExceeded(state.idleSeconds)) {
+    setToken(null);
+    clearActivity();
+    requireLogin("idle");
+    return;
+  }
+
   const me = await api("/auth/me");
   if (!me.ok) {
     setToken(null);
-    requireLogin();
+    requireLogin(me.reason === "idle_timeout" ? "idle" : undefined);
     return;
   }
+
+  markActivity();
+  watchIdle();
 
   state.permissions = me.permissions ?? [];
   el("admin-who").textContent = [
@@ -833,6 +1168,8 @@ async function boot() {
   }
 
   el("manual-card").hidden = !can("attendance.manual_write");
+  el("face-bulk").hidden = !can("employees.write");
+  el("reset-queue-card").hidden = !can("employees.write");
   el("payroll-period").value = currentMonthKey();
   el("manual-time").value = toLocalInputValue();
 

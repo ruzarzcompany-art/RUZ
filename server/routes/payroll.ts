@@ -14,7 +14,12 @@ import {
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
 import { hasAnyPermission, PERMISSIONS, requireAnyPermission } from "../rbac.js";
-import { evaluateShift, expectedMonthlyHours, getWorkSchedule } from "../schedule.js";
+import {
+  evaluateShift,
+  expectedMonthlyHours,
+  getWorkSchedule,
+  monthBounds,
+} from "../schedule.js";
 import { CHECK_IN, CHECK_OUT, EFFECTIVE_STATUSES } from "../shifts.js";
 import { monthKey, monthRangeInZone, safeTimeZone } from "../time.js";
 import { asId, asMonthKey, asNumber, asString, round2 } from "../validate.js";
@@ -177,7 +182,8 @@ export async function computePayroll(options: {
   const shift = pairShiftHours(logs);
 
   // تقييم الورديات مقابل جدول الدوام: التأخير والدوام الإضافي الفعلي
-  const schedule = await getWorkSchedule(employeeId);
+  // (تُحمَّل تواريخ الإجازة المحدّدة لهذا الشهر مع الجدول)
+  const schedule = await getWorkSchedule(employeeId, monthBounds(year, month));
   let lateMinutes = 0;
   let scheduleOvertimeHours = 0;
   for (const pair of shift.pairs) {

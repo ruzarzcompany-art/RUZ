@@ -6,12 +6,14 @@ import { branches, employees } from "../db/schema.js";
 import {
   requireAuth,
   issueSession,
+  revokeAllSessionsForEmployee,
   revokeSession,
   type AuthedRequest,
 } from "./auth.js";
 import { clientIp } from "./audit.js";
 import { isValidCoordinates } from "./geo.js";
-import { verifyPassword } from "./passwords.js";
+import { hashPassword, verifyPassword } from "./passwords.js";
+import { consumeResetCode, createResetRequest } from "./reset.js";
 import {
   effectivePermissionCodes,
   PERMISSIONS,
@@ -32,8 +34,23 @@ import {
   getAutoCloseHour,
   getFaceMatchMode,
   getFaceMatchThreshold,
+  getMailConfig,
   getPunchCooldownSeconds,
+  getResetCodeTtlSeconds,
+  getSessionIdleSeconds,
 } from "./config.js";
+
+/** أقل طول مقبول لكلمة المرور الجديدة. */
+const MIN_PASSWORD_LENGTH = 8;
+
+/** يتحقق من كلمة المرور الجديدة ويُرجع رسالة الخطأ أو `null`. */
+function validateNewPassword(password: string): string | null {
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return `كلمة المرور الجديدة يجب أن تكون ${MIN_PASSWORD_LENGTH} أحرف أو أكثر`;
+  }
+  if (password.length > 200) return "كلمة المرور الجديدة طويلة جداً";
+  return null;
+}
 
 export function createApp() {
   const app = express();
@@ -76,6 +93,15 @@ export function createApp() {
       shifts: {
         autoCloseHour: getAutoCloseHour(),
         punchCooldownSeconds: getPunchCooldownSeconds(),
+      },
+      session: {
+        /** مدة الخمول قبل الخروج التلقائي — تعتمدها الواجهة لمؤقّتها */
+        idleSeconds: getSessionIdleSeconds(),
+      },
+      passwordReset: {
+        /** هل يستطيع الموقع إرسال الرمز بالبريد؟ وإلا فمن مسؤول البرنامج */
+        emailEnabled: getMailConfig().configured,
+        codeTtlSeconds: getResetCodeTtlSeconds(),
       },
     });
   });
@@ -201,6 +227,115 @@ export function createApp() {
     await revokeSession(req.employee!.tokenId);
     res.json({ ok: true, message: "تم تسجيل الخروج" });
   });
+
+  /**
+   * «نسيت الرقم السري» — يُنشئ رمز استعادة ويرسله إلى بريد الموظف إن كان
+   * مزوّد البريد مضبوطاً؛ وإن لم يكن، يبقى الطلب معلّقاً في لوحة مسؤول
+   * البرنامج ليصدر الرمز بنفسه.
+   *
+   * الاستجابة موحّدة دائماً (وبنفس الرمز 200) حتى لا يُستخدم المسار لمعرفة
+   * أي أرقام موظفين أو بُرد مسجّلة في النظام.
+   */
+  app.post("/api/auth/forgot-password", async (req: Request, res: Response) => {
+    const identifier = String(req.body?.identifier ?? "").trim();
+
+    if (!identifier || identifier.length > 200) {
+      res.status(400).json({ ok: false, error: "أدخل رقم الموظف أو البريد الإلكتروني" });
+      return;
+    }
+
+    const result = await createResetRequest({ identifier, ipAddress: clientIp(req) });
+
+    res.json({
+      ok: true,
+      emailed: result.emailed,
+      maskedEmail: result.maskedEmail,
+      message: result.emailed
+        ? `أُرسل رمز الاستعادة إلى ${result.maskedEmail}. أدخله مع كلمة المرور الجديدة، وصلاحيته ${Math.round(
+            getResetCodeTtlSeconds() / 60,
+          )} دقيقة.`
+        : "إن كان الحساب موجوداً فقد وصل الطلب إلى مسؤول البرنامج ليسلّمك رمز الاستعادة. راجعه ثم أدخل الرمز مع كلمة المرور الجديدة.",
+    });
+  });
+
+  /** ضبط كلمة مرور جديدة برمز الاستعادة (من البريد أو من مسؤول البرنامج). */
+  app.post("/api/auth/reset-password", async (req: Request, res: Response) => {
+    const identifier = String(req.body?.identifier ?? "").trim();
+    const code = String(req.body?.code ?? "").trim();
+    const newPassword = String(req.body?.newPassword ?? req.body?.password ?? "");
+
+    if (!identifier || !code) {
+      res.status(400).json({ ok: false, error: "رقم الموظف ورمز الاستعادة مطلوبان" });
+      return;
+    }
+
+    const passwordError = validateNewPassword(newPassword);
+    if (passwordError) {
+      res.status(400).json({ ok: false, error: passwordError });
+      return;
+    }
+
+    const result = await consumeResetCode({ identifier, code, newPassword });
+
+    if (!result.ok) {
+      res.status(400).json({ ok: false, error: result.error });
+      return;
+    }
+
+    res.json({ ok: true, message: "تم تعيين كلمة المرور الجديدة، يمكنك الدخول الآن." });
+  });
+
+  /** تغيير كلمة المرور من داخل النظام (يُبطل باقي الجلسات). */
+  app.post(
+    "/api/auth/change-password",
+    requireAuth,
+    async (req: AuthedRequest, res: Response) => {
+      const actor = req.employee!;
+      const currentPassword = String(req.body?.currentPassword ?? "");
+      const newPassword = String(req.body?.newPassword ?? "");
+
+      const passwordError = validateNewPassword(newPassword);
+      if (passwordError) {
+        res.status(400).json({ ok: false, error: passwordError });
+        return;
+      }
+
+      const db = getDb();
+      const [row] = await db
+        .select({ passwordHash: employees.passwordHash })
+        .from(employees)
+        .where(eq(employees.id, actor.id))
+        .limit(1);
+
+      if (!row || !verifyPassword(currentPassword, row.passwordHash)) {
+        res.status(400).json({ ok: false, error: "كلمة المرور الحالية غير صحيحة" });
+        return;
+      }
+
+      await db
+        .update(employees)
+        .set({
+          passwordHash: hashPassword(newPassword),
+          mustChangePassword: false,
+          updatedAt: new Date(),
+        })
+        .where(eq(employees.id, actor.id));
+
+      // إبطال كل الجلسات ثم إصدار جلسة جديدة لهذا الجهاز
+      await revokeAllSessionsForEmployee(actor.id);
+      const { token, expiresAt } = await issueSession(actor.id, actor.employeeCode, {
+        userAgent: String(req.headers["user-agent"] ?? ""),
+        ipAddress: clientIp(req),
+      });
+
+      res.json({
+        ok: true,
+        message: "تم تغيير كلمة المرور وإنهاء الجلسات الأخرى.",
+        token,
+        expiresAt: expiresAt.toISOString(),
+      });
+    },
+  );
 
   // ----------------------------------------------------------------- الفروع
 

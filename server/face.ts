@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../db/index.js";
-import { faceTemplates } from "../db/schema.js";
+import { employees, faceTemplates } from "../db/schema.js";
 import { getFaceMatchMode, getFaceMatchThreshold } from "./config.js";
 import { decryptString, encryptString, KEY_VERSION } from "./crypto.js";
 
@@ -120,6 +120,20 @@ export async function saveTemplate(
     });
 }
 
+/**
+ * هل بصمة الوجه مُفعّلة لهذا الموظف؟ (علامة الصح في شاشة الموظفين).
+ * الموظف غير المُفعّل يسجّل حضوره دون أي تحقق بالوجه مهما كان الإعداد العام.
+ */
+export async function isFaceEnabled(employeeId: number): Promise<boolean> {
+  const db = getDb();
+  const [row] = await db
+    .select({ faceEnabled: employees.faceEnabled })
+    .from(employees)
+    .where(eq(employees.id, employeeId))
+    .limit(1);
+  return row?.faceEnabled ?? true;
+}
+
 export type FaceState =
   | "off" // مطابقة الوجه معطّلة
   | "enrolled" // أول قالب للموظف — تم تسجيله الآن
@@ -153,12 +167,20 @@ export async function evaluateFace(options: {
   rawDescriptor: unknown;
   descriptorProvided: boolean;
   actorEmployeeId?: number | null;
+  /** حالة تفعيل البصمة للموظف إن كانت معروفة مسبقاً (توفيراً لاستعلام). */
+  faceEnabled?: boolean;
 }): Promise<FaceOutcome> {
   const mode = getFaceMatchMode();
   const threshold = getFaceMatchThreshold();
   const base = { distance: null, threshold, verified: false, blocks: false };
 
   if (mode === "off") {
+    return { ...base, state: "off", message: "" };
+  }
+
+  // تعطيل البصمة لموظف بعينه يعلو على الإعداد العام
+  const enabled = options.faceEnabled ?? (await isFaceEnabled(options.employeeId));
+  if (!enabled) {
     return { ...base, state: "off", message: "" };
   }
 

@@ -15,6 +15,7 @@ import {
   workSchedules,
 } from "../db/schema.js";
 import { env, getSeedPassword } from "./config.js";
+import { DEMO_PURGED_FLAG, isFlagOn } from "./flags.js";
 import { hashPassword } from "./passwords.js";
 import { PERMISSION_CATALOG, PERMISSIONS } from "./rbac.js";
 
@@ -234,107 +235,118 @@ async function runSeed(): Promise<void> {
 
   const passwordHash = hashPassword(getSeedPassword());
 
-  await db
-    .insert(employees)
-    .values([
-      {
-        employeeCode: "EMP-1000",
-        fullName: "سالم المدير",
-        email: "manager@restaurant-hr.local",
-        phone: "0500000000",
-        nationality: "سعودي",
-        nationalId: "1000000000",
-        department: "الإدارة",
-        passwordHash,
-        jobTitle: "مدير الفرع",
-        roleId: roleIdByName.get("branch_manager") ?? null,
-        branchId: branch?.id ?? null,
-        hiredAt: new Date(),
-      },
-      {
-        employeeCode: "EMP-1001",
-        fullName: "أحمد الموظف",
-        email: "staff@restaurant-hr.local",
-        phone: "0500000001",
-        nationality: "سعودي",
-        nationalId: "1000000001",
-        department: "الكاشير",
-        passwordHash,
-        jobTitle: "كاشير",
-        roleId: roleIdByName.get("staff") ?? null,
-        branchId: branch?.id ?? null,
-        hiredAt: new Date(),
-      },
-      {
-        employeeCode: "EMP-1002",
-        fullName: "نورة الموارد البشرية",
-        email: "hr@restaurant-hr.local",
-        phone: "0500000002",
-        nationality: "سعودي",
-        nationalId: "1000000002",
-        department: "الموارد البشرية",
-        passwordHash,
-        jobTitle: "مدير الموارد البشرية",
-        roleId: roleIdByName.get("hr_manager") ?? null,
-        branchId: branch?.id ?? null,
-        hiredAt: new Date(),
-      },
-    ])
-    .onConflictDoNothing();
+  /**
+   * البيانات التجريبية (حسابات العرض وتعريفات رواتبها وجداولها وأصناف
+   * المخزون الافتراضية) تُبذر مرة واحدة فقط. وإذا حذفها المسؤول من لوحة
+   * الإعدادات يُضبط العلم `demo_data_purged` فلا تُعاد في أي إقلاع لاحق —
+   * وإلا لعادت مع أول طلب بعد الحذف.
+   */
+  const demoPurged = await isFlagOn(DEMO_PURGED_FLAG);
 
-  // تعريفات رواتب تجريبية للحسابات المبذورة حتى يعمل مسير الرواتب من أول تشغيل
-  const seededEmployees = await db
-    .select({ id: employees.id, code: employees.employeeCode })
-    .from(employees)
-    .where(sql`${employees.employeeCode} in ('EMP-1000', 'EMP-1001', 'EMP-1002')`);
-
-  const demoSalaries: Record<string, { basic: number; housing: number; transport: number }> = {
-    "EMP-1000": { basic: 9000, housing: 1500, transport: 500 },
-    "EMP-1001": { basic: 4500, housing: 750, transport: 300 },
-    "EMP-1002": { basic: 11000, housing: 2000, transport: 600 },
-  };
-
-  const salaryRows = seededEmployees.flatMap((employee) => {
-    const demo = demoSalaries[employee.code];
-    if (!demo) return [];
-    return [
-      {
-        employeeId: employee.id,
-        basicSalary: demo.basic,
-        housingAllowance: demo.housing,
-        transportAllowance: demo.transport,
-        note: "تعريف راتب تجريبي — عدّله من شاشة الموارد البشرية.",
-      },
-    ];
-  });
-
-  if (salaryRows.length > 0) {
-    await db.insert(salaryDefinitions).values(salaryRows).onConflictDoNothing();
-  }
-
-  // جداول دوام تجريبية (8 ساعات، إجازتان أسبوعياً = 4 أيام شهرياً: الجمعة والسبت)
-  const scheduleRows = seededEmployees.map((employee) => ({
-    employeeId: employee.id,
-    shiftStart: "09:00",
-    shiftEnd: "17:00",
-    dailyHours: 8,
-    daysOffPerMonth: 4,
-    offDays: "5,6",
-    graceMinutes: 10,
-    note: "جدول دوام تجريبي — عدّله من شاشة الموارد البشرية.",
-  }));
-
-  if (scheduleRows.length > 0) {
-    await db.insert(workSchedules).values(scheduleRows).onConflictDoNothing();
-  }
-
-  // مدير الفرع الافتراضي — يُضبط مرة واحدة فقط ولا يُعاد كتابته بعد أي تعديل
-  const manager = seededEmployees.find((item) => item.code === "EMP-1000");
-  if (branch && manager) {
+  if (!demoPurged) {
     await db
-      .update(branches)
-      .set({ managerEmployeeId: manager.id })
-      .where(and(eq(branches.id, branch.id), isNull(branches.managerEmployeeId)));
+      .insert(employees)
+      .values([
+        {
+          employeeCode: "EMP-1000",
+          fullName: "سالم المدير",
+          email: "manager@restaurant-hr.local",
+          phone: "0500000000",
+          nationality: "سعودي",
+          nationalId: "1000000000",
+          department: "الإدارة",
+          passwordHash,
+          jobTitle: "مدير الفرع",
+          roleId: roleIdByName.get("branch_manager") ?? null,
+          branchId: branch?.id ?? null,
+          hiredAt: new Date(),
+        },
+        {
+          employeeCode: "EMP-1001",
+          fullName: "أحمد الموظف",
+          email: "staff@restaurant-hr.local",
+          phone: "0500000001",
+          nationality: "سعودي",
+          nationalId: "1000000001",
+          department: "الكاشير",
+          passwordHash,
+          jobTitle: "كاشير",
+          roleId: roleIdByName.get("staff") ?? null,
+          branchId: branch?.id ?? null,
+          hiredAt: new Date(),
+        },
+        {
+          employeeCode: "EMP-1002",
+          fullName: "نورة الموارد البشرية",
+          email: "hr@restaurant-hr.local",
+          phone: "0500000002",
+          nationality: "سعودي",
+          nationalId: "1000000002",
+          department: "الموارد البشرية",
+          passwordHash,
+          jobTitle: "مدير الموارد البشرية",
+          roleId: roleIdByName.get("hr_manager") ?? null,
+          branchId: branch?.id ?? null,
+          hiredAt: new Date(),
+        },
+      ])
+      .onConflictDoNothing();
+
+    // تعريفات رواتب تجريبية للحسابات المبذورة حتى يعمل مسير الرواتب من أول تشغيل
+    const seededEmployees = await db
+      .select({ id: employees.id, code: employees.employeeCode })
+      .from(employees)
+      .where(sql`${employees.employeeCode} in ('EMP-1000', 'EMP-1001', 'EMP-1002')`);
+
+    const demoSalaries: Record<string, { basic: number; housing: number; transport: number }> =
+      {
+        "EMP-1000": { basic: 9000, housing: 1500, transport: 500 },
+        "EMP-1001": { basic: 4500, housing: 750, transport: 300 },
+        "EMP-1002": { basic: 11000, housing: 2000, transport: 600 },
+      };
+
+    const salaryRows = seededEmployees.flatMap((employee) => {
+      const demo = demoSalaries[employee.code];
+      if (!demo) return [];
+      return [
+        {
+          employeeId: employee.id,
+          basicSalary: demo.basic,
+          housingAllowance: demo.housing,
+          transportAllowance: demo.transport,
+          note: "تعريف راتب تجريبي — عدّله من شاشة الموارد البشرية.",
+        },
+      ];
+    });
+
+    if (salaryRows.length > 0) {
+      await db.insert(salaryDefinitions).values(salaryRows).onConflictDoNothing();
+    }
+
+    // جداول دوام تجريبية (8 ساعات، إجازتان أسبوعياً = 4 أيام شهرياً: الجمعة والسبت)
+    const scheduleRows = seededEmployees.map((employee) => ({
+      employeeId: employee.id,
+      shiftStart: "09:00",
+      shiftEnd: "17:00",
+      dailyHours: 8,
+      daysOffPerMonth: 4,
+      offDays: "5,6",
+      graceMinutes: 10,
+      note: "جدول دوام تجريبي — عدّله من شاشة الموارد البشرية.",
+    }));
+
+    if (scheduleRows.length > 0) {
+      await db.insert(workSchedules).values(scheduleRows).onConflictDoNothing();
+    }
+
+    // مدير الفرع الافتراضي — يُضبط مرة واحدة فقط ولا يُعاد كتابته بعد أي تعديل
+    const manager = seededEmployees.find((item) => item.code === "EMP-1000");
+    if (branch && manager) {
+      await db
+        .update(branches)
+        .set({ managerEmployeeId: manager.id })
+        .where(and(eq(branches.id, branch.id), isNull(branches.managerEmployeeId)));
+    }
   }
 
   // ------------------------------------------------- إعدادات المؤسسة والمطبوعات
@@ -392,16 +404,27 @@ async function runSeed(): Promise<void> {
     .onConflictDoNothing();
 
   // أصناف مخزون افتراضية حتى تعمل شاشة المخزون من أول تشغيل
-  await db
-    .insert(inventoryItems)
-    .values([
-      { code: "ITM-001", name: "دقيق", category: "مواد أولية", unit: "كجم", unitCost: 4, minQuantity: 25 },
-      { code: "ITM-002", name: "زيت قلي", category: "مواد أولية", unit: "لتر", unitCost: 12, minQuantity: 20 },
-      { code: "ITM-003", name: "دجاج طازج", category: "مواد أولية", unit: "كجم", unitCost: 18, minQuantity: 30 },
-      { code: "ITM-004", name: "علب تغليف", category: "مستهلكات", unit: "علبة", unitCost: 0.7, minQuantity: 200 },
-      { code: "ITM-005", name: "أكياس", category: "مستهلكات", unit: "كيس", unitCost: 0.2, minQuantity: 300 },
-    ])
-    .onConflictDoNothing();
+  if (!demoPurged) {
+    await db
+      .insert(inventoryItems)
+      .values([
+        { code: "ITM-001", name: "دقيق", category: "مواد أولية", unit: "كجم", unitCost: 4, minQuantity: 25 },
+        { code: "ITM-002", name: "زيت قلي", category: "مواد أولية", unit: "لتر", unitCost: 12, minQuantity: 20 },
+        { code: "ITM-003", name: "دجاج طازج", category: "مواد أولية", unit: "كجم", unitCost: 18, minQuantity: 30 },
+        { code: "ITM-004", name: "علب تغليف", category: "مستهلكات", unit: "علبة", unitCost: 0.7, minQuantity: 200 },
+        { code: "ITM-005", name: "أكياس", category: "مستهلكات", unit: "كيس", unitCost: 0.2, minQuantity: 300 },
+      ])
+      .onConflictDoNothing();
+  }
+}
+
+/**
+ * يُعيد بذر البيانات التجريبية عند الطلب (بعد إلغاء علم الحذف) — يستخدمه
+ * مسار «إعادة البيانات التجريبية» في لوحة الإعدادات.
+ */
+export async function reseedNow(): Promise<void> {
+  seedPromise = undefined;
+  await ensureSeeded();
 }
 
 let seedPromise: Promise<void> | undefined;

@@ -31,7 +31,7 @@ import {
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { hasAnyPermission, PERMISSIONS, requirePermission } from "../rbac.js";
-import { evaluateShift, type WorkSchedule } from "../schedule.js";
+import { evaluateShift, getOffDatesFor, type WorkSchedule } from "../schedule.js";
 import { safeTimeZone } from "../time.js";
 import { asDateOnly, asId, round2 } from "../validate.js";
 import { DOC_CATALOG } from "./documents.js";
@@ -229,8 +229,15 @@ reportsRouter.get(
       .orderBy(asc(attendanceLogs.employeeId), asc(attendanceLogs.serverTime));
 
     const scheduleRows = await db.select().from(workSchedules);
+    // تواريخ الإجازة المحدّدة للجداول التي تعتمد نمط التواريخ
+    const offDatesByEmployee = await getOffDatesFor(
+      scheduleRows.filter((row) => row.offMode === "dates").map((row) => row.employeeId),
+    );
     const scheduleByEmployee = new Map<number, WorkSchedule>(
-      scheduleRows.map((row) => [row.employeeId, row as WorkSchedule]),
+      scheduleRows.map((row) => [
+        row.employeeId,
+        { ...row, offDates: offDatesByEmployee.get(row.employeeId) ?? [] } as WorkSchedule,
+      ]),
     );
 
     type Log = (typeof logs)[number];

@@ -13,11 +13,21 @@ let ctx = null;
 const meta = {
   roles: [],
   weekdays: [],
-  allowedDaysOff: [2, 4],
+  allowedDaysOff: [2, 4, 6, 8],
+  maxDaysOffPerMonth: 15,
+};
+
+/** حالة تقويم أيام الإجازة: الموظف والشهر المعروض والتواريخ المختارة. */
+const offDatesState = {
+  employeeId: null,
+  month: "",
+  selected: new Set(),
 };
 
 /** الموظف المفتوح حالياً في نموذج التعديل (`null` = إضافة جديد). */
 let editingEmployeeId = null;
+/** صف الموظف المفتوح في النموذج — يُستخدم لزر الحذف داخل البطاقة. */
+let editingEmployee = null;
 
 const can = (code) => ctx?.can(code) ?? false;
 
@@ -80,7 +90,10 @@ export async function loadPeopleMeta() {
   if (rolesResult.ok) meta.roles = rolesResult.roles ?? [];
   if (scheduleMeta.ok) {
     meta.weekdays = scheduleMeta.weekdays ?? [];
-    meta.allowedDaysOff = scheduleMeta.allowedDaysOff ?? [2, 4];
+    meta.allowedDaysOff = scheduleMeta.allowedDaysOff ?? [2, 4, 6, 8];
+    meta.maxDaysOffPerMonth = scheduleMeta.maxDaysOffPerMonth ?? 15;
+    const input = el("schedule-days-off");
+    if (input) input.max = String(meta.maxDaysOffPerMonth);
   }
 
   renderOffDayChoices();
@@ -92,6 +105,10 @@ export async function loadPeopleMeta() {
 /** يملأ النموذج ببيانات موظف قائم، أو يُفرغه لموظف جديد. */
 export function editEmployee(employee) {
   editingEmployeeId = employee?.id ?? null;
+  editingEmployee = employee ?? null;
+
+  const deleteButton = el("employee-delete");
+  if (deleteButton) deleteButton.hidden = !employee || !can("employees.write");
 
   el("employee-target").textContent = employee
     ? `تعديل: ${employee.employeeCode} — ${employee.fullName}`
@@ -108,6 +125,7 @@ export function editEmployee(employee) {
   el("employee-branch").value = employee?.branchId ? String(employee.branchId) : "";
   el("employee-role").value = employee?.roleId ? String(employee.roleId) : "";
   el("employee-active").value = employee ? String(employee.isActive !== false) : "true";
+  el("employee-face").value = employee ? String(employee.faceEnabled !== false) : "true";
   el("employee-password").value = "";
   el("employee-reason").value = "";
   el("employee-submit").textContent = employee ? "حفظ التعديل" : "إضافة الموظف";
@@ -130,6 +148,7 @@ function readEmployeeForm() {
     branchId: el("employee-branch").value ? Number(el("employee-branch").value) : null,
     roleId: el("employee-role").value ? Number(el("employee-role").value) : null,
     isActive: el("employee-active").value === "true",
+    faceEnabled: el("employee-face").value === "true",
     password: el("employee-password").value,
     reason: el("employee-reason").value.trim(),
   };
@@ -156,13 +175,54 @@ async function showEmployeeFile(employeeId) {
     schedule
       ? `الدوام: ${schedule.shiftStart}–${schedule.shiftEnd} (${schedule.dailyHours} ساعات) · إجازات: ${schedule.daysOffPerMonth}/شهر (${schedule.offDaysLabel})`
       : "الدوام: لا يوجد جدول مُعرَّف",
-    `بصمة الوجه: ${result.faceEnrolledAt ? formatDateTime(result.faceEnrolledAt) : "غير مسجّلة"}`,
+    `بصمة الوجه: ${employee.faceEnabled === false ? "معطّلة لهذا الموظف" : "مُفعّلة"} · ${
+      result.faceEnrolledAt ? formatDateTime(result.faceEnrolledAt) : "غير مسجّلة"
+    }`,
   ];
 
   setAlert(el("people-result"), lines.join(" | "), "ok");
 }
 
-/** يضيف أزرار «الملف» و«تعديل» و«الدوام» لصف الموظف في الجدول. */
+/**
+ * حذف موظف نهائياً. يطلب تأكيداً صريحاً بكتابة رقمه الوظيفي لأن الحذف
+ * يُزيل معه كل سجلاته (حضور، نماذج، رواتب، جدول دوام، بصمة الوجه).
+ */
+async function removeEmployee(employee) {
+  const typed = window.prompt(
+    `حذف ${employee.fullName} نهائياً سيحذف كل سجلاته المرتبطة (الحضور، النماذج،` +
+      ` الرواتب، جدول الدوام، بصمة الوجه) ولا يمكن التراجع.\n` +
+      `للتأكيد اكتب الرقم الوظيفي: ${employee.employeeCode}`,
+    "",
+  );
+
+  if (typed === null) return;
+  if (typed.trim() !== employee.employeeCode) {
+    setAlert(el("people-result"), "أُلغي الحذف: الرقم الوظيفي غير مطابق.", "error");
+    return;
+  }
+
+  const reason = (window.prompt("سبب الحذف (يُسجَّل في سجل التدقيق):", "") ?? "").trim();
+
+  const result = await api(`/employees/${employee.id}`, {
+    method: "DELETE",
+    body: { reason: reason || "حذف ملف الموظف" },
+  });
+
+  setAlert(
+    el("people-result"),
+    result.ok ? (result.message ?? "تم حذف الموظف.") : (result.error ?? "تعذّر حذف الموظف"),
+    result.ok ? "ok" : "error",
+  );
+
+  if (!result.ok) return;
+
+  // النموذج قد يكون مفتوحاً على الموظف المحذوف
+  if (editingEmployeeId === employee.id) editEmployee(null);
+  await ctx.refreshPeople();
+  await refreshSchedules();
+}
+
+/** يضيف أزرار «الملف» و«تعديل» و«الدوام» و«حذف» لصف الموظف في الجدول. */
 export function employeeRowActions(employee) {
   const actions = document.createElement("div");
   actions.className = "row row--tight";
@@ -200,6 +260,15 @@ export function employeeRowActions(employee) {
           el("perm-employee").value = String(employee.id);
           loadPermissions();
         },
+      }),
+    );
+  }
+
+  if (can("employees.write")) {
+    actions.append(
+      button("حذف", {
+        className: "btn btn--danger btn--xs",
+        onClick: () => removeEmployee(employee),
       }),
     );
   }
@@ -243,6 +312,160 @@ function setOffDays(days) {
   }
 }
 
+/* ── أيام الإجازة بتواريخ محدّدة ────────────────────────────── */
+
+/** الشهر الحالي بصيغة `YYYY-MM` — قيمة افتراضية لحقل الشهر. */
+function currentMonthValue() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/** يفصل `YYYY-MM` إلى سنة وشهر رقميين. */
+function splitMonth(value) {
+  const [year, month] = String(value || "").split("-");
+  return { year: Number(year), month: Number(month) };
+}
+
+/** عدد أيام الإجازة الشهرية المسموح حالياً في النموذج. */
+const allowedOffDates = () =>
+  Math.max(0, Math.round(Number(el("schedule-days-off").value || 0)));
+
+/** يظهر/يخفي قسم الأيام الأسبوعية أو التقويم حسب النمط المختار. */
+function applyOffMode() {
+  const mode = el("schedule-off-mode")?.value ?? "weekly";
+  const weekly = el("schedule-weekly-wrap");
+  const dates = el("schedule-dates-wrap");
+  if (weekly) weekly.hidden = mode !== "weekly";
+  if (dates) dates.hidden = mode !== "dates";
+  if (mode === "dates") renderOffCalendar();
+}
+
+/** يحدّث عدّاد «المختار / المسموح». */
+function renderOffDatesCount() {
+  const badge = el("schedule-dates-count");
+  if (!badge) return;
+  const allowed = allowedOffDates();
+  badge.textContent = `${offDatesState.selected.size} / ${allowed}`;
+  badge.classList.toggle("badge--warn", offDatesState.selected.size > allowed);
+}
+
+/** يرسم تقويم الشهر المختار مع تحديد أيام الإجازة. */
+function renderOffCalendar() {
+  const host = el("schedule-off-calendar");
+  if (!host) return;
+
+  const monthInput = el("schedule-off-month");
+  if (monthInput && !monthInput.value) monthInput.value = currentMonthValue();
+  const monthValue = monthInput?.value || currentMonthValue();
+  offDatesState.month = monthValue;
+
+  const { year, month } = splitMonth(monthValue);
+  host.textContent = "";
+
+  if (!Number.isInteger(year) || !Number.isInteger(month)) return;
+
+  for (const day of meta.weekdays.length > 0
+    ? meta.weekdays
+    : [{ label: "الأحد" }, { label: "الاثنين" }, { label: "الثلاثاء" }, { label: "الأربعاء" }, { label: "الخميس" }, { label: "الجمعة" }, { label: "السبت" }]) {
+    const head = document.createElement("span");
+    head.className = "calendar__head";
+    head.textContent = day.label.slice(0, 3);
+    host.append(head);
+  }
+
+  const firstWeekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+  const totalDays = new Date(Date.UTC(year, month, 0)).getUTCDate();
+
+  for (let blank = 0; blank < firstWeekday; blank += 1) {
+    const filler = document.createElement("span");
+    filler.className = "calendar__blank";
+    host.append(filler);
+  }
+
+  for (let day = 1; day <= totalDays; day += 1) {
+    const date = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const weekday = new Date(`${date}T00:00:00Z`).getUTCDay();
+
+    const cell = document.createElement("button");
+    cell.type = "button";
+    cell.className = "calendar__day";
+    if (weekday === 5 || weekday === 6) cell.classList.add("is-weekend");
+    if (offDatesState.selected.has(date)) cell.classList.add("is-selected");
+    cell.textContent = String(day);
+    cell.dataset.offDate = date;
+    cell.title = date;
+
+    cell.addEventListener("click", () => {
+      if (offDatesState.selected.has(date)) {
+        offDatesState.selected.delete(date);
+      } else {
+        if (offDatesState.selected.size >= allowedOffDates()) {
+          setAlert(
+            el("schedule-result"),
+            `عدد أيام الإجازة المسموح ${allowedOffDates()} في الشهر. أزل تاريخاً أو ارفع العدد الشهري.`,
+            "error",
+          );
+          return;
+        }
+        offDatesState.selected.add(date);
+        setAlert(el("schedule-result"), "");
+      }
+      cell.classList.toggle("is-selected", offDatesState.selected.has(date));
+      renderOffDatesCount();
+    });
+
+    host.append(cell);
+  }
+
+  renderOffDatesCount();
+}
+
+/** يقرأ تواريخ إجازة الشهر المعروض من الخادم. */
+async function loadOffDatesMonth() {
+  const employeeId = offDatesState.employeeId ?? Number(el("schedule-employee").value);
+  if (!employeeId) return;
+
+  const monthInput = el("schedule-off-month");
+  if (monthInput && !monthInput.value) monthInput.value = currentMonthValue();
+  const { year, month } = splitMonth(monthInput?.value || currentMonthValue());
+
+  offDatesState.employeeId = employeeId;
+  const result = await api(`/employees/${employeeId}/off-dates?year=${year}&month=${month}`);
+  offDatesState.selected = new Set(result.ok ? (result.offDates ?? []) : []);
+  renderOffCalendar();
+}
+
+/** يحفظ تواريخ إجازة الشهر المعروض. */
+async function saveOffDatesMonth({ silent = false } = {}) {
+  const employeeId = offDatesState.employeeId ?? Number(el("schedule-employee").value);
+  if (!employeeId) return false;
+
+  const { year, month } = splitMonth(
+    el("schedule-off-month")?.value || currentMonthValue(),
+  );
+
+  const result = await api(`/employees/${employeeId}/off-dates`, {
+    method: "PUT",
+    body: {
+      year,
+      month,
+      offDates: [...offDatesState.selected].sort(),
+      reason: "تحديد أيام الإجازة بتواريخها من لوحة الموارد البشرية",
+    },
+  });
+
+  if (!silent || !result.ok) {
+    setAlert(
+      el("schedule-result"),
+      result.ok ? result.message : (result.error ?? "تعذّر حفظ تواريخ الإجازة"),
+      result.ok ? "ok" : "error",
+    );
+  }
+
+  if (result.ok) await refreshSchedules();
+  return result.ok === true;
+}
+
 /** يحمّل جدول موظف في النموذج للتعديل. */
 async function loadScheduleInto(employeeId) {
   el("schedule-employee").value = String(employeeId);
@@ -255,6 +478,7 @@ async function loadScheduleInto(employeeId) {
   el("schedule-break").value = String(schedule?.breakMinutes ?? 0);
   el("schedule-grace").value = String(schedule?.graceMinutes ?? 10);
   el("schedule-days-off").value = String(schedule?.daysOffPerMonth ?? 4);
+  el("schedule-off-mode").value = schedule?.offMode === "dates" ? "dates" : "weekly";
   el("schedule-note").value = schedule?.note ?? "";
   setOffDays(
     schedule?.offDays
@@ -264,6 +488,13 @@ async function loadScheduleInto(employeeId) {
           .map(Number)
       : [],
   );
+
+  offDatesState.employeeId = employeeId;
+  offDatesState.selected = new Set();
+  const monthInput = el("schedule-off-month");
+  if (monthInput && !monthInput.value) monthInput.value = currentMonthValue();
+  applyOffMode();
+  if (schedule?.offMode === "dates") await loadOffDatesMonth();
 
   setAlert(
     el("schedule-result"),
@@ -291,7 +522,9 @@ export async function refreshSchedules() {
         item.dailyHours,
         `${item.graceMinutes} د`,
         item.daysOffPerMonth,
-        item.offDaysLabel,
+        item.offMode === "dates"
+          ? `تواريخ محدّدة (${(item.offDates ?? []).length})`
+          : item.offDaysLabel,
         button("تعديل", {
           className: "btn btn--ghost btn--xs",
           onClick: () => loadScheduleInto(item.employeeId),
@@ -469,6 +702,11 @@ export function initPeopleModule(context) {
 
   el("employee-reset").addEventListener("click", () => editEmployee(null));
 
+  el("employee-delete").addEventListener("click", async () => {
+    if (!editingEmployee) return;
+    await removeEmployee(editingEmployee);
+  });
+
   el("employee-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const submit = el("employee-submit");
@@ -502,19 +740,42 @@ export function initPeopleModule(context) {
     if (event.target.value) loadScheduleInto(Number(event.target.value));
   });
 
+  el("schedule-off-mode").addEventListener("change", applyOffMode);
+  el("schedule-days-off").addEventListener("input", renderOffDatesCount);
+  el("schedule-off-month").addEventListener("change", loadOffDatesMonth);
+  el("schedule-dates-load").addEventListener("click", loadOffDatesMonth);
+  el("schedule-dates-save").addEventListener("click", () => saveOffDatesMonth());
+  el("schedule-dates-clear").addEventListener("click", () => {
+    offDatesState.selected.clear();
+    renderOffCalendar();
+  });
+
   el("schedule-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const employeeId = el("schedule-employee").value;
     if (!employeeId) return;
 
     const daysOffPerMonth = Number(el("schedule-days-off").value);
-    const offDays = selectedOffDays();
-    const expectedWeekly = daysOffPerMonth === 2 ? 1 : 2;
+    const offMode = el("schedule-off-mode").value;
+    const offDays = offMode === "dates" ? [] : selectedOffDays();
 
-    if (offDays.length > 0 && offDays.length !== expectedWeekly) {
+    if (
+      !Number.isInteger(daysOffPerMonth) ||
+      daysOffPerMonth < 0 ||
+      daysOffPerMonth > meta.maxDaysOffPerMonth
+    ) {
       setAlert(
         el("schedule-result"),
-        `اختيار ${daysOffPerMonth} أيام شهرياً يعني تحديد ${expectedWeekly} يوم أسبوعياً بالضبط.`,
+        `عدد أيام الإجازة الشهرية يجب أن يكون رقماً صحيحاً بين 0 و${meta.maxDaysOffPerMonth}.`,
+        "error",
+      );
+      return;
+    }
+
+    if (offMode === "dates" && offDatesState.selected.size > daysOffPerMonth) {
+      setAlert(
+        el("schedule-result"),
+        `اخترت ${offDatesState.selected.size} تاريخاً والعدد المسموح ${daysOffPerMonth} في الشهر.`,
         "error",
       );
       return;
@@ -529,19 +790,29 @@ export function initPeopleModule(context) {
         breakMinutes: Number(el("schedule-break").value || 0),
         graceMinutes: Number(el("schedule-grace").value || 0),
         daysOffPerMonth,
+        offMode,
         offDays,
         note: el("schedule-note").value.trim(),
         reason: "تعريف جدول دوام من لوحة الموارد البشرية",
       },
     });
 
-    setAlert(
-      el("schedule-result"),
-      result.ok ? result.message : (result.error ?? "تعذّر حفظ الجدول"),
-      result.ok ? "ok" : "error",
-    );
+    if (!result.ok) {
+      setAlert(el("schedule-result"), result.error ?? "تعذّر حفظ الجدول", "error");
+      return;
+    }
 
-    if (result.ok) await refreshSchedules();
+    // في نمط التواريخ يُحفظ تقويم الشهر المعروض مع الجدول في خطوة واحدة
+    let message = result.message;
+    if (offMode === "dates") {
+      offDatesState.employeeId = Number(employeeId);
+      const saved = await saveOffDatesMonth({ silent: true });
+      if (!saved) return;
+      message = `${result.message} — وحُفظت تواريخ إجازة الشهر المعروض.`;
+    }
+
+    setAlert(el("schedule-result"), message, "ok");
+    await refreshSchedules();
   });
 
   el("perm-load").addEventListener("click", loadPermissions);

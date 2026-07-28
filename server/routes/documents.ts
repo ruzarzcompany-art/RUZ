@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import { and, asc, desc, eq, gte, inArray, lt, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, lte, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { getDb } from "../../db/index.js";
 import {
@@ -23,6 +23,7 @@ import {
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
+import { DEMO_EMPLOYEE_CODES } from "../demo.js";
 import { PERMISSIONS, hasAnyPermission, requirePermission } from "../rbac.js";
 import { CHECK_IN, CHECK_OUT, EFFECTIVE_STATUSES } from "../shifts.js";
 import {
@@ -41,6 +42,7 @@ import {
   asString,
   round2,
 } from "../validate.js";
+import { getOffDates, monthBounds, offScheduleLabel } from "../schedule.js";
 import { loadCompanySettings } from "./settings.js";
 
 export const documentsRouter = Router();
@@ -260,6 +262,10 @@ async function loadEmployeeBundle(employeeId: number) {
     .where(eq(workSchedules.employeeId, employeeId))
     .limit(1);
 
+  // أيام الراحة قد تكون تواريخ محدّدة بدل أيام أسبوعية متكرّرة
+  const scheduleOffDatesList =
+    schedule && schedule.offMode === "dates" ? await getOffDates(employeeId) : [];
+
   const [department] = row.employee.department
     ? await db
         .select({ name: departments.name })
@@ -321,7 +327,10 @@ async function loadEmployeeBundle(employeeId: number) {
           dailyHours: schedule.dailyHours,
           breakMinutes: schedule.breakMinutes,
           daysOffPerMonth: schedule.daysOffPerMonth,
+          offMode: schedule.offMode,
           offDays: schedule.offDays,
+          offDates: scheduleOffDatesList,
+          offDaysLabel: offScheduleLabel({ ...schedule, offDates: scheduleOffDatesList }),
           graceMinutes: schedule.graceMinutes,
         }
       : null,
@@ -441,7 +450,7 @@ async function loadAttendanceSheet(
       )
       .orderBy(asc(attendanceLogs.serverTime)),
     db
-      .select({ offDays: workSchedules.offDays })
+      .select({ offDays: workSchedules.offDays, offMode: workSchedules.offMode })
       .from(workSchedules)
       .where(eq(workSchedules.employeeId, employeeId))
       .limit(1),
@@ -453,6 +462,12 @@ async function loadAttendanceSheet(
       .map((part) => Number.parseInt(part.trim(), 10))
       .filter((value) => Number.isInteger(value)),
   );
+
+  // نمط التواريخ المحدّدة: أيام الراحة تُقرأ من تقويم الموظف لا من يوم الأسبوع
+  const offDateSet =
+    schedule?.offMode === "dates"
+      ? new Set(await getOffDates(employeeId, monthBounds(year, monthNumber)))
+      : new Set<string>();
 
   const byDate = new Map<
     string,
@@ -514,7 +529,7 @@ async function loadAttendanceSheet(
       checkIn: entry?.checkIn ? timeText(entry.checkIn) : null,
       checkOut: entry?.checkOut ? timeText(entry.checkOut) : null,
       hours,
-      isOffDay: offDays.has(weekday),
+      isOffDay: schedule?.offMode === "dates" ? offDateSet.has(date) : offDays.has(weekday),
     });
   }
 
@@ -936,6 +951,135 @@ documentsRouter.get(
         issuedByName: row.issuedByName,
         branchName: row.branchName,
       })),
+    });
+  },
+);
+
+/**
+ * حذف سطر واحد من سجل النماذج المُصدرة.
+ *
+ * السجل تاريخي، لكن التجربة تتركه مليئاً بمستندات وهمية، فيُتاح حذفها لمن
+ * يملك صلاحية قراءة السجل كاملاً مع أثر في التدقيق.
+ */
+documentsRouter.delete(
+  "/documents/issues/:id",
+  requireAuth,
+  requirePermission(PERMISSIONS.documentsReadAll),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const id = asId(req.params.id);
+
+    if (id === null) {
+      res.status(400).json({ ok: false, error: "معرّف غير صالح" });
+      return;
+    }
+
+    const [before] = await db
+      .select()
+      .from(documentIssues)
+      .where(eq(documentIssues.id, id))
+      .limit(1);
+
+    if (!before) {
+      res.status(404).json({ ok: false, error: "السجل غير موجود" });
+      return;
+    }
+
+    await db.delete(documentIssues).where(eq(documentIssues.id, id));
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "document_issue.delete",
+      entityType: "document_issues",
+      entityId: id,
+      before,
+      reason: asString(req.body?.reason, 500) ?? "",
+      ipAddress: clientIp(req),
+    });
+
+    res.json({ ok: true, message: "تم حذف السجل من سجل النماذج المُصدرة." });
+  },
+);
+
+/**
+ * حذف جماعي لسجل النماذج المُصدرة: ما قبل تاريخ، أو ما صدر للحسابات
+ * التجريبية، أو السجل كله. يتطلّب كتابة كلمة التأكيد.
+ */
+documentsRouter.post(
+  "/documents/issues/purge",
+  requireAuth,
+  requirePermission(PERMISSIONS.documentsReadAll),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const scope = asEnum(req.body?.scope, ["before", "demo", "all"] as const) ?? "before";
+    const confirm = asString(req.body?.confirm, 40) ?? "";
+
+    if (confirm !== "حذف" && confirm.toUpperCase() !== "DELETE") {
+      res.status(400).json({
+        ok: false,
+        error: "اكتب كلمة «حذف» للتأكيد — الحذف الجماعي لا يمكن الرجوع عنه.",
+      });
+      return;
+    }
+
+    let where: SQL | undefined;
+    let describe = "كل السجل";
+
+    if (scope === "before") {
+      const before = asDateOnly(req.body?.before);
+      if (before === null) {
+        res.status(400).json({ ok: false, error: "حدّد التاريخ الذي يُحذف ما قبله." });
+        return;
+      }
+      where = lt(documentIssues.issuedAt, new Date(`${before}T00:00:00.000Z`));
+      describe = `قبل ${before}`;
+    } else if (scope === "demo") {
+      const demoRows = await db
+        .select({ id: employees.id })
+        .from(employees)
+        .where(inArray(employees.employeeCode, [...DEMO_EMPLOYEE_CODES]));
+
+      if (demoRows.length === 0) {
+        res.status(400).json({
+          ok: false,
+          error: "لا توجد حسابات تجريبية في القاعدة — لا شيء لحذفه.",
+        });
+        return;
+      }
+
+      where = inArray(
+        documentIssues.employeeId,
+        demoRows.map((row) => row.id),
+      );
+      describe = "مستندات الحسابات التجريبية";
+    }
+
+    const removed = await db
+      .delete(documentIssues)
+      .where(where)
+      .returning({ id: documentIssues.id });
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "document_issue.purge",
+      entityType: "document_issues",
+      before: { scope, describe, ids: removed.map((item) => item.id) },
+      after: { deleted: removed.length },
+      reason: asString(req.body?.reason, 500) ?? `حذف جماعي: ${describe}`,
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      deleted: removed.length,
+      scope,
+      describe,
+      message:
+        removed.length === 0
+          ? `لا توجد سجلات مطابقة (${describe}).`
+          : `تم حذف ${removed.length} سجلاً من سجل النماذج المُصدرة (${describe}).`,
     });
   },
 );

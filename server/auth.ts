@@ -4,7 +4,7 @@ import jwt from "jsonwebtoken";
 import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import { employees, roles, sessions } from "../db/schema.js";
-import { getJwtSecret, getTokenTtlSeconds } from "./config.js";
+import { getJwtSecret, getSessionIdleSeconds, getTokenTtlSeconds } from "./config.js";
 
 export interface AuthenticatedEmployee {
   id: number;
@@ -15,6 +15,8 @@ export interface AuthenticatedEmployee {
   roleId: number | null;
   roleName: string | null;
   tokenId: string;
+  /** هل بصمة الوجه مُفعّلة لهذا الموظف؟ */
+  faceEnabled: boolean;
 }
 
 /** يمرّر الموظف المُوثّق مع الطلب. */
@@ -69,6 +71,21 @@ export async function revokeSession(tokenId: string): Promise<void> {
     .where(eq(sessions.tokenId, tokenId));
 }
 
+/** يبطل كل جلسات موظف (يُستخدم بعد تغيير كلمة المرور أو تعطيل الحساب). */
+export async function revokeAllSessionsForEmployee(employeeId: number): Promise<void> {
+  const db = getDb();
+  await db
+    .update(sessions)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(sessions.employeeId, employeeId), isNull(sessions.revokedAt)));
+}
+
+/**
+ * أقصر فاصل بين تحديثين لعمود `last_seen_at`. الطلبات المتقاربة لا تستحق
+ * كتابة في قاعدة البيانات، فيُحدَّث الطابع مرة كل دقيقة على الأكثر.
+ */
+const LAST_SEEN_WRITE_INTERVAL_MS = 60_000;
+
 function readBearerToken(req: Request): string | null {
   const header = req.headers.authorization;
   if (header?.startsWith("Bearer ")) return header.slice(7).trim();
@@ -103,13 +120,35 @@ export async function requireAuth(
   const db = getDb();
 
   const [session] = await db
-    .select({ id: sessions.id, expiresAt: sessions.expiresAt })
+    .select({
+      id: sessions.id,
+      expiresAt: sessions.expiresAt,
+      lastSeenAt: sessions.lastSeenAt,
+    })
     .from(sessions)
     .where(and(eq(sessions.tokenId, payload.jti), isNull(sessions.revokedAt)))
     .limit(1);
 
   if (!session || session.expiresAt.getTime() <= Date.now()) {
     res.status(401).json({ ok: false, error: "انتهت الجلسة، يرجى تسجيل الدخول مرة أخرى" });
+    return;
+  }
+
+  /**
+   * خروج تلقائي بالخمول: إذا مضت مدة أطول من المسموح دون أي طلب من هذا
+   * التوكن (المستخدم ترك الصفحة أو أغلق التطبيق) تُبطل الجلسة في الخادم —
+   * فلا تكفي إعادة فتح الصفحة بالتوكن القديم للعودة إلى النظام.
+   */
+  const idleMs = getSessionIdleSeconds() * 1000;
+  const idleFor = Date.now() - session.lastSeenAt.getTime();
+
+  if (idleFor > idleMs) {
+    await revokeSession(payload.jti);
+    res.status(401).json({
+      ok: false,
+      error: "تم إنهاء الجلسة تلقائياً بعد فترة خمول، يرجى تسجيل الدخول مرة أخرى",
+      reason: "idle_timeout",
+    });
     return;
   }
 
@@ -122,6 +161,7 @@ export async function requireAuth(
       branchId: employees.branchId,
       roleId: employees.roleId,
       isActive: employees.isActive,
+      faceEnabled: employees.faceEnabled,
       roleName: roles.name,
     })
     .from(employees)
@@ -134,6 +174,13 @@ export async function requireAuth(
     return;
   }
 
+  if (idleFor >= LAST_SEEN_WRITE_INTERVAL_MS) {
+    await db
+      .update(sessions)
+      .set({ lastSeenAt: new Date() })
+      .where(eq(sessions.id, session.id));
+  }
+
   req.employee = {
     id: row.id,
     employeeCode: row.employeeCode,
@@ -143,6 +190,7 @@ export async function requireAuth(
     roleId: row.roleId,
     roleName: row.roleName ?? null,
     tokenId: payload.jti,
+    faceEnabled: row.faceEnabled,
   };
 
   next();

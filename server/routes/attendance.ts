@@ -42,10 +42,14 @@ attendanceRouter.get(
   "/face/status",
   requireAuth,
   async (req: AuthedRequest, res: Response) => {
-    const stored = await readTemplate(req.employee!.id);
+    const employee = req.employee!;
+    const stored = await readTemplate(employee.id);
     res.json({
       ok: true,
-      mode: getFaceMatchMode(),
+      // تعطيل البصمة لموظف بعينه يعلو على الإعداد العام، فالوضع الفعلي `off`
+      mode: employee.faceEnabled ? getFaceMatchMode() : "off",
+      systemMode: getFaceMatchMode(),
+      faceEnabled: employee.faceEnabled,
       threshold: getFaceMatchThreshold(),
       algorithm: FACE_ALGORITHM,
       dimensions: FACE_DIMENSIONS,
