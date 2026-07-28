@@ -7,9 +7,9 @@
  * الراتب) — فإضافة الجداول لا تغيّر أي مسير راتب قائم حتى يُعرَّف جدوله.
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import { getDb } from "../db/index.js";
-import { workSchedules } from "../db/schema.js";
+import { scheduleOffDates, workSchedules } from "../db/schema.js";
 import { round2 } from "./validate.js";
 import { safeTimeZone, wallPartsInZone, zonedWallTimeToUtc } from "./time.js";
 
@@ -20,13 +20,27 @@ export interface WorkSchedule {
   dailyHours: number;
   breakMinutes: number;
   daysOffPerMonth: number;
+  /** `weekly` = أيام أسبوعية متكرّرة، `dates` = تواريخ محدّدة في التقويم */
+  offMode: string;
   offDays: string;
   graceMinutes: number;
   note: string;
+  /**
+   * تواريخ الإجازة المحدّدة (`YYYY-MM-DD`) عندما يكون النمط `dates`.
+   * تبقى اختيارية: الحسابات التي لا تُحمّلها تعود إلى العدد الشهري المُعرَّف.
+   */
+  offDates?: string[];
 }
 
-/** عدد أيام الإجازة الشهرية المسموح اختيارها (متطلّب المواصفة: 2 أو 4). */
-export const ALLOWED_DAYS_OFF = [2, 4] as const;
+/** عدد أيام الإجازة الشهرية المسموح اختيارها من القائمة الجاهزة. */
+export const ALLOWED_DAYS_OFF = [2, 4, 6, 8] as const;
+
+/** الحد الأعلى لعدد أيام الإجازة الشهرية عند الإدخال الحر. */
+export const MAX_DAYS_OFF_PER_MONTH = 15;
+
+/** أنماط تحديد أيام الإجازة. */
+export const OFF_MODES = ["weekly", "dates"] as const;
+export type OffMode = (typeof OFF_MODES)[number];
 
 /** أسماء أيام الأسبوع بترتيب `Date.getDay()` — 0 = الأحد. */
 export const WEEKDAY_NAMES = [
@@ -66,8 +80,108 @@ export function offDaysLabel(value: string | null | undefined): string {
   return days.length === 0 ? "غير محدّدة" : days.map((day) => WEEKDAY_NAMES[day]).join("، ");
 }
 
-/** جدول دوام موظف واحد، أو `null` إن لم يُعرَّف له جدول. */
-export async function getWorkSchedule(employeeId: number): Promise<WorkSchedule | null> {
+/** `YYYY-MM-DD` صالح؟ */
+export function isIsoDate(value: unknown): value is string {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
+}
+
+/** يحوّل `Date` (أو نصاً) إلى `YYYY-MM-DD`. */
+export function toIsoDate(value: string | Date): string {
+  if (typeof value === "string") return value.slice(0, 10);
+  return value.toISOString().slice(0, 10);
+}
+
+/** أول وآخر يوم في شهر ميلادي بصيغة `YYYY-MM-DD`. */
+export function monthBounds(year: number, month: number): { from: string; to: string } {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return {
+    from: `${year}-${pad(month)}-01`,
+    to: `${year}-${pad(month)}-${pad(daysInMonth(year, month))}`,
+  };
+}
+
+/**
+ * تواريخ إجازة موظف واحد داخل مدى تاريخي (اختياري) مرتّبة تصاعدياً.
+ */
+export async function getOffDates(
+  employeeId: number,
+  range?: { from?: string; to?: string },
+): Promise<string[]> {
+  const db = getDb();
+  const filters = [eq(scheduleOffDates.employeeId, employeeId)];
+  if (range?.from) filters.push(gte(scheduleOffDates.offDate, range.from));
+  if (range?.to) filters.push(lte(scheduleOffDates.offDate, range.to));
+
+  const rows = await db
+    .select({ offDate: scheduleOffDates.offDate })
+    .from(scheduleOffDates)
+    .where(and(...filters));
+
+  return rows.map((row) => toIsoDate(row.offDate)).sort();
+}
+
+/**
+ * تواريخ إجازة عدة موظفين مجموعة بمعرّف الموظف — تُستخدم في التقارير حيث
+ * تُقرأ الجداول كلها مرة واحدة.
+ */
+export async function getOffDatesFor(
+  employeeIds: number[],
+  range?: { from?: string; to?: string },
+): Promise<Map<number, string[]>> {
+  const grouped = new Map<number, string[]>();
+  if (employeeIds.length === 0) return grouped;
+
+  const db = getDb();
+  const filters = [inArray(scheduleOffDates.employeeId, employeeIds)];
+  if (range?.from) filters.push(gte(scheduleOffDates.offDate, range.from));
+  if (range?.to) filters.push(lte(scheduleOffDates.offDate, range.to));
+
+  const rows = await db
+    .select({
+      employeeId: scheduleOffDates.employeeId,
+      offDate: scheduleOffDates.offDate,
+    })
+    .from(scheduleOffDates)
+    .where(and(...filters));
+
+  for (const row of rows) {
+    const list = grouped.get(row.employeeId) ?? [];
+    list.push(toIsoDate(row.offDate));
+    grouped.set(row.employeeId, list);
+  }
+
+  for (const list of grouped.values()) list.sort();
+  return grouped;
+}
+
+/** هل الجدول يعتمد تواريخ محدّدة بدل الأيام الأسبوعية؟ */
+export function usesOffDates(schedule: WorkSchedule): boolean {
+  return schedule.offMode === "dates";
+}
+
+/** نص مقروء لأيام الإجازة حسب نمط الجدول — يُستخدم في الجداول والمطبوعات. */
+export function offScheduleLabel(schedule: {
+  offMode?: string | null;
+  offDays?: string | null;
+  offDates?: string[] | null;
+}): string {
+  if (schedule.offMode === "dates") {
+    const dates = schedule.offDates ?? [];
+    return dates.length === 0 ? "تواريخ محدّدة (لم تُختر بعد)" : dates.join("، ");
+  }
+  return offDaysLabel(schedule.offDays);
+}
+
+/**
+ * جدول دوام موظف واحد، أو `null` إن لم يُعرَّف له جدول.
+ *
+ * عندما يكون النمط `dates` تُحمَّل تواريخ الإجازة معه؛ ويمكن حصرها بشهر
+ * واحد عبر `range` لتقليل الصفوف في حسابات الرواتب الشهرية.
+ */
+export async function getWorkSchedule(
+  employeeId: number,
+  range?: { from?: string; to?: string },
+): Promise<WorkSchedule | null> {
   const db = getDb();
   const [row] = await db
     .select({
@@ -77,6 +191,7 @@ export async function getWorkSchedule(employeeId: number): Promise<WorkSchedule 
       dailyHours: workSchedules.dailyHours,
       breakMinutes: workSchedules.breakMinutes,
       daysOffPerMonth: workSchedules.daysOffPerMonth,
+      offMode: workSchedules.offMode,
       offDays: workSchedules.offDays,
       graceMinutes: workSchedules.graceMinutes,
       note: workSchedules.note,
@@ -85,7 +200,10 @@ export async function getWorkSchedule(employeeId: number): Promise<WorkSchedule 
     .where(eq(workSchedules.employeeId, employeeId))
     .limit(1);
 
-  return row ?? null;
+  if (!row) return null;
+  if (row.offMode !== "dates") return row;
+
+  return { ...row, offDates: await getOffDates(employeeId, range) };
 }
 
 /** عدد أيام الشهر الميلادي. */
@@ -95,8 +213,11 @@ export function daysInMonth(year: number, month: number): number {
 
 /**
  * عدد أيام العمل في الشهر = أيام الشهر − أيام الإجازة.
- * تُحسب أيام الإجازة من الأيام المحدَّدة تحديداً إن وُجدت، وإلا من العدد
- * الشهري المُختار (2 أو 4).
+ *
+ * - نمط `dates`  : تُحسب تواريخ الإجازة الواقعة في هذا الشهر إن حُمّلت، وإلا
+ *                  يُستخدم العدد الشهري المُعرَّف.
+ * - نمط `weekly` : تُحسب من الأيام الأسبوعية المحدّدة إن وُجدت، وإلا من العدد
+ *                  الشهري المُعرَّف.
  */
 export function workingDaysInMonth(
   schedule: WorkSchedule,
@@ -104,18 +225,34 @@ export function workingDaysInMonth(
   month: number,
 ): number {
   const total = daysInMonth(year, month);
-  const offDays = parseOffDays(schedule.offDays);
+  const offCount = offDaysCountInMonth(schedule, year, month);
+  return Math.max(0, total - offCount);
+}
 
-  let offCount = schedule.daysOffPerMonth;
-  if (offDays.length > 0) {
-    offCount = 0;
-    for (let day = 1; day <= total; day += 1) {
-      const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
-      if (offDays.includes(weekday)) offCount += 1;
-    }
+/** عدد أيام الإجازة الفعلية في شهر معيّن حسب نمط الجدول. */
+export function offDaysCountInMonth(
+  schedule: WorkSchedule,
+  year: number,
+  month: number,
+): number {
+  const total = daysInMonth(year, month);
+
+  if (usesOffDates(schedule)) {
+    if (!schedule.offDates) return Math.min(total, Math.max(0, schedule.daysOffPerMonth));
+    const { from, to } = monthBounds(year, month);
+    const inMonth = schedule.offDates.filter((date) => date >= from && date <= to);
+    return inMonth.length;
   }
 
-  return Math.max(0, total - offCount);
+  const offDays = parseOffDays(schedule.offDays);
+  if (offDays.length === 0) return Math.min(total, Math.max(0, schedule.daysOffPerMonth));
+
+  let offCount = 0;
+  for (let day = 1; day <= total; day += 1) {
+    const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+    if (offDays.includes(weekday)) offCount += 1;
+  }
+  return offCount;
 }
 
 /** الساعات المتوقّعة في الشهر حسب الجدول (ساعات يومية × أيام العمل). */
@@ -129,9 +266,17 @@ export function expectedMonthlyHours(
 
 /** هل هذا التاريخ (بتوقيت الفرع) يوم إجازة حسب الجدول؟ */
 export function isOffDay(schedule: WorkSchedule, instant: Date, timeZone: string): boolean {
+  const parts = wallPartsInZone(instant, timeZone);
+
+  if (usesOffDates(schedule)) {
+    if (!schedule.offDates || schedule.offDates.length === 0) return false;
+    const pad = (value: number) => String(value).padStart(2, "0");
+    const iso = `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`;
+    return schedule.offDates.includes(iso);
+  }
+
   const offDays = parseOffDays(schedule.offDays);
   if (offDays.length === 0) return false;
-  const parts = wallPartsInZone(instant, timeZone);
   const weekday = new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay();
   return offDays.includes(weekday);
 }

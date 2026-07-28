@@ -3,7 +3,7 @@
  * طلبات /api لا تُخزَّن أبداً — تسجيل الحضور يجب أن يصل الخادم فعلياً.
  */
 
-const CACHE = "restaurant-hr-shell-v4";
+const CACHE = "restaurant-hr-shell-v6";
 const SHELL = [
   "/app/",
   "/app/index.html",
@@ -12,6 +12,7 @@ const SHELL = [
   "/app/app.js",
   "/app/face.js",
   "/app/forms-ui.js",
+  "/app/map-picker.js",
   "/app/icon.svg",
   "/app/manifest.webmanifest",
   "/app/admin/",

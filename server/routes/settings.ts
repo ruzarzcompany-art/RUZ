@@ -233,7 +233,10 @@ settingsRouter.post(
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
-    const dataUrl = typeof req.body?.dataUrl === "string" ? req.body.dataUrl.trim() : "";
+    // الواجهة ترسل `logoDataUrl`؛ نقبل `dataUrl` أيضاً للتوافق مع أي نداء قديم
+    const rawDataUrl = req.body?.logoDataUrl ?? req.body?.dataUrl;
+    const dataUrl =
+      typeof rawDataUrl === "string" ? rawDataUrl.replace(/\s+/g, "") : "";
 
     if (!/^data:image\/(png|jpeg|jpg|webp|svg\+xml);base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) {
       res.status(400).json({

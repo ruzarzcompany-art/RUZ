@@ -15,6 +15,140 @@ export function setToken(token) {
 
 export const el = (id) => document.getElementById(id);
 
+/* ── انتهاء الجلسة ─────────────────────────────────────────── */
+
+/** آخر لحظة تفاعل حقيقي من المستخدم — أساس مؤقّت الخمول. */
+export const ACTIVITY_KEY = "restaurant-hr.last-activity";
+
+/** مدة الخمول الافتراضية إن لم يُحدّدها الخادم (تُطابق `SESSION_IDLE_SECONDS`). */
+export const DEFAULT_IDLE_SECONDS = 15 * 60;
+
+export const IDLE_MESSAGE =
+  "تم إنهاء الجلسة تلقائياً بعد فترة خمول أو مغادرة الصفحة، يرجى تسجيل الدخول مرة أخرى";
+
+let sessionExpiredHandler = null;
+let expiring = false;
+
+/** يُسجّل ما تفعله الشاشة عند انتهاء الجلسة (خمول محلي أو رفض من الخادم). */
+export function onSessionExpired(handler) {
+  sessionExpiredHandler = handler;
+}
+
+/**
+ * يُطلق إجراء انتهاء الجلسة مرة واحدة فقط — كل نداءات API المتوازية تصل
+ * بـ401 في نفس اللحظة، فلا نريد إعادة التوجيه أو الرسالة أكثر من مرة.
+ */
+export function endSession(message = IDLE_MESSAGE) {
+  if (expiring) return;
+  expiring = true;
+  stopIdleWatch();
+  clearActivity();
+  setToken(null);
+  try {
+    sessionExpiredHandler?.(message);
+  } finally {
+    // نسمح بإطلاقه مرة أخرى بعد تسجيل دخول جديد
+    setTimeout(() => {
+      expiring = false;
+    }, 1500);
+  }
+}
+
+export function markActivity() {
+  try {
+    localStorage.setItem(ACTIVITY_KEY, String(Date.now()));
+  } catch {
+    /* التخزين المحلي ممنوع (وضع خاص) — يبقى المؤقّت داخل الصفحة فقط */
+  }
+}
+
+export function clearActivity() {
+  localStorage.removeItem(ACTIVITY_KEY);
+}
+
+function readActivity() {
+  const value = Number(localStorage.getItem(ACTIVITY_KEY));
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/**
+ * هل تجاوزت فترة الغياب حدّ الخمول؟ تُستخدم عند إقلاع الصفحة: من أغلق
+ * الصفحة أو تركها مفتوحة دون تفاعل يجد نفسه خارج النظام عند العودة.
+ */
+export function idleExceeded(idleSeconds = DEFAULT_IDLE_SECONDS) {
+  const last = readActivity();
+  return last > 0 && Date.now() - last > idleSeconds * 1000;
+}
+
+let idleWatch = null;
+
+/**
+ * مؤقّت الخروج التلقائي. يعتمد على تفاعل المستخدم فقط (لا على نداءات
+ * الخلفية) فلا تبقى الجلسة مفتوحة بسبب تحديث تلقائي، ويفحص الحالة عند
+ * العودة إلى التبويب لأن المؤقّتات تُخفَّض في التبويبات المخفية.
+ *
+ * الخادم يفرض نفس المدة على `sessions.last_seen_at`، وهذا المؤقّت هو
+ * الطبقة الظاهرة للمستخدم فقط.
+ */
+export function startIdleWatch({
+  idleSeconds = DEFAULT_IDLE_SECONDS,
+  warnSeconds = 60,
+  onWarn,
+  onExpire,
+} = {}) {
+  stopIdleWatch();
+
+  const idleMs = Math.max(60, Number(idleSeconds) || DEFAULT_IDLE_SECONDS) * 1000;
+  const events = ["pointerdown", "keydown", "wheel", "touchstart"];
+  let warned = false;
+
+  const touch = () => {
+    markActivity();
+    if (warned) {
+      warned = false;
+      onWarn?.(null);
+    }
+  };
+
+  const check = () => {
+    const last = readActivity() || Date.now();
+    const idleFor = Date.now() - last;
+
+    if (idleFor >= idleMs) {
+      onExpire?.();
+      return;
+    }
+
+    const remaining = Math.ceil((idleMs - idleFor) / 1000);
+    if (remaining <= warnSeconds) {
+      warned = true;
+      onWarn?.(remaining);
+    }
+  };
+
+  const onVisible = () => {
+    if (document.visibilityState === "visible") check();
+  };
+
+  markActivity();
+  for (const name of events) window.addEventListener(name, touch, { passive: true });
+  document.addEventListener("visibilitychange", onVisible);
+  const interval = setInterval(check, 10_000);
+
+  idleWatch = () => {
+    clearInterval(interval);
+    for (const name of events) window.removeEventListener(name, touch);
+    document.removeEventListener("visibilitychange", onVisible);
+  };
+}
+
+export function stopIdleWatch() {
+  idleWatch?.();
+  idleWatch = null;
+}
+
+/* ── نداء الـAPI ───────────────────────────────────────────── */
+
 export async function api(path, { method = "GET", body } = {}) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -39,7 +173,22 @@ export async function api(path, { method = "GET", body } = {}) {
     payload = { ok: false, error: `تعذّر قراءة رد الخادم (${response.status})` };
   }
 
+  // الخادم أنهى الجلسة لخمولها: نُخرج المستخدم فوراً بدل تركه أمام أخطاء متتالية
+  if (response.status === 401 && payload?.reason === "idle_timeout") {
+    endSession(payload.error ?? IDLE_MESSAGE);
+  }
+
   return { status: response.status, ...payload };
+}
+
+let configPromise = null;
+
+/** إعدادات التشغيل من الخادم (`GET /api/config`) — تُقرأ مرة واحدة. */
+export function loadRuntimeConfig() {
+  if (!configPromise) {
+    configPromise = api("/config").then((result) => (result.ok ? result : {}));
+  }
+  return configPromise;
 }
 
 export function setAlert(node, message, kind) {
@@ -216,6 +365,10 @@ export function openDocument(docKey, options = {}) {
   window.open(`/app/print/?${query.toString()}`, "_blank");
 }
 
-export function requireLogin() {
-  window.location.href = "/app/";
+/**
+ * يعود بالمستخدم إلى شاشة الدخول. `reason` يمرّ في الرابط (`?session=idle`)
+ * لتعرض شاشة الدخول سبب الخروج بدل إرجاعه بلا تفسير.
+ */
+export function requireLogin(reason) {
+  window.location.href = reason ? `/app/?session=${encodeURIComponent(reason)}` : "/app/";
 }

@@ -266,6 +266,7 @@ export async function loadActions() {
 function renderIssues() {
   const body = el("doc-issues-table").querySelector("tbody");
   body.textContent = "";
+  const canClean = state.can("documents.read_all");
 
   for (const issue of state.issues) {
     body.append(
@@ -275,11 +276,79 @@ function renderIssues() {
         issue.employeeName ? `${issue.employeeCode ?? ""} — ${issue.employeeName}` : "—",
         issue.branchName ?? "—",
         issue.issuedByName ?? "—",
+        canClean
+          ? button("حذف", {
+              className: "btn btn--danger btn--xs",
+              onClick: () => removeIssue(issue),
+            })
+          : "",
       ]),
     );
   }
 
   el("doc-issues-empty").hidden = state.issues.length > 0;
+  el("doc-issues-purge").hidden = !canClean;
+}
+
+/** حذف سطر واحد من السجل — للمستندات التجريبية أو الخاطئة. */
+async function removeIssue(issue) {
+  if (!window.confirm(`حذف سجل «${issue.docTitle}» الصادر في ${formatDateTime(issue.issuedAt)}؟`)) {
+    return;
+  }
+
+  const reason = window.prompt("سبب الحذف (يُسجَّل في التدقيق):", "") ?? "";
+  const result = await api(`/documents/issues/${issue.id}`, {
+    method: "DELETE",
+    body: { reason },
+  });
+
+  setAlert(
+    el("doc-issues-result"),
+    result.ok ? result.message : (result.error ?? "تعذّر الحذف"),
+    result.ok ? "ok" : "error",
+  );
+
+  if (result.ok) await loadIssues();
+}
+
+/** حذف جماعي للسجل: ما قبل تاريخ، أو مستندات الحسابات التجريبية، أو الكل. */
+async function purgeIssues() {
+  const scope = el("doc-issues-purge-scope").value;
+  const before = el("doc-issues-purge-before").value;
+
+  if (scope === "before" && !before) {
+    setAlert(el("doc-issues-result"), "حدّد التاريخ الذي يُحذف ما قبله.", "error");
+    return;
+  }
+
+  const confirmed = window.prompt(
+    "حذف جماعي لسجل النماذج المُصدرة — العملية نهائية.\nاكتب كلمة «حذف» للتأكيد:",
+    "",
+  );
+  if (confirmed === null) return;
+
+  const reason = window.prompt("سبب الحذف (يُسجَّل في التدقيق):", "تنظيف سجل التجربة") ?? "";
+  const runner = el("doc-issues-purge-run");
+  setBusy(runner, true);
+
+  const result = await api("/documents/issues/purge", {
+    method: "POST",
+    body: {
+      scope,
+      ...(scope === "before" ? { before } : {}),
+      confirm: confirmed.trim(),
+      reason,
+    },
+  });
+
+  setBusy(runner, false);
+  setAlert(
+    el("doc-issues-result"),
+    result.ok ? result.message : (result.error ?? "تعذّر الحذف"),
+    result.ok ? "ok" : "error",
+  );
+
+  if (result.ok) await loadIssues();
 }
 
 export async function loadIssues() {
@@ -332,6 +401,11 @@ export function initDocumentsModule({ can }) {
   el("disc-filter-run").addEventListener("click", loadActions);
 
   el("doc-issues-run").addEventListener("click", loadIssues);
+  el("doc-issues-purge-run").addEventListener("click", purgeIssues);
+  el("doc-issues-purge-scope").addEventListener("change", () => {
+    el("doc-issues-purge-date-wrap").hidden = el("doc-issues-purge-scope").value !== "before";
+    setAlert(el("doc-issues-result"), "");
+  });
 
   el("doc-month").value = todayIso().slice(0, 7);
   el("disc-date").value = todayIso();

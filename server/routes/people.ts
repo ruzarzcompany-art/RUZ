@@ -9,15 +9,18 @@
  */
 
 import { Router, type Response } from "express";
-import { and, asc, eq, ne } from "drizzle-orm";
+import { and, asc, eq, gte, lte, ne } from "drizzle-orm";
 import { getDb } from "../../db/index.js";
 import {
   branches,
   employeePermissionOverrides,
   employees,
   faceTemplates,
+  permissions as permissionsTable,
+  rolePermissions,
   roles,
   salaryDefinitions,
+  scheduleOffDates,
   workSchedules,
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
@@ -36,8 +39,14 @@ import {
 } from "../rbac.js";
 import {
   ALLOWED_DAYS_OFF,
+  getOffDates,
+  getOffDatesFor,
+  isIsoDate,
   isTimeOfDay,
-  offDaysLabel,
+  MAX_DAYS_OFF_PER_MONTH,
+  monthBounds,
+  OFF_MODES,
+  offScheduleLabel,
   parseOffDays,
   WEEKDAY_NAMES,
 } from "../schedule.js";
@@ -103,6 +112,16 @@ async function loadEmployeeFile(employeeId: number) {
     .where(eq(workSchedules.employeeId, employeeId))
     .limit(1);
 
+  // تواريخ إجازة الشهر الحالي فقط — تكفي للعرض في الملف بلا قوائم طويلة
+  const today = new Date();
+  const scheduleOffDatesList =
+    schedule && schedule.offMode === "dates"
+      ? await getOffDates(
+          employeeId,
+          monthBounds(today.getUTCFullYear(), today.getUTCMonth() + 1),
+        )
+      : [];
+
   const [face] = await db
     .select({ enrolledAt: faceTemplates.enrolledAt })
     .from(faceTemplates)
@@ -126,7 +145,11 @@ async function loadEmployeeFile(employeeId: number) {
     },
     branchManager: manager,
     schedule: schedule
-      ? { ...schedule, offDaysLabel: offDaysLabel(schedule.offDays) }
+      ? {
+          ...schedule,
+          offDates: scheduleOffDatesList,
+          offDaysLabel: offScheduleLabel({ ...schedule, offDates: scheduleOffDatesList }),
+        }
       : null,
     faceEnrolledAt: face?.enrolledAt ?? null,
   };
@@ -187,6 +210,7 @@ interface ProfileInput {
   roleId?: number | null;
   hiredAt?: Date | null;
   isActive?: boolean;
+  faceEnabled?: boolean;
 }
 
 /** يقرأ حقول الملف من الجسم — يتجاهل ما لم يُرسَل حتى يصلح للتعديل الجزئي. */
@@ -234,6 +258,10 @@ function readProfile(body: unknown): ProfileInput {
 
   const isActive = asBool(source.isActive);
   if (isActive !== null) profile.isActive = isActive;
+
+  // علامة تفعيل بصمة الوجه لهذا الموظف (checkbox في شاشة الموظفين)
+  const faceEnabled = asBool(source.faceEnabled);
+  if (faceEnabled !== null) profile.faceEnabled = faceEnabled;
 
   return profile;
 }
@@ -313,6 +341,7 @@ peopleRouter.post(
         roleId: profile.roleId ?? null,
         hiredAt: profile.hiredAt ?? new Date(),
         isActive: profile.isActive ?? true,
+        faceEnabled: profile.faceEnabled ?? true,
         passwordHash: hashPassword(password || getSeedPassword()),
         mustChangePassword: !password,
       })
@@ -418,6 +447,203 @@ peopleRouter.patch(
   },
 );
 
+/* ── حذف الموظف ───────────────────────────────────────────────── */
+
+/**
+ * حذف موظف نهائياً من ملف الموظفين.
+ *
+ * كل المراجع إلى `employees.id` معرّفة بـ`cascade` أو `set null`، فحذف الصف
+ * يُزيل معه الحضور والنماذج والرواتب وجدول الدوام وقوالب الوجه والصلاحيات.
+ * يُمنع حذف الحساب المنفّذ نفسه، ويُمنع حذف آخر حساب يملك صلاحية إدارة
+ * الموظفين حتى لا يُقفل النظام على نفسه. تُلتقط صورة الصف في سجل التدقيق قبل
+ * الحذف ليبقى أثر للعملية.
+ */
+peopleRouter.delete(
+  "/employees/:id",
+  requireAuth,
+  requirePermission(PERMISSIONS.employeesWrite),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const employeeId = asId(req.params.id);
+
+    if (employeeId === null) {
+      res.status(400).json({ ok: false, error: "معرّف الموظف غير صالح" });
+      return;
+    }
+
+    if (employeeId === actor.id) {
+      res.status(400).json({ ok: false, error: "لا يمكنك حذف حسابك الخاص." });
+      return;
+    }
+
+    const [before] = await db
+      .select()
+      .from(employees)
+      .where(eq(employees.id, employeeId))
+      .limit(1);
+
+    if (!before) {
+      res.status(404).json({ ok: false, error: "الموظف غير موجود" });
+      return;
+    }
+
+    // لا نسمح بحذف آخر حساب يملك صلاحية إدارة الموظفين حتى لا يُقفل النظام
+    const managers = await db
+      .select({ id: employees.id })
+      .from(employees)
+      .innerJoin(rolePermissions, eq(rolePermissions.roleId, employees.roleId))
+      .innerJoin(permissionsTable, eq(permissionsTable.id, rolePermissions.permissionId))
+      .where(
+        and(
+          eq(permissionsTable.code, PERMISSIONS.employeesWrite),
+          eq(employees.isActive, true),
+          ne(employees.id, employeeId),
+        ),
+      );
+
+    if (managers.length === 0) {
+      res.status(409).json({
+        ok: false,
+        error:
+          "لا يمكن حذف آخر حساب يملك صلاحية إدارة الموظفين. عيّن حساباً آخر بهذه الصلاحية أولاً.",
+      });
+      return;
+    }
+
+    const reason = asString(req.body?.reason, 500) ?? "حذف ملف الموظف";
+    const { passwordHash: _hidden, ...safeBefore } = before;
+
+    // سجل التدقيق أولاً: `audit_logs.actor_employee_id` هو set null، فلا يضيع الأثر
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "employee.delete",
+      entityType: "employees",
+      entityId: employeeId,
+      before: safeBefore,
+      reason,
+      ipAddress: clientIp(req),
+    });
+
+    await db.delete(employees).where(eq(employees.id, employeeId));
+
+    res.json({
+      ok: true,
+      message: `تم حذف ${before.fullName} وكل سجلاته المرتبطة.`,
+      employeeId,
+    });
+  },
+);
+
+/* ── تفعيل بصمة الوجه ─────────────────────────────────────────── */
+
+/**
+ * تفعيل/تعطيل بصمة الوجه لموظف واحد — يقابل علامة الصح في جدول الموظفين.
+ * تعطيلها يعني أن الموظف يسجّل حضوره دون تحقق بالوجه مهما كان الإعداد العام.
+ */
+peopleRouter.patch(
+  "/employees/:id/face-enabled",
+  requireAuth,
+  requirePermission(PERMISSIONS.employeesWrite),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const employeeId = asId(req.params.id);
+    const enabled = asBool(req.body?.enabled ?? req.body?.faceEnabled);
+
+    if (employeeId === null) {
+      res.status(400).json({ ok: false, error: "معرّف الموظف غير صالح" });
+      return;
+    }
+
+    if (enabled === null) {
+      res.status(400).json({ ok: false, error: "قيمة التفعيل مطلوبة (صح/خطأ)" });
+      return;
+    }
+
+    const [before] = await db
+      .select({
+        id: employees.id,
+        fullName: employees.fullName,
+        faceEnabled: employees.faceEnabled,
+      })
+      .from(employees)
+      .where(eq(employees.id, employeeId))
+      .limit(1);
+
+    if (!before) {
+      res.status(404).json({ ok: false, error: "الموظف غير موجود" });
+      return;
+    }
+
+    await db
+      .update(employees)
+      .set({ faceEnabled: enabled, updatedAt: new Date() })
+      .where(eq(employees.id, employeeId));
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: enabled ? "face.enable" : "face.disable",
+      entityType: "employees",
+      entityId: employeeId,
+      before: { faceEnabled: before.faceEnabled },
+      after: { faceEnabled: enabled },
+      reason: asString(req.body?.reason, 500) ?? "تغيير تفعيل بصمة الوجه",
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      message: enabled
+        ? `تم تفعيل بصمة الوجه لـ${before.fullName}`
+        : `تم تعطيل بصمة الوجه لـ${before.fullName}`,
+      employeeId,
+      faceEnabled: enabled,
+    });
+  },
+);
+
+/** تفعيل/تعطيل بصمة الوجه لكل الموظفين دفعة واحدة. */
+peopleRouter.post(
+  "/employees/face-enabled/bulk",
+  requireAuth,
+  requirePermission(PERMISSIONS.employeesWrite),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const enabled = asBool(req.body?.enabled);
+
+    if (enabled === null) {
+      res.status(400).json({ ok: false, error: "قيمة التفعيل مطلوبة (صح/خطأ)" });
+      return;
+    }
+
+    const updated = await db
+      .update(employees)
+      .set({ faceEnabled: enabled, updatedAt: new Date() })
+      .where(ne(employees.faceEnabled, enabled))
+      .returning({ id: employees.id });
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: enabled ? "face.enable_all" : "face.disable_all",
+      entityType: "employees",
+      after: { faceEnabled: enabled, affected: updated.length },
+      reason: asString(req.body?.reason, 500) ?? "تغيير جماعي لتفعيل بصمة الوجه",
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      message: enabled
+        ? `تم تفعيل بصمة الوجه لـ${updated.length} موظفاً`
+        : `تم تعطيل بصمة الوجه لـ${updated.length} موظفاً`,
+      affected: updated.length,
+      faceEnabled: enabled,
+    });
+  },
+);
+
 /* ── جدول الدوام ──────────────────────────────────────────────── */
 
 /** بيانات مساعدة للواجهة: أيام الأسبوع وعدد أيام الإجازة المسموحة. */
@@ -426,6 +652,11 @@ peopleRouter.get("/schedules/meta", requireAuth, (_req: AuthedRequest, res: Resp
     ok: true,
     weekdays: WEEKDAY_NAMES.map((label, value) => ({ value, label })),
     allowedDaysOff: [...ALLOWED_DAYS_OFF],
+    maxDaysOffPerMonth: MAX_DAYS_OFF_PER_MONTH,
+    offModes: [
+      { value: "weekly", label: "أيام أسبوعية متكرّرة" },
+      { value: "dates", label: "تواريخ محدّدة في الشهر" },
+    ],
   });
 });
 
@@ -453,11 +684,20 @@ peopleRouter.get(
       .where(eq(workSchedules.employeeId, employeeId))
       .limit(1);
 
+    if (!schedule) {
+      res.json({ ok: true, schedule: null });
+      return;
+    }
+
+    const offDates = schedule.offMode === "dates" ? await getOffDates(employeeId) : [];
+
     res.json({
       ok: true,
-      schedule: schedule
-        ? { ...schedule, offDaysLabel: offDaysLabel(schedule.offDays) }
-        : null,
+      schedule: {
+        ...schedule,
+        offDates,
+        offDaysLabel: offScheduleLabel({ ...schedule, offDates }),
+      },
     });
   },
 );
@@ -479,14 +719,23 @@ peopleRouter.get(
       .leftJoin(employees, eq(workSchedules.employeeId, employees.id))
       .orderBy(asc(employees.employeeCode));
 
+    const dateModeIds = rows
+      .filter((row) => row.schedule.offMode === "dates")
+      .map((row) => row.schedule.employeeId);
+    const offDatesByEmployee = await getOffDatesFor(dateModeIds);
+
     res.json({
       ok: true,
-      items: rows.map((row) => ({
-        ...row.schedule,
-        offDaysLabel: offDaysLabel(row.schedule.offDays),
-        employeeCode: row.employeeCode,
-        fullName: row.fullName,
-      })),
+      items: rows.map((row) => {
+        const offDates = offDatesByEmployee.get(row.schedule.employeeId) ?? [];
+        return {
+          ...row.schedule,
+          offDates,
+          offDaysLabel: offScheduleLabel({ ...row.schedule, offDates }),
+          employeeCode: row.employeeCode,
+          fullName: row.fullName,
+        };
+      }),
     });
   },
 );
@@ -524,26 +773,46 @@ peopleRouter.put(
     }
 
     const daysOffPerMonth = asNumber(req.body?.daysOffPerMonth);
-    if (daysOffPerMonth === null || !ALLOWED_DAYS_OFF.includes(daysOffPerMonth as 2 | 4)) {
+    if (
+      daysOffPerMonth === null ||
+      !Number.isInteger(daysOffPerMonth) ||
+      daysOffPerMonth < 0 ||
+      daysOffPerMonth > MAX_DAYS_OFF_PER_MONTH
+    ) {
       res.status(400).json({
         ok: false,
-        error: "عدد أيام الإجازة الشهرية يجب أن يكون 2 أو 4.",
+        error: `عدد أيام الإجازة الشهرية يجب أن يكون رقماً صحيحاً بين 0 و${MAX_DAYS_OFF_PER_MONTH}.`,
       });
       return;
     }
+
+    const offMode = asEnum(req.body?.offMode, OFF_MODES) ?? "weekly";
 
     const requestedOffDays = Array.isArray(req.body?.offDays)
       ? parseOffDays((req.body.offDays as unknown[]).join(","))
       : parseOffDays(asString(req.body?.offDays, 40));
 
-    // أيام الإجازة المحدَّدة أسبوعياً = العدد الشهري ÷ 4 أسابيع تقريباً
-    const expectedWeeklyOff = daysOffPerMonth === 2 ? 1 : 2;
-    if (requestedOffDays.length > 0 && requestedOffDays.length !== expectedWeeklyOff) {
+    // في نمط التواريخ لا تُفرض أيام أسبوعية: التواريخ تُدار من مسار مستقل
+    if (offMode === "dates" && requestedOffDays.length > 0) {
       res.status(400).json({
         ok: false,
-        error: `اختيار ${daysOffPerMonth} أيام إجازة شهرياً يعني تحديد ${expectedWeeklyOff} يوم أسبوعياً بالضبط.`,
+        error: "في نمط التواريخ المحدّدة تُختار أيام الإجازة بتاريخها لا بيوم الأسبوع.",
       });
       return;
+    }
+
+    // في النمط الأسبوعي: الأيام المحدّدة (إن وُجدت) يجب أن تُنتج عدداً شهرياً معقولاً
+    if (offMode === "weekly" && requestedOffDays.length > 0) {
+      const monthlyFromWeekly = requestedOffDays.length * 4;
+      if (Math.abs(monthlyFromWeekly - daysOffPerMonth) > 3) {
+        res.status(400).json({
+          ok: false,
+          error:
+            `تحديد ${requestedOffDays.length} يوم أسبوعياً يعني نحو ${monthlyFromWeekly} أيام شهرياً،` +
+            ` وهو بعيد عن ${daysOffPerMonth}. عدّل العدد الشهري أو الأيام، أو استخدم نمط التواريخ المحدّدة.`,
+        });
+        return;
+      }
     }
 
     const [employee] = await db
@@ -570,6 +839,7 @@ peopleRouter.put(
       dailyHours,
       breakMinutes: Math.max(0, Math.round(asNumber(req.body?.breakMinutes) ?? 0)),
       daysOffPerMonth: Math.round(daysOffPerMonth),
+      offMode,
       offDays: requestedOffDays.join(","),
       graceMinutes: Math.max(0, Math.round(asNumber(req.body?.graceMinutes) ?? 10)),
       note: asString(req.body?.note, 500) ?? "",
@@ -594,10 +864,196 @@ peopleRouter.put(
       ipAddress: clientIp(req),
     });
 
+    const offDates = offMode === "dates" ? await getOffDates(employeeId) : [];
+
     res.json({
       ok: true,
       message: `تم حفظ جدول دوام ${employee.fullName}`,
-      schedule: { ...saved, offDaysLabel: offDaysLabel(saved.offDays) },
+      schedule: {
+        ...saved,
+        offDates,
+        offDaysLabel: offScheduleLabel({ ...saved, offDates }),
+      },
+    });
+  },
+);
+
+/* ── أيام الإجازة بتواريخ محدّدة ───────────────────────────────── */
+
+/**
+ * تواريخ إجازة موظف. يمكن حصرها بشهر (`?year=&month=`) لعرض تقويم الشهر،
+ * أو قراءتها كلها بلا معاملات.
+ */
+peopleRouter.get(
+  "/employees/:id/off-dates",
+  requireAuth,
+  async (req: AuthedRequest, res: Response) => {
+    const employeeId = asId(req.params.id);
+
+    if (employeeId === null) {
+      res.status(400).json({ ok: false, error: "معرّف الموظف غير صالح" });
+      return;
+    }
+
+    const isSelf = employeeId === req.employee!.id;
+    if (!isSelf && !(await hasAnyPermission(req, [PERMISSIONS.employeesRead]))) {
+      res.status(403).json({ ok: false, error: "لا تملك صلاحية عرض إجازات هذا الموظف" });
+      return;
+    }
+
+    const year = asNumber(req.query?.year);
+    const month = asNumber(req.query?.month);
+    const scoped =
+      year !== null && month !== null && month >= 1 && month <= 12
+        ? monthBounds(Math.round(year), Math.round(month))
+        : undefined;
+
+    const dates = await getOffDates(employeeId, scoped);
+    res.json({ ok: true, employeeId, offDates: dates, month: scoped ?? null });
+  },
+);
+
+/**
+ * حفظ تواريخ إجازة موظف لشهر واحد. يستبدل تواريخ ذلك الشهر بالمُرسلة فقط،
+ * فلا تُمسّ الأشهر الأخرى. عدد التواريخ لا يتجاوز عدد أيام الإجازة الشهرية
+ * المُعرَّف في الجدول.
+ */
+peopleRouter.put(
+  "/employees/:id/off-dates",
+  requireAuth,
+  requireAnyPermission(PERMISSIONS.schedulesManage, PERMISSIONS.employeesWrite),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const employeeId = asId(req.params.id);
+
+    if (employeeId === null) {
+      res.status(400).json({ ok: false, error: "معرّف الموظف غير صالح" });
+      return;
+    }
+
+    const year = asNumber(req.body?.year);
+    const month = asNumber(req.body?.month);
+    if (
+      year === null ||
+      month === null ||
+      !Number.isInteger(year) ||
+      !Number.isInteger(month) ||
+      year < 2000 ||
+      year > 2100 ||
+      month < 1 ||
+      month > 12
+    ) {
+      res.status(400).json({ ok: false, error: "السنة والشهر مطلوبان بصيغة صحيحة." });
+      return;
+    }
+
+    const bounds = monthBounds(year, month);
+    const raw = Array.isArray(req.body?.offDates) ? req.body.offDates : [];
+    const dates = [
+      ...new Set(
+        raw
+          .map((value: unknown) => (typeof value === "string" ? value.trim().slice(0, 10) : ""))
+          .filter((value: string) => isIsoDate(value)),
+      ),
+    ].sort() as string[];
+
+    const outside = dates.filter((date) => date < bounds.from || date > bounds.to);
+    if (outside.length > 0) {
+      res.status(400).json({
+        ok: false,
+        error: `تواريخ خارج الشهر المُحدَّد: ${outside.join("، ")}`,
+      });
+      return;
+    }
+
+    const [employee] = await db
+      .select({ id: employees.id, fullName: employees.fullName })
+      .from(employees)
+      .where(eq(employees.id, employeeId))
+      .limit(1);
+
+    if (!employee) {
+      res.status(404).json({ ok: false, error: "الموظف غير موجود" });
+      return;
+    }
+
+    const [schedule] = await db
+      .select({
+        daysOffPerMonth: workSchedules.daysOffPerMonth,
+        offMode: workSchedules.offMode,
+      })
+      .from(workSchedules)
+      .where(eq(workSchedules.employeeId, employeeId))
+      .limit(1);
+
+    if (!schedule) {
+      res.status(400).json({
+        ok: false,
+        error: "عرّف جدول دوام الموظف أولاً ثم حدّد تواريخ إجازته.",
+      });
+      return;
+    }
+
+    if (dates.length > schedule.daysOffPerMonth) {
+      res.status(400).json({
+        ok: false,
+        error: `عدد أيام الإجازة المسموح لهذا الموظف ${schedule.daysOffPerMonth} في الشهر، وقد اخترت ${dates.length}.`,
+      });
+      return;
+    }
+
+    const before = await getOffDates(employeeId, bounds);
+
+    await db
+      .delete(scheduleOffDates)
+      .where(
+        and(
+          eq(scheduleOffDates.employeeId, employeeId),
+          gte(scheduleOffDates.offDate, bounds.from),
+          lte(scheduleOffDates.offDate, bounds.to),
+        ),
+      );
+
+    if (dates.length > 0) {
+      await db.insert(scheduleOffDates).values(
+        dates.map((offDate) => ({
+          employeeId,
+          offDate,
+          note: asString(req.body?.note, 200) ?? "",
+          createdByEmployeeId: actor.id,
+        })),
+      );
+    }
+
+    // نمط التواريخ يُفعَّل تلقائياً بمجرّد تحديد تواريخ فعلية
+    if (dates.length > 0 && schedule.offMode !== "dates") {
+      await db
+        .update(workSchedules)
+        .set({ offMode: "dates", offDays: "", updatedByEmployeeId: actor.id, updatedAt: new Date() })
+        .where(eq(workSchedules.employeeId, employeeId));
+    }
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "schedule.off_dates.set",
+      entityType: "schedule_off_dates",
+      entityId: employeeId,
+      before: { month: `${year}-${String(month).padStart(2, "0")}`, offDates: before },
+      after: { month: `${year}-${String(month).padStart(2, "0")}`, offDates: dates },
+      reason: asString(req.body?.reason, 500) ?? "تحديد أيام إجازة بتواريخها",
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      message:
+        dates.length === 0
+          ? `تم مسح تواريخ إجازة ${employee.fullName} لهذا الشهر.`
+          : `تم حفظ ${dates.length} يوم إجازة لـ${employee.fullName}.`,
+      employeeId,
+      offDates: dates,
+      allowed: schedule.daysOffPerMonth,
     });
   },
 );

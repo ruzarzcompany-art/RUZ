@@ -7,11 +7,17 @@ import {
   branches,
   employees,
   faceTemplates,
+  passwordResetRequests,
   roles,
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
+import { getMailConfig } from "../config.js";
+import { demoDataStatus, purgeDemoData } from "../demo.js";
+import { DEMO_PURGED_FLAG, isFlagOn, setFlag } from "../flags.js";
+import { issueResetCodeByAdmin, maskEmail } from "../reset.js";
 import { PERMISSIONS, requireAnyPermission, requirePermission } from "../rbac.js";
+import { reseedNow } from "../seed.js";
 import { CHECK_IN, CHECK_OUT, closeStaleShifts } from "../shifts.js";
 import { safeTimeZone } from "../time.js";
 import {
@@ -50,6 +56,7 @@ adminRouter.get(
         department: employees.department,
         jobTitle: employees.jobTitle,
         isActive: employees.isActive,
+        faceEnabled: employees.faceEnabled,
         branchId: employees.branchId,
         branchName: branches.name,
         branchManagerId: branches.managerEmployeeId,
@@ -521,6 +528,260 @@ adminRouter.delete(
           ? "تم تصفير قالب الوجه — سيُسجَّل قالب جديد في أول تسجيل حضور"
           : "لا يوجد قالب مسجَّل لهذا الموظف",
     });
+  },
+);
+
+/* ── استعادة كلمة المرور (مسؤول البرنامج) ─────────────────────── */
+
+/**
+ * طلبات «نسيت الرقم السري» المعلّقة.
+ *
+ * تظهر هنا الطلبات التي لم يصل رمزها بالبريد (لا بريد للحساب أو مزوّد البريد
+ * غير مضبوط) ليصدر مسؤول البرنامج الرمز بنفسه ويسلّمه للموظف.
+ */
+adminRouter.get(
+  "/admin/password-resets",
+  requireAuth,
+  requirePermission(PERMISSIONS.employeesWrite),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const includeAll = String(req.query.all ?? "") === "1";
+
+    const rows = await db
+      .select({
+        request: passwordResetRequests,
+        employeeCode: employees.employeeCode,
+        fullName: employees.fullName,
+        email: employees.email,
+      })
+      .from(passwordResetRequests)
+      .leftJoin(employees, eq(passwordResetRequests.employeeId, employees.id))
+      .where(
+        includeAll
+          ? undefined
+          : inArray(passwordResetRequests.status, ["pending", "sent"]),
+      )
+      .orderBy(desc(passwordResetRequests.createdAt))
+      .limit(100);
+
+    res.json({
+      ok: true,
+      mailConfigured: getMailConfig().configured,
+      requests: rows.map((row) => ({
+        id: row.request.id,
+        employeeId: row.request.employeeId,
+        employeeCode: row.employeeCode,
+        fullName: row.fullName,
+        // لا نكشف البريد كاملاً في القوائم الإدارية
+        maskedEmail: row.email ? maskEmail(row.email) : "",
+        hasEmail: Boolean(row.email),
+        status: row.request.status,
+        deliveryChannel: row.request.deliveryChannel,
+        attempts: row.request.attempts,
+        requestedIdentifier: row.request.requestedIdentifier,
+        expiresAt: row.request.expiresAt,
+        usedAt: row.request.usedAt,
+        createdAt: row.request.createdAt,
+      })),
+    });
+  },
+);
+
+/**
+ * إصدار رمز استعادة يدوياً لموظف. الرمز يُعاد مرة واحدة في هذه الاستجابة
+ * فقط (لا يُخزَّن نصاً) ليسلّمه المسؤول للموظف، ثم يضبط الموظف كلمته الجديدة
+ * من شاشة الدخول.
+ */
+adminRouter.post(
+  "/admin/password-resets/issue",
+  requireAuth,
+  requirePermission(PERMISSIONS.employeesWrite),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const employeeId = asId(req.body?.employeeId);
+
+    if (employeeId === null) {
+      res.status(400).json({ ok: false, error: "معرّف الموظف غير صالح" });
+      return;
+    }
+
+    const [employee] = await db
+      .select({
+        id: employees.id,
+        employeeCode: employees.employeeCode,
+        fullName: employees.fullName,
+        isActive: employees.isActive,
+      })
+      .from(employees)
+      .where(eq(employees.id, employeeId))
+      .limit(1);
+
+    if (!employee) {
+      res.status(404).json({ ok: false, error: "الموظف غير موجود" });
+      return;
+    }
+
+    if (!employee.isActive) {
+      res.status(400).json({ ok: false, error: "الحساب غير مُفعّل — فعّله أولاً" });
+      return;
+    }
+
+    const { code, expiresAt } = await issueResetCodeByAdmin({
+      employeeId,
+      actorEmployeeId: actor.id,
+    });
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "password_reset.issue",
+      entityType: "password_reset_requests",
+      entityId: employeeId,
+      // لا يُسجَّل الرمز نفسه في التدقيق — فقط أنه صدر ولمن
+      after: { employeeCode: employee.employeeCode, channel: "admin", expiresAt },
+      reason: asString(req.body?.reason, 500) ?? "إصدار رمز استعادة من مسؤول البرنامج",
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      message: `سلّم هذا الرمز لـ${employee.fullName} — يُستخدم مرة واحدة وينتهي بعد انتهاء المدة.`,
+      employeeCode: employee.employeeCode,
+      code,
+      expiresAt,
+    });
+  },
+);
+
+/** إلغاء طلب استعادة معلّق. */
+adminRouter.post(
+  "/admin/password-resets/:id/cancel",
+  requireAuth,
+  requirePermission(PERMISSIONS.employeesWrite),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const requestId = asId(req.params.id);
+
+    if (requestId === null) {
+      res.status(400).json({ ok: false, error: "معرّف الطلب غير صالح" });
+      return;
+    }
+
+    const [updated] = await db
+      .update(passwordResetRequests)
+      .set({ status: "cancelled", updatedAt: new Date() })
+      .where(
+        and(
+          eq(passwordResetRequests.id, requestId),
+          inArray(passwordResetRequests.status, ["pending", "sent"]),
+        ),
+      )
+      .returning({ id: passwordResetRequests.id, employeeId: passwordResetRequests.employeeId });
+
+    if (!updated) {
+      res.status(404).json({ ok: false, error: "الطلب غير موجود أو مُغلق مسبقاً" });
+      return;
+    }
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "password_reset.cancel",
+      entityType: "password_reset_requests",
+      entityId: updated.employeeId,
+      reason: asString(req.body?.reason, 500) ?? "إلغاء طلب استعادة",
+      ipAddress: clientIp(req),
+    });
+
+    res.json({ ok: true, message: "تم إلغاء الطلب" });
+  },
+);
+
+/* ── البيانات التجريبية ───────────────────────────────────────── */
+
+/** حالة البيانات التجريبية المتبقية (لعرضها قبل الحذف). */
+adminRouter.get(
+  "/admin/demo-data",
+  requireAuth,
+  requirePermission(PERMISSIONS.settingsManage),
+  async (_req: AuthedRequest, res: Response) => {
+    const [status, purged] = await Promise.all([
+      demoDataStatus(),
+      isFlagOn(DEMO_PURGED_FLAG),
+    ]);
+    res.json({ ok: true, ...status, purged });
+  },
+);
+
+/**
+ * حذف البيانات التجريبية. يتطلّب تأكيداً صريحاً في الجسم، ولا يحذف حساب
+ * المنفّذ نفسه، ويضبط علماً دائماً يمنع إعادة بذر الحسابات التجريبية.
+ */
+adminRouter.post(
+  "/admin/demo-data/purge",
+  requireAuth,
+  requirePermission(PERMISSIONS.settingsManage),
+  async (req: AuthedRequest, res: Response) => {
+    const actor = req.employee!;
+    const scope = asEnum(req.body?.scope, ["demo", "records", "all"] as const) ?? "demo";
+    const confirm = asString(req.body?.confirm, 40) ?? "";
+
+    if (confirm !== "حذف" && confirm.toUpperCase() !== "DELETE") {
+      res.status(400).json({
+        ok: false,
+        error: "اكتب كلمة «حذف» للتأكيد — العملية لا يمكن الرجوع عنها.",
+      });
+      return;
+    }
+
+    const summary = await purgeDemoData({ scope, actorEmployeeId: actor.id });
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "demo_data.purge",
+      entityType: "system_flags",
+      after: summary,
+      reason: asString(req.body?.reason, 500) ?? "حذف البيانات التجريبية",
+      ipAddress: clientIp(req),
+    });
+
+    const totalDeleted = Object.values(summary.deleted).reduce((sum, value) => sum + value, 0);
+
+    res.json({
+      ok: true,
+      message:
+        summary.skippedEmployees.length > 0
+          ? `تم حذف ${totalDeleted} سجلاً. لم يُحذف حسابك التجريبي (${summary.skippedEmployees.join(", ")}) — أنشئ حسابك الخاص ثم احذفه من شاشة الموظفين.`
+          : `تم حذف ${totalDeleted} سجلاً من البيانات التجريبية، ولن تُبذر مرة أخرى.`,
+      ...summary,
+      totalDeleted,
+    });
+  },
+);
+
+/** إعادة البيانات التجريبية (تراجع عن الحذف) — تُعيد البذر فوراً. */
+adminRouter.post(
+  "/admin/demo-data/restore",
+  requireAuth,
+  requirePermission(PERMISSIONS.settingsManage),
+  async (req: AuthedRequest, res: Response) => {
+    const actor = req.employee!;
+
+    await setFlag(DEMO_PURGED_FLAG, "0", {
+      note: "أُعيد تمكين بذر البيانات التجريبية من لوحة الإعدادات.",
+      setByEmployeeId: actor.id,
+    });
+    await reseedNow();
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "demo_data.restore",
+      entityType: "system_flags",
+      reason: "إعادة البيانات التجريبية",
+      ipAddress: clientIp(req),
+    });
+
+    res.json({ ok: true, message: "تم إعادة البيانات التجريبية.", ...(await demoDataStatus()) });
   },
 );
 

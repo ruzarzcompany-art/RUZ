@@ -9,17 +9,27 @@
 
 import {
   api,
+  clearActivity,
+  DEFAULT_IDLE_SECONDS,
   el,
+  endSession,
   formatDate,
   formatDateTime,
   formatMoney,
+  idleExceeded,
+  IDLE_MESSAGE,
   label,
+  loadRuntimeConfig,
+  markActivity,
+  onSessionExpired,
   openPrint,
   row,
   setAlert,
   setBusy,
   setToken,
   getToken,
+  startIdleWatch,
+  stopIdleWatch,
   todayIso,
 } from "./api.js";
 import { captureFaceDescriptor, isFaceCaptureSupported, warmUpFaceEngine } from "./face.js";
@@ -33,23 +43,70 @@ const state = {
   busy: false,
   lastPunchAt: 0,
   cooldownSeconds: 8,
-  face: { mode: "optional", enrolled: false, threshold: 0.55, supported: isFaceCaptureSupported() },
+  face: {
+    mode: "optional",
+    systemMode: "optional",
+    enabled: true,
+    enrolled: false,
+    threshold: 0.55,
+    supported: isFaceCaptureSupported(),
+  },
   myResource: "advances",
   schema: null,
+  idleSeconds: DEFAULT_IDLE_SECONDS,
+  /** هل يستطيع الموقع إرسال رمز الاستعادة بالبريد؟ */
+  resetByEmail: false,
 };
 
 /* ── التنقّل بين الشاشات ───────────────────────────────────── */
 
 function showLogin(message) {
+  stopIdleWatch();
+  el("idle-note").hidden = true;
   el("screen-punch").hidden = true;
   el("screen-login").hidden = false;
+  el("reset-card").hidden = true;
+  el("login-form").hidden = false;
   if (message) setAlert(el("login-error"), message, "error");
 }
 
 function showPunch() {
   el("screen-login").hidden = true;
+  el("reset-card").hidden = true;
   el("screen-punch").hidden = false;
 }
+
+/* ── الخروج التلقائي ───────────────────────────────────────── */
+
+/**
+ * يبدأ مراقبة الخمول لهذه الجلسة: تنبيه قبل الخروج بدقيقة، ثم إنهاء
+ * الجلسة على الخادم وإرجاع المستخدم لشاشة الدخول.
+ */
+function watchIdle() {
+  el("idle-note").hidden = true;
+
+  startIdleWatch({
+    idleSeconds: state.idleSeconds,
+    onWarn: (remaining) => {
+      const note = el("idle-note");
+      if (remaining === null) {
+        note.hidden = true;
+        return;
+      }
+      note.hidden = false;
+      note.textContent = `خروج تلقائي بعد ${remaining} ثانية`;
+    },
+    onExpire: async () => {
+      stopIdleWatch();
+      await api("/auth/logout", { method: "POST" });
+      endSession(IDLE_MESSAGE);
+    },
+  });
+}
+
+onSessionExpired((message) => {
+  showLogin(message);
+});
 
 /* ── ساعة الخادم ───────────────────────────────────────────── */
 
@@ -191,20 +248,30 @@ const FACE_MODE_TEXT = {
 
 function paintFaceCard() {
   const card = el("face-card");
-  card.hidden = state.face.mode === "off";
+  // البصمة معطّلة لهذا الموظف بعلامة صح من شاشة الموظفين، والوضع العام مُفعّل
+  const disabledForMe = state.face.enabled === false && state.face.systemMode !== "off";
+  card.hidden = state.face.mode === "off" && !disabledForMe;
   if (card.hidden) return;
 
   const badge = el("face-badge");
-  badge.textContent = state.face.enrolled ? "بصمة مسجّلة" : "بلا بصمة";
-  badge.classList.toggle("badge--ok", state.face.enrolled);
-  badge.classList.toggle("badge--warn", !state.face.enrolled);
+  badge.textContent = disabledForMe
+    ? "معطّلة لحسابك"
+    : state.face.enrolled
+      ? "بصمة مسجّلة"
+      : "بلا بصمة";
+  badge.classList.toggle("badge--ok", !disabledForMe && state.face.enrolled);
+  badge.classList.toggle("badge--warn", disabledForMe || !state.face.enrolled);
 
-  el("face-enroll").hidden = state.face.enrolled || !state.face.supported;
-  el("face-toggle").disabled = !state.face.supported;
-  if (!state.face.supported) el("face-toggle").checked = false;
+  el("face-enroll").hidden = disabledForMe || state.face.enrolled || !state.face.supported;
+  el("face-warm").hidden = disabledForMe;
+  el("face-toggle").disabled = disabledForMe || !state.face.supported;
+  if (disabledForMe || !state.face.supported) el("face-toggle").checked = false;
 
-  const lines = [FACE_MODE_TEXT[state.face.mode] ?? ""];
-  if (!state.face.supported) {
+  const lines = disabledForMe
+    ? ["أوقفت الإدارة مطابقة الوجه لحسابك — يُسجَّل حضورك بالموقع الجغرافي فقط."]
+    : [FACE_MODE_TEXT[state.face.mode] ?? ""];
+
+  if (!disabledForMe && !state.face.supported) {
     lines.push("هذا المتصفح لا يدعم الكاميرا عبر HTTPS، سيُسجَّل الحضور بالموقع الجغرافي فقط.");
   }
   el("face-status").textContent = lines.filter(Boolean).join(" ");
@@ -216,6 +283,8 @@ async function refreshFaceStatus() {
   state.face = {
     ...state.face,
     mode: result.mode,
+    systemMode: result.systemMode ?? result.mode,
+    enabled: result.faceEnabled !== false,
     threshold: result.threshold,
     enrolled: Boolean(result.enrolled),
   };
@@ -358,7 +427,9 @@ async function refreshMyFile() {
     ? `${schedule.shiftStart} — ${schedule.shiftEnd} (${schedule.dailyHours} ساعات يومياً)`
     : "لا يوجد جدول دوام مُعرَّف";
   el("file-off-days").textContent = schedule
-    ? `${schedule.daysOffPerMonth} أيام شهرياً · ${schedule.offDaysLabel}`
+    ? schedule.offMode === "dates"
+      ? `${schedule.daysOffPerMonth} أيام شهرياً · إجازات هذا الشهر: ${schedule.offDaysLabel}`
+      : `${schedule.daysOffPerMonth} أيام شهرياً · ${schedule.offDaysLabel}`
     : "—";
 }
 
@@ -414,10 +485,15 @@ async function loadProfile() {
   showPunch();
   tickClock();
 
-  const config = await api("/config");
+  const config = await loadRuntimeConfig();
   if (config.ok) {
     state.cooldownSeconds = config.shifts?.punchCooldownSeconds ?? state.cooldownSeconds;
+    state.idleSeconds = config.session?.idleSeconds ?? state.idleSeconds;
+    state.resetByEmail = Boolean(config.passwordReset?.emailEnabled);
   }
+
+  markActivity();
+  watchIdle();
 
   await Promise.all([
     refreshToday(),
@@ -453,7 +529,125 @@ el("login-form").addEventListener("submit", async (event) => {
 
   setToken(result.token);
   el("password").value = "";
+  markActivity();
   await loadProfile();
+});
+
+/* ── نسيت الرقم السري ──────────────────────────────────────── */
+
+function showResetCard(show) {
+  el("reset-card").hidden = !show;
+  el("login-form").hidden = show;
+
+  if (!show) return;
+
+  setAlert(el("reset-result"), "");
+  el("reset-identifier").value = el("identifier").value.trim();
+  el("reset-note").textContent = state.resetByEmail
+    ? "أدخل رقمك الوظيفي أو بريدك المسجَّل، ويُرسل الموقع رمز الاستعادة إلى بريدك. إن لم يكن لحسابك بريد فسيصل الطلب إلى مسؤول البرنامج ليسلّمك الرمز."
+    : "أدخل رقمك الوظيفي أو بريدك، ويصل الطلب إلى مسؤول البرنامج ليصدر لك رمز الاستعادة ويسلّمه لك (إرسال البريد غير مضبوط على هذا الموقع).";
+  el("reset-identifier").focus();
+}
+
+el("forgot-open").addEventListener("click", () => {
+  setAlert(el("login-error"), "");
+  showResetCard(true);
+});
+
+el("reset-close").addEventListener("click", () => showResetCard(false));
+
+el("reset-request").addEventListener("click", async () => {
+  const button = el("reset-request");
+  const identifier = el("reset-identifier").value.trim();
+
+  if (!identifier) {
+    setAlert(el("reset-result"), "أدخل رقم الموظف أو البريد الإلكتروني.", "error");
+    return;
+  }
+
+  setBusy(button, true);
+  const result = await api("/auth/forgot-password", {
+    method: "POST",
+    body: { identifier },
+  });
+  setBusy(button, false);
+
+  setAlert(
+    el("reset-result"),
+    result.ok ? result.message : (result.error ?? "تعذّر إرسال الطلب"),
+    result.ok ? "ok" : "error",
+  );
+
+  if (result.ok) el("reset-code").focus();
+});
+
+el("reset-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = el("reset-submit");
+  const password = el("reset-password").value;
+
+  if (password !== el("reset-password2").value) {
+    setAlert(el("reset-result"), "كلمتا المرور غير متطابقتين.", "error");
+    return;
+  }
+
+  setBusy(button, true);
+  const result = await api("/auth/reset-password", {
+    method: "POST",
+    body: {
+      identifier: el("reset-identifier").value.trim(),
+      code: el("reset-code").value.trim(),
+      newPassword: password,
+    },
+  });
+  setBusy(button, false);
+
+  if (!result.ok) {
+    setAlert(el("reset-result"), result.error ?? "تعذّر تعيين كلمة المرور", "error");
+    return;
+  }
+
+  el("reset-code").value = "";
+  el("reset-password").value = "";
+  el("reset-password2").value = "";
+  showResetCard(false);
+  el("identifier").value = el("reset-identifier").value.trim();
+  setAlert(el("reset-result"), "");
+  setAlert(el("login-error"), result.message, "ok");
+  el("password").focus();
+});
+
+el("password-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = el("password-submit");
+  const newPassword = el("password-new").value;
+
+  if (newPassword !== el("password-new2").value) {
+    setAlert(el("password-result"), "كلمتا المرور الجديدتان غير متطابقتين.", "error");
+    return;
+  }
+
+  setBusy(button, true);
+  const result = await api("/auth/change-password", {
+    method: "POST",
+    body: { currentPassword: el("password-current").value, newPassword },
+  });
+  setBusy(button, false);
+
+  setAlert(
+    el("password-result"),
+    result.ok ? result.message : (result.error ?? "تعذّر تغيير كلمة المرور"),
+    result.ok ? "ok" : "error",
+  );
+
+  if (result.ok) {
+    // الخادم أبطل الجلسات وأصدر توكن جديداً لهذا الجهاز
+    setToken(result.token);
+    markActivity();
+    el("password-current").value = "";
+    el("password-new").value = "";
+    el("password-new2").value = "";
+  }
 });
 
 el("punch-btn").addEventListener("click", async () => {
@@ -634,8 +828,10 @@ el("set-branch").addEventListener("click", async () => {
 });
 
 el("logout").addEventListener("click", async () => {
+  stopIdleWatch();
   await api("/auth/logout", { method: "POST" });
   setToken(null);
+  clearActivity();
   showLogin("");
 });
 
@@ -643,11 +839,46 @@ el("logout").addEventListener("click", async () => {
 
 setInterval(tickClock, 1000);
 
-if (getToken()) {
-  loadProfile();
-} else {
-  showLogin();
+/**
+ * إقلاع الشاشة: من عاد بعد انقضاء فترة الخمول (أو أُخرج من لوحة الإدارة)
+ * يجد نفسه في شاشة الدخول برسالة واضحة بدل جلسة نصف صالحة.
+ */
+async function boot() {
+  const reason = new URLSearchParams(window.location.search).get("session");
+
+  if (reason === "idle") {
+    setToken(null);
+    clearActivity();
+    showLogin(IDLE_MESSAGE);
+    window.history.replaceState(null, "", "/app/");
+    return;
+  }
+
+  // إعدادات التشغيل تُقرأ قبل التحقق من التوكن لأن شاشة الاستعادة تحتاج
+  // معرفة ما إذا كان الموقع يستطيع إرسال الرمز بالبريد
+  const config = await loadRuntimeConfig();
+  if (config.ok) {
+    state.idleSeconds = config.session?.idleSeconds ?? state.idleSeconds;
+    state.resetByEmail = Boolean(config.passwordReset?.emailEnabled);
+  }
+
+  if (!getToken()) {
+    showLogin();
+    return;
+  }
+
+  if (idleExceeded(state.idleSeconds)) {
+    // الجلسة على الخادم انتهت أيضاً بنفس المدة — نكتفي بتنظيف الجهاز
+    setToken(null);
+    clearActivity();
+    showLogin(IDLE_MESSAGE);
+    return;
+  }
+
+  await loadProfile();
 }
+
+boot();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {

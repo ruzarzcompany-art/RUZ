@@ -70,13 +70,83 @@
           <span class="btn__spinner" aria-hidden="true"></span>
         </button>
 
+        <button id="forgot-open" class="btn btn--ghost btn--sm" type="button">
+          نسيت الرقم السري؟
+        </button>
+
         <p class="hint">
-          الحسابات التجريبية بعد البذر:
+          الحسابات التجريبية (ما لم تُحذف من لوحة الإعدادات):
           <code dir="ltr">EMP-1001</code> (موظف)،
           <code dir="ltr">EMP-1000</code> (مدير فرع)،
           <code dir="ltr">EMP-1002</code> (موارد بشرية).
         </p>
       </form>
+
+      <!-- ── استعادة كلمة المرور ─────────────────────────────── -->
+      <section id="reset-card" class="card card--form" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">استعادة كلمة المرور</h2>
+          <button id="reset-close" class="btn btn--ghost btn--xs" type="button">رجوع للدخول</button>
+        </div>
+
+        <p id="reset-note" class="hint">
+          أدخل رقمك الوظيفي أو بريدك ليصل الرمز إلى بريدك، أو ليصل الطلب إلى مسؤول
+          البرنامج فيسلّمك الرمز.
+        </p>
+
+        <label class="field">
+          <span class="field__label">رقم الموظف أو البريد</span>
+          <input
+            id="reset-identifier"
+            type="text"
+            inputmode="email"
+            autocomplete="username"
+            dir="ltr"
+            placeholder="EMP-1001"
+          />
+        </label>
+
+        <button id="reset-request" class="btn btn--primary btn--sm" type="button">
+          <span class="btn__label">أرسل رمز الاستعادة</span>
+          <span class="btn__spinner" aria-hidden="true"></span>
+        </button>
+
+        <form id="reset-form" class="form-grid" novalidate>
+          <label class="field">
+            <span class="field__label">رمز الاستعادة (٦ أرقام)</span>
+            <input
+              id="reset-code"
+              type="text"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              dir="ltr"
+              maxlength="6"
+              placeholder="123456"
+            />
+          </label>
+
+          <label class="field">
+            <span class="field__label">كلمة المرور الجديدة</span>
+            <input
+              id="reset-password"
+              type="password"
+              autocomplete="new-password"
+              placeholder="٨ أحرف على الأقل"
+            />
+          </label>
+
+          <label class="field">
+            <span class="field__label">تأكيد كلمة المرور</span>
+            <input id="reset-password2" type="password" autocomplete="new-password" />
+          </label>
+
+          <button id="reset-submit" class="btn btn--primary btn--sm" type="submit">
+            تعيين كلمة المرور
+          </button>
+        </form>
+
+        <p id="reset-result" class="alert" role="status" hidden></p>
+      </section>
     </main>
 
     <!-- ── شاشة تسجيل الحضور ─────────────────────────────────────── -->
@@ -87,6 +157,7 @@
           <p id="who-meta" class="topbar__meta">—</p>
         </div>
         <div class="topbar__actions">
+          <span id="idle-note" class="badge badge--warn" hidden></span>
           <a id="admin-link" class="btn btn--ghost btn--sm" href="/app/admin/" hidden>لوحة الإدارة</a>
           <button id="logout" class="btn btn--ghost btn--sm" type="button">خروج</button>
         </div>
@@ -252,6 +323,39 @@
           </table>
         </div>
         <p id="slips-empty" class="empty" hidden>لا توجد مسيّرات رواتب منشورة بعد.</p>
+      </section>
+
+      <!-- ── كلمة المرور ───────────────────────────────────────── -->
+      <section class="card card--form">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">تغيير كلمة المرور</h2>
+        </div>
+
+        <form id="password-form" class="form-grid" novalidate>
+          <label class="field field--sm">
+            <span class="field__label">كلمة المرور الحالية</span>
+            <input id="password-current" type="password" autocomplete="current-password" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">كلمة المرور الجديدة</span>
+            <input
+              id="password-new"
+              type="password"
+              autocomplete="new-password"
+              placeholder="٨ أحرف على الأقل"
+            />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">تأكيد كلمة المرور الجديدة</span>
+            <input id="password-new2" type="password" autocomplete="new-password" />
+          </label>
+          <button id="password-submit" class="btn btn--primary btn--sm" type="submit">
+            حفظ كلمة المرور
+          </button>
+        </form>
+
+        <p id="password-result" class="alert" role="status" hidden></p>
+        <p class="hint">تغيير كلمة المرور يُنهي جلساتك على الأجهزة الأخرى.</p>
       </section>
     </main>
 

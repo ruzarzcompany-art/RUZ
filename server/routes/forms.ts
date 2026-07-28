@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, lte, sql, type SQL } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { getDb } from "../../db/index.js";
 import {
@@ -15,6 +15,7 @@ import {
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
+import { DEMO_EMPLOYEE_CODES } from "../demo.js";
 import {
   hasAnyPermission,
   PERMISSIONS,
@@ -385,6 +386,90 @@ function collectFields(
 }
 
 const table = (resource: ResourceSpec) => resource.table as unknown as Record<string, any>;
+
+/* ── الحذف الجماعي للنماذج السابقة أو التجريبية ────────────────────
+ * الحذف صفاً صفاً لا يكفي عند تنظيف نظام كان تحت التجربة: المطلوب مسح
+ * النماذج القديمة أو المرتبطة بالحسابات التجريبية بضغطة واحدة. لذلك نبني
+ * شرط الحذف من نطاق واحد يُستخدم في المعاينة (عدّ الصفوف) وفي التنفيذ،
+ * فما يراه المستخدم قبل التأكيد هو نفسه ما سيُحذف.
+ */
+
+const PURGE_SCOPES = ["before", "decided", "demo", "all"] as const;
+type PurgeScope = (typeof PURGE_SCOPES)[number];
+
+const PURGE_SCOPE_LABELS: Record<PurgeScope, string> = {
+  before: "قبل تاريخ",
+  decided: "المعتمدة والمرفوضة",
+  demo: "سجلات الحسابات التجريبية",
+  all: "كل السجلات",
+};
+
+/** أرقام الموظفين التجريبيين المتبقية في القاعدة (قد تكون فارغة بعد الحذف). */
+async function demoEmployeeIds(): Promise<number[]> {
+  const rows = await getDb()
+    .select({ id: employees.id })
+    .from(employees)
+    .where(inArray(employees.employeeCode, [...DEMO_EMPLOYEE_CODES]));
+  return rows.map((row) => row.id);
+}
+
+type PurgeFilter =
+  | { ok: true; where: SQL | undefined; describe: string }
+  | { ok: false; error: string };
+
+/**
+ * يحوّل نطاق الحذف إلى شرط SQL واحد.
+ *
+ * `all` يعيد `undefined` أي بلا شرط — وهذا مقصود، لكنه لا يُنفَّذ إلا بعد
+ * كتابة كلمة التأكيد في الطلب.
+ */
+async function buildPurgeFilter(
+  resource: ResourceSpec,
+  columns: Record<string, any>,
+  scope: PurgeScope,
+  source: Record<string, unknown>,
+): Promise<PurgeFilter> {
+  if (scope === "all") {
+    return { ok: true, where: undefined, describe: PURGE_SCOPE_LABELS.all };
+  }
+
+  if (scope === "before") {
+    const before = asDateOnly(source.before);
+    if (before === null) {
+      return { ok: false, error: "حدّد التاريخ الذي يُحذف ما قبله." };
+    }
+    // الحقل التاريخي للنموذج إن وُجد، وإلا تاريخ الإدخال
+    const useDateColumn = Boolean(resource.dateColumn);
+    const column = useDateColumn ? columns[resource.dateColumn!] : columns.createdAt;
+    const value = useDateColumn ? before : new Date(`${before}T00:00:00.000Z`);
+    return {
+      ok: true,
+      where: lt(column, value),
+      describe: `قبل ${before}`,
+    };
+  }
+
+  if (scope === "decided") {
+    if (!resource.decidable) {
+      return { ok: false, error: "هذا النموذج بلا اعتماد أو رفض." };
+    }
+    return {
+      ok: true,
+      where: inArray(columns.status, ["approved", "rejected"]),
+      describe: PURGE_SCOPE_LABELS.decided,
+    };
+  }
+
+  const ids = await demoEmployeeIds();
+  if (ids.length === 0) {
+    return { ok: false, error: "لا توجد حسابات تجريبية في القاعدة — لا شيء لحذفه." };
+  }
+  return {
+    ok: true,
+    where: inArray(columns.employeeId, ids),
+    describe: PURGE_SCOPE_LABELS.demo,
+  };
+}
 
 export const formsRouter = Router();
 
@@ -778,6 +863,96 @@ for (const resource of RESOURCES) {
       });
 
       res.json({ ok: true, message: "تم الحذف" });
+    },
+  );
+
+  /* ── معاينة الحذف الجماعي (عدّ ما سيُحذف) ───────────────────── */
+  formsRouter.get(
+    `/forms/${resource.key}/purge/preview`,
+    requireAuth,
+    requirePermission(resource.managePermission),
+    async (req: AuthedRequest, res: Response) => {
+      const db = getDb();
+      const scope = asEnum(req.query.scope, PURGE_SCOPES) ?? "before";
+      const filter = await buildPurgeFilter(resource, columns, scope, {
+        before: req.query.before,
+      });
+
+      if (!filter.ok) {
+        res.status(400).json({ ok: false, error: filter.error });
+        return;
+      }
+
+      const [counted] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(resource.table)
+        .where(filter.where);
+
+      res.json({
+        ok: true,
+        scope,
+        describe: filter.describe,
+        count: counted?.count ?? 0,
+      });
+    },
+  );
+
+  /* ── تنفيذ الحذف الجماعي ────────────────────────────────────── */
+  formsRouter.post(
+    `/forms/${resource.key}/purge`,
+    requireAuth,
+    requirePermission(resource.managePermission),
+    async (req: AuthedRequest, res: Response) => {
+      const db = getDb();
+      const actor = req.employee!;
+      const scope = asEnum(req.body?.scope, PURGE_SCOPES) ?? "before";
+      const confirm = asString(req.body?.confirm, 40) ?? "";
+
+      if (confirm !== "حذف" && confirm.toUpperCase() !== "DELETE") {
+        res.status(400).json({
+          ok: false,
+          error: "اكتب كلمة «حذف» للتأكيد — الحذف الجماعي لا يمكن الرجوع عنه.",
+        });
+        return;
+      }
+
+      const filter = await buildPurgeFilter(
+        resource,
+        columns,
+        scope,
+        (req.body ?? {}) as Record<string, unknown>,
+      );
+
+      if (!filter.ok) {
+        res.status(400).json({ ok: false, error: filter.error });
+        return;
+      }
+
+      const removed = await db
+        .delete(resource.table)
+        .where(filter.where)
+        .returning({ id: columns.id });
+
+      await recordAudit({
+        actorEmployeeId: actor.id,
+        action: `${resource.key}.purge`,
+        entityType: resource.entity,
+        before: { scope, describe: filter.describe, ids: removed.map((item) => item.id) },
+        after: { deleted: removed.length },
+        reason: asString(req.body?.reason, 500) ?? `حذف جماعي: ${filter.describe}`,
+        ipAddress: clientIp(req),
+      });
+
+      res.json({
+        ok: true,
+        deleted: removed.length,
+        scope,
+        describe: filter.describe,
+        message:
+          removed.length === 0
+            ? `لا توجد سجلات مطابقة (${filter.describe}).`
+            : `تم حذف ${removed.length} من «${resource.labelAr}» (${filter.describe}).`,
+      });
     },
   );
 }

@@ -155,6 +155,14 @@ body {
   gap: 0.4rem;
 }
 
+/* بعض الحقول مجموعة داخل fieldset (أيام الإجازة) فنُلغي حدود المتصفح */
+fieldset.field {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
 .field__label {
   font-size: 0.78rem;
   letter-spacing: 0.04em;
@@ -1340,6 +1348,153 @@ select option {
 .badge--disputed {
   border-color: rgba(226, 115, 95, 0.5);
   color: #e2735f;
+}
+
+/* ── تقويم اختيار أيام الإجازة ─────────────────────────────────── */
+
+.calendar {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.3rem;
+  margin-top: 0.5rem;
+  max-width: 34rem;
+}
+
+.calendar__head {
+  text-align: center;
+  font-size: 0.68rem;
+  color: var(--bone-dim);
+  padding: 0.2rem 0;
+}
+
+.calendar__day {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: rgba(18, 18, 12, 0.45);
+  color: var(--bone);
+  border-radius: 8px;
+  padding: 0.4rem 0;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.calendar__day:hover:not(:disabled) {
+  border-color: var(--saffron);
+}
+
+.calendar__day.is-selected {
+  background: rgba(217, 161, 59, 0.26);
+  border-color: var(--saffron);
+  color: #f7ead0;
+  font-weight: 600;
+}
+
+.calendar__day.is-weekend {
+  color: var(--saffron);
+}
+
+.calendar__day:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.calendar__blank {
+  visibility: hidden;
+}
+
+/* ── خريطة تحديد الموقع ────────────────────────────────────────── */
+
+.mapbox {
+  position: relative;
+  width: 100%;
+  height: 320px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #10100c;
+  touch-action: none;
+  cursor: grab;
+}
+
+.mapbox--dragging {
+  cursor: grabbing;
+}
+
+.mapbox__tiles {
+  position: absolute;
+  inset: 0;
+}
+
+.mapbox__tile {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 256px;
+  height: 256px;
+  user-select: none;
+  pointer-events: none;
+}
+
+.mapbox__pin {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 26px;
+  height: 26px;
+  margin: -26px 0 0 -13px;
+  pointer-events: none;
+  font-size: 1.6rem;
+  line-height: 1;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+.mapbox__zoom {
+  position: absolute;
+  inset-block-start: 0.5rem;
+  inset-inline-end: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.mapbox__attribution {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline-start: 0;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.62rem;
+  background: rgba(10, 10, 8, 0.7);
+  color: var(--bone-dim);
+}
+
+.mapbox__attribution a {
+  color: inherit;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(6, 6, 4, 0.72);
+}
+
+.modal__panel {
+  width: min(46rem, 100%);
+  max-height: 92vh;
+  overflow: auto;
+  background: var(--ink-800);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 1rem;
 }
 
 @media print {

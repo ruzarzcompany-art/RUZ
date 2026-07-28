@@ -16,6 +16,29 @@ const WEEKDAYS = [
   "السبت",
 ];
 
+/**
+ * نص أيام الراحة في المطبوعات: أيام أسبوعية متكرّرة، أو تواريخ محدّدة
+ * داخل الشهر حسب نمط جدول الموظف.
+ */
+function restDaysText(schedule) {
+  if (!schedule?.daysOffPerMonth) return "—";
+  const count = `${schedule.daysOffPerMonth} أيام شهرياً`;
+
+  if (schedule.offMode === "dates") {
+    const dates = schedule.offDates ?? [];
+    return dates.length > 0
+      ? `${count} (بتواريخ محدّدة: ${dates.map((date) => formatDate(date)).join("، ")})`
+      : `${count} (بتواريخ محدّدة)`;
+  }
+
+  if (!schedule.offDays) return count;
+  const days = schedule.offDays
+    .split(",")
+    .map((day) => WEEKDAYS[Number(day.trim())] ?? day)
+    .join("، ");
+  return `${count} (${days})`;
+}
+
 const LEAVE_TYPES = {
   annual: "سنوية",
   sick: "مرضية",
@@ -370,19 +393,7 @@ function appointment(data) {
         schedule.shiftStart ? `${schedule.shiftStart} — ${schedule.shiftEnd}` : "—",
       ],
       ["ساعات العمل اليومية", schedule.dailyHours ? `${schedule.dailyHours} ساعة` : "—"],
-      [
-        "أيام الراحة",
-        schedule.daysOffPerMonth
-          ? `${schedule.daysOffPerMonth} أيام شهرياً${
-              schedule.offDays
-                ? ` (${schedule.offDays
-                    .split(",")
-                    .map((day) => WEEKDAYS[Number(day.trim())] ?? day)
-                    .join("، ")})`
-                : ""
-            }`
-          : "—",
-      ],
+      ["أيام الراحة", restDaysText(schedule)],
     ]),
     clauses([
       [
@@ -805,10 +816,7 @@ function attendanceSheet(data) {
     pairs([
       ["إجمالي الساعات المسجّلة", `${sheet?.totalHours ?? 0} ساعة`],
       ["عدد أيام الحضور", sheet?.workedDays ?? 0],
-      [
-        "أيام الراحة المستحقة",
-        data.schedule?.daysOffPerMonth ? `${data.schedule.daysOffPerMonth} أيام` : "—",
-      ],
+      ["أيام الراحة المستحقة", restDaysText(data.schedule)],
     ]),
     note(
       "الأوقات مأخوذة من سجلات النظام بتوقيت الفرع (وقت الخادم). يُوقّع الموظف أمام كل يوم، " +
