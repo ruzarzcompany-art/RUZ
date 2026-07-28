@@ -19,10 +19,14 @@ import {
 } from "./rbac.js";
 import { adminRouter } from "./routes/admin.js";
 import { attendanceRouter } from "./routes/attendance.js";
+import { cashierRouter } from "./routes/cashier.js";
+import { documentsRouter } from "./routes/documents.js";
 import { formsRouter } from "./routes/forms.js";
+import { inventoryRouter } from "./routes/inventory.js";
 import { payrollRouter } from "./routes/payroll.js";
 import { peopleRouter } from "./routes/people.js";
 import { reportsRouter } from "./routes/reports.js";
+import { settingsRouter } from "./routes/settings.js";
 import { ensureSeeded } from "./seed.js";
 import {
   getAutoCloseHour,
@@ -35,7 +39,8 @@ export function createApp() {
   const app = express();
 
   app.disable("x-powered-by");
-  app.use(express.json({ limit: "256kb" }));
+  // الحد مرفوع إلى 1MB لأن شعار الشركة يُرسل كـData URL داخل JSON.
+  app.use(express.json({ limit: "1mb" }));
 
   /** فحص جاهزية لا يعتمد على قاعدة البيانات. */
   app.get("/api/health", (_req, res) => {
@@ -281,13 +286,18 @@ export function createApp() {
 
   // ------------------------------------------------------- الحضور والنماذج
   // الحضور (مع الموقع الجغرافي ومطابقة الوجه)، الشاشات الإدارية،
-  // نماذج الموارد البشرية، مسير الرواتب، ملفات الموظفين والجداول، والتقارير.
+  // نماذج الموارد البشرية، مسير الرواتب، ملفات الموظفين والجداول، والتقارير،
+  // ثم الإعدادات الشاملة وتقفيل الكاشير والمخزون وحزمة النماذج المطبوعة.
   app.use("/api", attendanceRouter);
   app.use("/api", adminRouter);
   app.use("/api", formsRouter);
   app.use("/api", payrollRouter);
   app.use("/api", peopleRouter);
   app.use("/api", reportsRouter);
+  app.use("/api", settingsRouter);
+  app.use("/api", cashierRouter);
+  app.use("/api", inventoryRouter);
+  app.use("/api", documentsRouter);
 
   app.use("/api", (_req: Request, res: Response) => {
     res.status(404).json({ ok: false, error: "المسار غير موجود" });

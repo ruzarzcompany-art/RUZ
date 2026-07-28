@@ -370,6 +370,13 @@ const ADMIN_PERMISSIONS = [
   "attendance.read_all",
   "forms.approve",
   "payroll.manage",
+  // الكاشير وأمين المخزن يدخلان اللوحة لشاشتهما فقط
+  "cashier.submit",
+  "cashier.review",
+  "inventory.read",
+  "inventory.write",
+  "documents.print",
+  "settings.manage",
 ];
 
 async function loadProfile() {

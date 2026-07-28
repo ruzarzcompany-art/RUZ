@@ -12,13 +12,18 @@
 
 import { Router, type Response } from "express";
 import { and, asc, eq, gte, lte, sql, type SQL } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { getDb } from "../../db/index.js";
 import {
   advances,
   attendanceLogs,
   bonuses,
   branches,
+  cashierClosings,
+  documentIssues,
   employees,
+  inventoryItems,
+  inventoryMovements,
   leaveRequests,
   overtimeRequests,
   payrollSlips,
@@ -29,6 +34,7 @@ import { hasAnyPermission, PERMISSIONS, requirePermission } from "../rbac.js";
 import { evaluateShift, type WorkSchedule } from "../schedule.js";
 import { safeTimeZone } from "../time.js";
 import { asDateOnly, asId, round2 } from "../validate.js";
+import { DOC_CATALOG } from "./documents.js";
 
 export const reportsRouter = Router();
 
@@ -137,6 +143,36 @@ const STATUS_LABELS: Record<string, string> = {
 function statusLabel(status: string): string {
   return STATUS_LABELS[status] ?? status;
 }
+
+const CASHIER_SHIFT_LABELS: Record<string, string> = {
+  morning: "صباحية",
+  evening: "مسائية",
+  full: "يوم كامل",
+};
+
+const CASHIER_STATUS_LABELS: Record<string, string> = {
+  submitted: "مرفوعة",
+  reviewed: "مُراجعة",
+  disputed: "معترض عليها",
+};
+
+const MOVEMENT_TYPE_LABELS: Record<string, string> = {
+  in: "إدخال",
+  out: "إخراج",
+  count: "جرد",
+};
+
+const MOVEMENT_REASON_LABELS: Record<string, string> = {
+  purchase: "شراء",
+  consumption: "استهلاك",
+  waste: "هالك",
+  transfer: "تحويل",
+  stocktake: "جرد",
+  other: "أخرى",
+};
+
+/** عناوين النماذج العربية لتقرير «النماذج المُصدرة». */
+const DOC_TITLES = new Map(DOC_CATALOG.map((doc) => [doc.key, doc.title]));
 
 const LEAVE_TYPE_LABELS: Record<string, string> = {
   annual: "سنوية",
@@ -619,6 +655,266 @@ formReport({
   ],
 });
 
+/* ── تقارير التشغيل: الكاشير، المخزون، النماذج المُصدرة ────────── */
+
+/** تقرير تقفيلات الكاشير اليومية مع الفروقات (عجز/زيادة). */
+reportsRouter.get(
+  "/reports/cashier",
+  requireAuth,
+  requirePermission(PERMISSIONS.reportsView),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const filters = await readFilters(req, PERMISSIONS.cashierReadAll);
+
+    const conditions: SQL[] = [];
+    if (filters.employeeId) conditions.push(eq(cashierClosings.employeeId, filters.employeeId));
+    if (filters.branchId) conditions.push(eq(cashierClosings.branchId, filters.branchId));
+    if (filters.from) conditions.push(gte(cashierClosings.businessDate, filters.from));
+    if (filters.to) conditions.push(lte(cashierClosings.businessDate, filters.to));
+
+    const found = await db
+      .select({
+        closing: cashierClosings,
+        employeeCode: employees.employeeCode,
+        fullName: employees.fullName,
+        branchName: branches.name,
+      })
+      .from(cashierClosings)
+      .leftJoin(employees, eq(cashierClosings.employeeId, employees.id))
+      .leftJoin(branches, eq(cashierClosings.branchId, branches.id))
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(asc(cashierClosings.businessDate), asc(branches.name));
+
+    const rows = found.map((row) => ({
+      businessDate: row.closing.businessDate,
+      branchName: row.branchName ?? "",
+      employeeCode: row.employeeCode ?? "",
+      fullName: row.fullName ?? "",
+      shift: CASHIER_SHIFT_LABELS[row.closing.shift] ?? row.closing.shift,
+      totalSales: row.closing.totalSales,
+      cashSales: row.closing.cashSales,
+      cardSales: row.closing.cardSales,
+      transferSales: row.closing.transferSales,
+      deliverySales: row.closing.deliverySales,
+      discounts: row.closing.discounts,
+      refunds: row.closing.refunds,
+      expenses: row.closing.expenses,
+      expectedCash: row.closing.expectedCash,
+      countedCash: row.closing.countedCash,
+      difference: row.closing.difference,
+      invoiceCount: row.closing.invoiceCount,
+      status: CASHIER_STATUS_LABELS[row.closing.status] ?? row.closing.status,
+      notes: row.closing.notes,
+    }));
+
+    const shortages = rows.filter((row) => Number(row.difference) < 0);
+    const surpluses = rows.filter((row) => Number(row.difference) > 0);
+
+    sendReport(req, res, {
+      report: "cashier",
+      title: "تقرير تقفيلات الكاشير",
+      columns: [
+        { key: "businessDate", label: "التاريخ", type: "date" },
+        { key: "branchName", label: "الفرع", type: "text" },
+        { key: "employeeCode", label: "الرقم الوظيفي", type: "text" },
+        { key: "fullName", label: "الكاشير", type: "text" },
+        { key: "shift", label: "الوردية", type: "text" },
+        { key: "totalSales", label: "إجمالي المبيعات", type: "money" },
+        { key: "cashSales", label: "نقد", type: "money" },
+        { key: "cardSales", label: "شبكة", type: "money" },
+        { key: "transferSales", label: "تحويل", type: "money" },
+        { key: "deliverySales", label: "توصيل", type: "money" },
+        { key: "discounts", label: "خصومات", type: "money" },
+        { key: "refunds", label: "مرتجعات", type: "money" },
+        { key: "expenses", label: "مصروفات", type: "money" },
+        { key: "expectedCash", label: "النقد المتوقّع", type: "money" },
+        { key: "countedCash", label: "النقد المعدود", type: "money" },
+        { key: "difference", label: "الفارق", type: "money" },
+        { key: "invoiceCount", label: "عدد الفواتير", type: "number" },
+        { key: "status", label: "الحالة", type: "text" },
+        { key: "notes", label: "ملاحظات", type: "text" },
+      ],
+      rows,
+      summary: [
+        { label: "عدد التقفيلات", value: String(rows.length) },
+        { label: "إجمالي المبيعات", value: String(sumOf(rows, "totalSales")) },
+        { label: "إجمالي النقد", value: String(sumOf(rows, "cashSales")) },
+        { label: "إجمالي الشبكة", value: String(sumOf(rows, "cardSales")) },
+        { label: "صافي الفروقات", value: String(sumOf(rows, "difference")) },
+        { label: "تقفيلات بعجز", value: String(shortages.length) },
+        { label: "تقفيلات بزيادة", value: String(surpluses.length) },
+      ],
+      filters,
+    });
+  },
+);
+
+/** تقرير حركة المخزون اليومية (إدخال/إخراج/جرد) لكل فرع. */
+reportsRouter.get(
+  "/reports/inventory",
+  requireAuth,
+  requirePermission(PERMISSIONS.reportsView),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const filters = await readFilters(req, PERMISSIONS.inventoryRead);
+    const itemId = asId(req.query.itemId);
+
+    const conditions: SQL[] = [];
+    if (filters.branchId) conditions.push(eq(inventoryMovements.branchId, filters.branchId));
+    if (itemId) conditions.push(eq(inventoryMovements.itemId, itemId));
+    if (filters.from) conditions.push(gte(inventoryMovements.businessDate, filters.from));
+    if (filters.to) conditions.push(lte(inventoryMovements.businessDate, filters.to));
+
+    const found = await db
+      .select({
+        movement: inventoryMovements,
+        itemCode: inventoryItems.code,
+        itemName: inventoryItems.name,
+        unit: inventoryItems.unit,
+        branchName: branches.name,
+        createdByName: employees.fullName,
+      })
+      .from(inventoryMovements)
+      .leftJoin(inventoryItems, eq(inventoryMovements.itemId, inventoryItems.id))
+      .leftJoin(branches, eq(inventoryMovements.branchId, branches.id))
+      .leftJoin(employees, eq(inventoryMovements.createdByEmployeeId, employees.id))
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(asc(inventoryMovements.businessDate), asc(inventoryItems.code));
+
+    const rows = found.map((row) => ({
+      businessDate: row.movement.businessDate,
+      branchName: row.branchName ?? "",
+      itemCode: row.itemCode ?? "",
+      itemName: row.itemName ?? "",
+      unit: row.unit ?? "",
+      movementType: MOVEMENT_TYPE_LABELS[row.movement.movementType] ?? row.movement.movementType,
+      quantity: row.movement.quantity,
+      unitCost: row.movement.unitCost,
+      totalCost: row.movement.totalCost,
+      reason: MOVEMENT_REASON_LABELS[row.movement.reason] ?? row.movement.reason,
+      variance: row.movement.variance,
+      reference: row.movement.reference,
+      createdByName: row.createdByName ?? "",
+      notes: row.movement.notes,
+    }));
+
+    const quantityOf = (type: string) =>
+      round2(
+        rows
+          .filter((row) => row.movementType === MOVEMENT_TYPE_LABELS[type])
+          .reduce((total, row) => total + Number(row.quantity ?? 0), 0),
+      );
+
+    sendReport(req, res, {
+      report: "inventory",
+      title: "تقرير حركة المخزون",
+      columns: [
+        { key: "businessDate", label: "التاريخ", type: "date" },
+        { key: "branchName", label: "الفرع", type: "text" },
+        { key: "itemCode", label: "كود الصنف", type: "text" },
+        { key: "itemName", label: "الصنف", type: "text" },
+        { key: "unit", label: "الوحدة", type: "text" },
+        { key: "movementType", label: "نوع الحركة", type: "text" },
+        { key: "quantity", label: "الكمية", type: "number" },
+        { key: "unitCost", label: "تكلفة الوحدة", type: "money" },
+        { key: "totalCost", label: "الإجمالي", type: "money" },
+        { key: "reason", label: "السبب", type: "text" },
+        { key: "variance", label: "فرق الجرد", type: "number" },
+        { key: "reference", label: "المرجع", type: "text" },
+        { key: "createdByName", label: "سجّلها", type: "text" },
+        { key: "notes", label: "ملاحظات", type: "text" },
+      ],
+      rows,
+      summary: [
+        { label: "عدد الحركات", value: String(rows.length) },
+        { label: "إجمالي الوارد", value: String(quantityOf("in")) },
+        { label: "إجمالي الصادر", value: String(quantityOf("out")) },
+        { label: "إجمالي التكلفة", value: String(sumOf(rows, "totalCost")) },
+        { label: "صافي فروق الجرد", value: String(sumOf(rows, "variance")) },
+      ],
+      filters,
+    });
+  },
+);
+
+/** تقرير النماذج والمستندات المُصدرة: من طبع ماذا ولأي موظف ومتى. */
+reportsRouter.get(
+  "/reports/documents",
+  requireAuth,
+  requirePermission(PERMISSIONS.reportsView),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const filters = await readFilters(req, PERMISSIONS.documentsReadAll);
+    const { start, end } = instantRange(filters);
+    const docType = typeof req.query.doc === "string" ? req.query.doc.trim() : "";
+
+    const target = alias(employees, "doc_report_employee");
+    const issuer = alias(employees, "doc_report_issuer");
+
+    const conditions: SQL[] = [];
+    if (filters.employeeId) conditions.push(eq(documentIssues.employeeId, filters.employeeId));
+    if (filters.branchId) conditions.push(eq(documentIssues.branchId, filters.branchId));
+    if (docType) conditions.push(eq(documentIssues.docType, docType));
+    if (start) conditions.push(gte(documentIssues.issuedAt, start));
+    if (end) conditions.push(lte(documentIssues.issuedAt, end));
+
+    const found = await db
+      .select({
+        issue: documentIssues,
+        employeeCode: target.employeeCode,
+        fullName: target.fullName,
+        issuedByName: issuer.fullName,
+        branchName: branches.name,
+      })
+      .from(documentIssues)
+      .leftJoin(target, eq(documentIssues.employeeId, target.id))
+      .leftJoin(issuer, eq(documentIssues.issuedByEmployeeId, issuer.id))
+      .leftJoin(branches, eq(documentIssues.branchId, branches.id))
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(asc(documentIssues.issuedAt));
+
+    const rows = found.map((row) => ({
+      issuedAt: row.issue.issuedAt,
+      docType: DOC_TITLES.get(row.issue.docType) ?? row.issue.docType,
+      title: row.issue.title,
+      employeeCode: row.employeeCode ?? "",
+      fullName: row.fullName ?? "",
+      branchName: row.branchName ?? "",
+      issuedByName: row.issuedByName ?? "",
+      notes: row.issue.notes,
+    }));
+
+    const perType = new Map<string, number>();
+    for (const row of rows) {
+      perType.set(row.docType, (perType.get(row.docType) ?? 0) + 1);
+    }
+
+    sendReport(req, res, {
+      report: "documents",
+      title: "تقرير النماذج المُصدرة",
+      columns: [
+        { key: "issuedAt", label: "تاريخ الإصدار", type: "datetime" },
+        { key: "docType", label: "النموذج", type: "text" },
+        { key: "title", label: "العنوان", type: "text" },
+        { key: "employeeCode", label: "الرقم الوظيفي", type: "text" },
+        { key: "fullName", label: "الموظف", type: "text" },
+        { key: "branchName", label: "الفرع", type: "text" },
+        { key: "issuedByName", label: "أصدره", type: "text" },
+        { key: "notes", label: "ملاحظات", type: "text" },
+      ],
+      rows,
+      summary: [
+        { label: "عدد النماذج", value: String(rows.length) },
+        ...[...perType.entries()]
+          .sort((left, right) => right[1] - left[1])
+          .slice(0, 8)
+          .map(([type, total]) => ({ label: type, value: String(total) })),
+      ],
+      filters,
+    });
+  },
+);
+
 /** فهرس التقارير المتاحة — تبني منه الواجهة قائمة الاختيار. */
 reportsRouter.get(
   "/reports",
@@ -634,6 +930,9 @@ reportsRouter.get(
         { key: "overtime", title: "الأوفرتايم", path: "/reports/overtime" },
         { key: "bonuses", title: "المكافآت", path: "/reports/bonuses" },
         { key: "leaves", title: "الإجازات", path: "/reports/leaves" },
+        { key: "cashier", title: "تقفيلات الكاشير", path: "/reports/cashier" },
+        { key: "inventory", title: "حركة المخزون", path: "/reports/inventory" },
+        { key: "documents", title: "النماذج المُصدرة", path: "/reports/documents" },
       ],
     });
   },

@@ -645,3 +645,295 @@ export const leaveRequests = pgTable(
     index("leave_requests_employee_idx").on(table.employeeId, table.startDate),
   ],
 );
+
+/**
+ * company_settings — هوية المؤسسة وإعدادات الورق والطباعة.
+ * صف واحد فقط (`settings_key = 'default'`) يُقرأ في كل المطبوعات.
+ * الشعار يُخزَّن كـData URL داخل قاعدة البيانات حتى يعمل في المعاينة
+ * والإنتاج بلا أي خدمة تخزين خارجية.
+ */
+export const companySettings = pgTable("company_settings", {
+  id: serial().primaryKey(),
+  settingsKey: text("settings_key").notNull().unique().default("default"),
+  companyName: text("company_name").notNull().default("مؤسسة المطعم"),
+  companyNameEn: text("company_name_en").notNull().default(""),
+  legalForm: text("legal_form").notNull().default(""),
+  commercialRegister: text("commercial_register").notNull().default(""),
+  taxNumber: text("tax_number").notNull().default(""),
+  address: text().notNull().default(""),
+  city: text().notNull().default(""),
+  country: text().notNull().default("المملكة العربية السعودية"),
+  phone: text().notNull().default(""),
+  email: text().notNull().default(""),
+  website: text().notNull().default(""),
+  /** بيانات التذييل التي تظهر أسفل كل ورقة مطبوعة */
+  footerText: text("footer_text").notNull().default(""),
+  footerNote: text("footer_note").notNull().default(""),
+  /** صورة الشعار كـdata URL (base64) */
+  logoDataUrl: text("logo_data_url").notNull().default(""),
+  logoUpdatedAt: timestamp("logo_updated_at", { withTimezone: true }),
+  // ------------------------------------------------ تخصيص تصميم الورقة
+  /** A4 | A5 | letter */
+  paperSize: text("paper_size").notNull().default("A4"),
+  /** portrait | landscape */
+  paperOrientation: text("paper_orientation").notNull().default("portrait"),
+  marginMm: integer("margin_mm").notNull().default(16),
+  baseFontPt: doublePrecision("base_font_pt").notNull().default(11),
+  fontFamily: text("font_family").notNull().default("system"),
+  accentColor: text("accent_color").notNull().default("#0f766e"),
+  textColor: text("text_color").notNull().default("#111827"),
+  showLogo: boolean("show_logo").notNull().default(true),
+  showFooter: boolean("show_footer").notNull().default(true),
+  showSignatures: boolean("show_signatures").notNull().default(true),
+  showWatermark: boolean("show_watermark").notNull().default(false),
+  watermarkText: text("watermark_text").notNull().default(""),
+  headerNote: text("header_note").notNull().default(""),
+  currency: text().notNull().default("SAR"),
+  updatedByEmployeeId: integer("updated_by_employee_id").references(
+    () => employees.id,
+    { onDelete: "set null" },
+  ),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * departments — الأقسام (المطبخ، الكاشير، الصالة ...) لإدارتها من لوحة الإعدادات.
+ */
+export const departments = pgTable("departments", {
+  id: serial().primaryKey(),
+  name: text().notNull().unique(),
+  nameEn: text("name_en").notNull().default(""),
+  branchId: integer("branch_id").references(() => branches.id, {
+    onDelete: "set null",
+  }),
+  managerEmployeeId: integer("manager_employee_id").references(
+    (): AnyPgColumn => employees.id,
+    { onDelete: "set null" },
+  ),
+  note: text().notNull().default(""),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * job_titles — المسميات الوظيفية المعتمدة.
+ */
+export const jobTitles = pgTable("job_titles", {
+  id: serial().primaryKey(),
+  name: text().notNull().unique(),
+  nameEn: text("name_en").notNull().default(""),
+  departmentId: integer("department_id").references(() => departments.id, {
+    onDelete: "set null",
+  }),
+  defaultBasicSalary: money("default_basic_salary"),
+  note: text().notNull().default(""),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * salary_components — بنود الرواتب القابلة للتعريف (بدلات وخصومات).
+ */
+export const salaryComponents = pgTable("salary_components", {
+  id: serial().primaryKey(),
+  code: text().notNull().unique(),
+  name: text().notNull(),
+  /** allowance | deduction */
+  kind: text().notNull().default("allowance"),
+  /** fixed | percent — النسبة تُحسب من الراتب الأساسي */
+  calculation: text().notNull().default("fixed"),
+  defaultValue: money("default_value"),
+  taxable: boolean().notNull().default(false),
+  note: text().notNull().default(""),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * cashier_closings — تقفيل الكاشير اليومي: يرفعه الكاشير بنفسه
+ * (مبيعات، نقد، شبكة، فروقات) مرتبطاً بالفرع والتاريخ.
+ * الفارق = النقد المعدود − النقد المتوقّع، ويُحسب في الخادم.
+ */
+export const cashierClosings = pgTable(
+  "cashier_closings",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    /** تاريخ العمل بتوقيت الفرع */
+    businessDate: date("business_date").notNull(),
+    /** morning | evening | full — الوردية */
+    shift: text().notNull().default("full"),
+    openingFloat: money("opening_float"),
+    totalSales: money("total_sales"),
+    cashSales: money("cash_sales"),
+    cardSales: money("card_sales"),
+    transferSales: money("transfer_sales"),
+    deliverySales: money("delivery_sales"),
+    otherSales: money("other_sales"),
+    discounts: money("discounts"),
+    refunds: money("refunds"),
+    expenses: money("expenses"),
+    countedCash: money("counted_cash"),
+    /** النقد المتوقّع في الدرج = عهدة البداية + النقد − المصروفات − المرتجعات */
+    expectedCash: money("expected_cash"),
+    /** الفارق: سالب = عجز، موجب = زيادة */
+    difference: money("difference"),
+    invoiceCount: integer("invoice_count").notNull().default(0),
+    notes: text().notNull().default(""),
+    /** submitted | reviewed | disputed */
+    status: text().notNull().default("submitted"),
+    reviewNote: text("review_note").notNull().default(""),
+    reviewedByEmployeeId: integer("reviewed_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    /** تقفيل واحد لكل كاشير في نفس الفرع والتاريخ والوردية */
+    uniqueIndex("cashier_closings_unique_idx").on(
+      table.branchId,
+      table.employeeId,
+      table.businessDate,
+      table.shift,
+    ),
+    index("cashier_closings_branch_date_idx").on(table.branchId, table.businessDate),
+  ],
+);
+
+/**
+ * inventory_items — أصناف المخزون (مواد أولية، مستهلكات).
+ */
+export const inventoryItems = pgTable("inventory_items", {
+  id: serial().primaryKey(),
+  code: text().notNull().unique(),
+  name: text().notNull(),
+  category: text().notNull().default(""),
+  /** وحدة القياس: كجم، لتر، علبة ... */
+  unit: text().notNull().default("قطعة"),
+  unitCost: money("unit_cost"),
+  minQuantity: doublePrecision("min_quantity").notNull().default(0),
+  note: text().notNull().default(""),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * inventory_movements — حركة المخزون اليومية لكل فرع:
+ * `in` إدخال، `out` إخراج/استهلاك، `count` جرد (الكمية المعدودة فعلياً).
+ * الرصيد = آخر جرد + الإدخالات − الإخراجات بعد تاريخ ذلك الجرد.
+ */
+export const inventoryMovements = pgTable(
+  "inventory_movements",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    itemId: integer("item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "cascade" }),
+    /** in | out | count */
+    movementType: text("movement_type").notNull().default("in"),
+    businessDate: date("business_date").notNull(),
+    quantity: doublePrecision().notNull().default(0),
+    unitCost: money("unit_cost"),
+    totalCost: money("total_cost"),
+    /** purchase | consumption | waste | transfer | stocktake | other */
+    reason: text().notNull().default("other"),
+    reference: text().notNull().default(""),
+    /** فرق الجرد عن الرصيد الدفتري (يُحسب في الخادم لحركات الجرد) */
+    variance: doublePrecision().notNull().default(0),
+    notes: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("inventory_movements_branch_date_idx").on(table.branchId, table.businessDate),
+    index("inventory_movements_item_idx").on(table.itemId, table.businessDate),
+  ],
+);
+
+/**
+ * disciplinary_actions — الإنذارات التأديبية (نموذج قابل للطباعة).
+ */
+export const disciplinaryActions = pgTable(
+  "disciplinary_actions",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    /** notice | first | second | final | suspension */
+    level: text().notNull().default("first"),
+    incidentDate: date("incident_date").notNull(),
+    incidentDescription: text("incident_description").notNull().default(""),
+    violationType: text("violation_type").notNull().default("other"),
+    actionTaken: text("action_taken").notNull().default(""),
+    deductionAmount: money("deduction_amount"),
+    /** draft | issued | acknowledged | cancelled */
+    status: text().notNull().default("issued"),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    notes: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("disciplinary_actions_employee_idx").on(table.employeeId, table.incidentDate),
+  ],
+);
+
+/**
+ * document_issues — سجل النماذج والمستندات التي صُدرت/طُبعت،
+ * يُستخدم لتقرير «النماذج المُصدرة» ولتتبّع من طبع ماذا ومتى.
+ */
+export const documentIssues = pgTable(
+  "document_issues",
+  {
+    id: serial().primaryKey(),
+    /** مفتاح النموذج: contract | nda | appointment | warning ... */
+    docType: text("doc_type").notNull(),
+    title: text().notNull().default(""),
+    employeeId: integer("employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    branchId: integer("branch_id").references(() => branches.id, {
+      onDelete: "set null",
+    }),
+    /** نوع ومعرّف السجل المرتبط (سلفة، سند، عهدة ...) إن وُجد */
+    refType: text("ref_type").notNull().default(""),
+    refId: integer("ref_id"),
+    /** بيانات إضافية عن اللحظة التي صُدر فيها المستند (JSON نصي) */
+    payload: text().notNull().default(""),
+    notes: text().notNull().default(""),
+    issuedByEmployeeId: integer("issued_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("document_issues_type_idx").on(table.docType, table.issuedAt),
+    index("document_issues_employee_idx").on(table.employeeId, table.issuedAt),
+  ],
+);

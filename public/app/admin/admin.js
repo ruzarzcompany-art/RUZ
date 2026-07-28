@@ -37,6 +37,10 @@ import {
   refreshSchedules,
 } from "./people.js";
 import { initReportsModule } from "./reports.js";
+import { initSettingsModule, refreshSettingsPanel } from "./settings.js";
+import { initCashierModule, refreshCashierPanel } from "./cashier.js";
+import { initInventoryModule, refreshInventoryPanel } from "./inventory.js";
+import { initDocumentsModule, refreshDocumentsPanel } from "./documents.js";
 
 const state = {
   permissions: [],
@@ -52,19 +56,14 @@ const can = (code) => state.permissions.includes(code);
 
 /* ── تعبئة القوائم المنسدلة ───────────────────────────────── */
 
-function fillEmployees(select, { includeAll = false, includeEmpty = false } = {}) {
+function fillEmployees(select, { includeAll = false, includeEmpty = false, placeholder } = {}) {
   if (!select) return;
   select.textContent = "";
 
-  if (includeAll) {
+  if (placeholder || includeAll || includeEmpty) {
     const option = document.createElement("option");
     option.value = "";
-    option.textContent = "الكل";
-    select.append(option);
-  } else if (includeEmpty) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "بدون موظف";
+    option.textContent = placeholder ?? (includeAll ? "الكل" : "بدون موظف");
     select.append(option);
   }
 
@@ -76,9 +75,17 @@ function fillEmployees(select, { includeAll = false, includeEmpty = false } = {}
   }
 }
 
-function fillBranches(select) {
+function fillBranches(select, { placeholder } = {}) {
   if (!select) return;
   select.textContent = "";
+
+  if (placeholder) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = placeholder;
+    select.append(option);
+  }
+
   for (const branch of state.branches) {
     const option = document.createElement("option");
     option.value = String(branch.id);
@@ -522,7 +529,21 @@ async function refreshPeople() {
   fillEmployees(el("manual-employee"));
   fillEmployees(el("filter-employee"), { includeAll: true });
   fillEmployees(el("salary-employee"));
+  fillNewPanelSelects();
   fillPeopleSelects();
+}
+
+/** قوائم الموظفين والفروع في شاشات النماذج والكاشير والمخزون. */
+function fillNewPanelSelects() {
+  fillEmployees(el("doc-employee"), { placeholder: "اختر الموظف" });
+  fillEmployees(el("doc-issues-employee"), { includeAll: true });
+  fillEmployees(el("disc-employee"), { placeholder: "اختر الموظف" });
+  fillEmployees(el("disc-filter-employee"), { includeAll: true });
+  fillEmployees(el("cashier-employee"), { placeholder: "أنا" });
+
+  fillBranches(el("cashier-branch"), { placeholder: "فرعي" });
+  fillBranches(el("cashier-filter-branch"), { placeholder: "الكل" });
+  fillBranches(el("inventory-branch"), { placeholder: "فرعي" });
 }
 
 /* ── سجل التدقيق ──────────────────────────────────────────── */
@@ -571,8 +592,14 @@ const PANEL_LOADERS = {
     await refreshSchedules();
   },
   branches: refreshBranchesPanel,
+  documents: refreshDocumentsPanel,
+  cashier: refreshCashierPanel,
+  inventory: refreshInventoryPanel,
   reports: async () => {
     fillPeopleSelects();
+  },
+  settings: async () => {
+    await refreshSettingsPanel(state.employees);
   },
   audit: refreshAudit,
 };
@@ -753,6 +780,21 @@ el("admin-logout").addEventListener("click", async () => {
 
 /* ── الإقلاع ───────────────────────────────────────────────── */
 
+/** الصلاحيات التي تفتح كل تبويب — التبويب يُخفى إن لم يملك المستخدم أياً منها. */
+const TAB_PERMISSIONS = {
+  attendance: ["attendance.read_all"],
+  forms: ["forms.read_all", "forms.approve", "vouchers.manage", "custody.manage"],
+  payroll: ["payroll.manage", "salary.manage"],
+  people: ["employees.read"],
+  branches: ["branches.read"],
+  documents: ["documents.print", "documents.read_all", "disciplinary.manage", "forms.read_all"],
+  cashier: ["cashier.submit", "cashier.review", "cashier.read_all", "sections.cashier"],
+  inventory: ["inventory.read", "inventory.write", "sections.inventory"],
+  reports: ["reports.view", "sections.reports"],
+  settings: ["settings.manage", "branches.manage", "sections.settings"],
+  audit: ["audit.read"],
+};
+
 async function boot() {
   if (!getToken()) {
     requireLogin();
@@ -775,7 +817,13 @@ async function boot() {
     .filter(Boolean)
     .join(" · ");
 
-  if (!can("attendance.read_all")) {
+  // اللوحة تُفتح لمن يملك صلاحية أي تبويب — الكاشير مثلاً يدخل لشاشة
+  // التقفيل فقط دون صلاحية الحضور، والخادم يفرض الصلاحية على كل مسار.
+  const allowedTabs = Object.entries(TAB_PERMISSIONS)
+    .filter(([, codes]) => codes.some((code) => can(code)))
+    .map(([panel]) => panel);
+
+  if (allowedTabs.length === 0) {
     setAlert(
       el("admin-alert"),
       "هذه اللوحة تحتاج صلاحية إدارية (الموارد البشرية أو مدير الفرع).",
@@ -791,29 +839,34 @@ async function boot() {
   const branchesResult = await api("/branches");
   state.branches = branchesResult.ok ? (branchesResult.branches ?? []) : [];
   fillBranches(el("manual-branch"));
+  fillNewPanelSelects();
 
   // إخفاء التبويبات التي لا يملك صلاحيتها
-  const tabPermissions = {
-    forms: ["forms.read_all", "forms.approve", "vouchers.manage", "custody.manage"],
-    payroll: ["payroll.manage", "salary.manage"],
-    people: ["employees.read"],
-    branches: ["branches.read"],
-    reports: ["reports.view", "sections.reports"],
-    audit: ["audit.read"],
-  };
-
-  for (const [panel, codes] of Object.entries(tabPermissions)) {
-    const allowed = codes.some((code) => can(code));
+  for (const panel of Object.keys(TAB_PERMISSIONS)) {
     const tab = el("admin-tabs").querySelector(`[data-panel="${panel}"]`);
-    if (tab) tab.hidden = !allowed;
+    if (tab) tab.hidden = !allowedTabs.includes(panel);
   }
 
   initPeopleModule({ state, can, refreshPeople });
   initReportsModule();
+  initSettingsModule({ can, employees: state.employees });
+  initCashierModule({ can });
+  initInventoryModule({ can });
+  initDocumentsModule({ can });
   await loadPeopleMeta();
 
-  await refreshPeople();
-  await PANEL_LOADERS.attendance();
+  if (can("employees.read")) await refreshPeople();
+
+  // نفتح أول تبويب مسموح به بدل افتراض تبويب الحضور دائماً
+  const first = allowedTabs[0];
+  for (const node of el("admin-tabs").querySelectorAll(".tab")) {
+    node.classList.toggle("is-active", node.dataset.panel === first);
+  }
+  for (const panel of document.querySelectorAll(".panel")) {
+    panel.hidden = panel.id !== `panel-${first}`;
+  }
+
+  await PANEL_LOADERS[first]?.();
 }
 
 boot();

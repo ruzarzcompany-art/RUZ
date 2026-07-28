@@ -1,0 +1,361 @@
+/**
+ * حزمة النماذج المطبوعة: يختار المستخدم النموذج والموظف (والسجل المرجعي أو
+ * الشهر عند الحاجة) فتُفتح صفحة الطباعة مُملّأة تلقائياً من ملف الموظف.
+ *
+ * الشاشة تضم كذلك إدارة الإنذارات التأديبية (مصدر بيانات نموذج الإنذار)،
+ * وسجل النماذج المُصدرة.
+ */
+
+import {
+  api,
+  button,
+  el,
+  formatDateTime,
+  formatMoney,
+  openDocument,
+  row,
+  setAlert,
+  setBusy,
+  todayIso,
+} from "../api.js";
+
+const LEVEL_LABELS = {
+  notice: "تنبيه",
+  first: "إنذار أول",
+  second: "إنذار ثانٍ",
+  final: "إنذار نهائي",
+  suspension: "إيقاف عن العمل",
+};
+
+const DISCIPLINARY_STATUS = {
+  draft: "مسودّة",
+  issued: "صادر",
+  acknowledged: "مُستلم بالتوقيع",
+  cancelled: "ملغى",
+};
+
+const state = {
+  can: () => false,
+  documents: [],
+  current: null,
+  actions: [],
+  issues: [],
+  editingActionId: null,
+};
+
+/* ── اختيار النموذج ────────────────────────────────────────────── */
+
+function fillCatalog() {
+  const picker = el("doc-kind");
+  picker.textContent = "";
+
+  // نجمّع النماذج حسب المجموعة ليسهل العثور عليها في القائمة
+  const groups = new Map();
+  for (const doc of state.documents) {
+    if (!groups.has(doc.group)) groups.set(doc.group, []);
+    groups.get(doc.group).push(doc);
+  }
+
+  for (const [group, docs] of groups) {
+    const optgroup = document.createElement("optgroup");
+    optgroup.label = group;
+    for (const doc of docs) {
+      const option = document.createElement("option");
+      option.value = doc.key;
+      option.textContent = doc.title;
+      optgroup.append(option);
+    }
+    picker.append(optgroup);
+  }
+}
+
+/** يُظهر/يُخفي حقول النموذج حسب ما يحتاجه القالب المختار. */
+async function onDocChange() {
+  state.current = state.documents.find((doc) => doc.key === el("doc-kind").value) ?? null;
+  const doc = state.current;
+  if (!doc) return;
+
+  el("doc-description").textContent = doc.description;
+  el("doc-employee-field").hidden = !doc.needsEmployee;
+  el("doc-month-field").hidden = !doc.needsMonth;
+  el("doc-ref-field").hidden = !doc.refType;
+  el("doc-legal-hint").hidden = !doc.legal;
+
+  if (doc.refType) {
+    el("doc-ref-label").textContent = doc.refLabel;
+    await loadReferences();
+  }
+}
+
+async function loadReferences() {
+  const doc = state.current;
+  const picker = el("doc-ref");
+  picker.textContent = "";
+
+  if (!doc?.refType) return;
+
+  const employeeId = el("doc-employee").value;
+  const query = new URLSearchParams({ doc: doc.key });
+  if (employeeId) query.set("employeeId", employeeId);
+
+  const result = await api(`/documents/references?${query.toString()}`);
+
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = result.ok && result.references?.length ? "— بدون سجل مرتبط —" : "لا توجد سجلات";
+  picker.append(none);
+
+  for (const reference of result.references ?? []) {
+    const option = document.createElement("option");
+    option.value = String(reference.id);
+    option.textContent = reference.label;
+    picker.append(option);
+  }
+}
+
+function printSelected() {
+  const doc = state.current;
+  if (!doc) return;
+
+  const employeeId = el("doc-employee").value;
+  if (doc.needsEmployee && !employeeId) {
+    setAlert(el("doc-result"), "اختر الموظف أولاً.", "warn");
+    return;
+  }
+
+  setAlert(el("doc-result"), "فُتحت صفحة الطباعة في تبويب جديد.", "ok");
+  openDocument(doc.key, {
+    employeeId: doc.needsEmployee ? employeeId : "",
+    refId: doc.refType ? el("doc-ref").value : "",
+    month: doc.needsMonth ? el("doc-month").value : "",
+  });
+
+  // سجل الإصدار يُكتب من صفحة الطباعة نفسها؛ نُحدّث القائمة بعد لحظة
+  window.setTimeout(loadIssues, 2500);
+}
+
+/* ── الإنذارات التأديبية ───────────────────────────────────────── */
+
+function fillActionForm(action) {
+  el("disc-employee").value = action ? String(action.employeeId) : "";
+  el("disc-level").value = action?.level ?? "first";
+  el("disc-date").value = action?.incidentDate ?? todayIso();
+  el("disc-violation").value = action?.violationType ?? "";
+  el("disc-description").value = action?.incidentDescription ?? "";
+  el("disc-action").value = action?.actionTaken ?? "";
+  el("disc-deduction").value = action?.deductionAmount ?? 0;
+  el("disc-status").value = action?.status ?? "issued";
+  el("disc-notes").value = action?.notes ?? "";
+
+  state.editingActionId = action?.id ?? null;
+  el("disc-submit").textContent = action ? "حفظ التعديل" : "تسجيل الإنذار";
+  el("disc-cancel").hidden = !action;
+}
+
+async function submitAction(event) {
+  event.preventDefault();
+  const submit = el("disc-submit");
+  setBusy(submit, true);
+
+  const body = {
+    employeeId: Number(el("disc-employee").value),
+    level: el("disc-level").value,
+    incidentDate: el("disc-date").value,
+    violationType: el("disc-violation").value.trim(),
+    incidentDescription: el("disc-description").value.trim(),
+    actionTaken: el("disc-action").value.trim(),
+    deductionAmount: Number(el("disc-deduction").value || 0),
+    status: el("disc-status").value,
+    notes: el("disc-notes").value.trim(),
+  };
+
+  const result = state.editingActionId
+    ? await api(`/disciplinary/${state.editingActionId}`, { method: "PATCH", body })
+    : await api("/disciplinary", { method: "POST", body });
+
+  setBusy(submit, false);
+  setAlert(
+    el("disc-result"),
+    result.ok ? "تم حفظ الإنذار." : (result.error ?? "تعذّر الحفظ"),
+    result.ok ? "ok" : "error",
+  );
+
+  if (result.ok) {
+    fillActionForm(null);
+    await loadActions();
+  }
+}
+
+async function removeAction(action) {
+  if (!window.confirm(`حذف الإنذار الصادر بتاريخ ${action.incidentDate}؟`)) return;
+  const result = await api(`/disciplinary/${action.id}`, { method: "DELETE" });
+  setAlert(
+    el("disc-result"),
+    result.ok ? result.message : (result.error ?? "تعذّر الحذف"),
+    result.ok ? "ok" : "error",
+  );
+  if (result.ok) await loadActions();
+}
+
+function renderActions() {
+  const body = el("disc-table").querySelector("tbody");
+  body.textContent = "";
+  const canManage = state.can("disciplinary.manage");
+
+  for (const action of state.actions) {
+    const actions = document.createElement("span");
+    actions.className = "row-actions";
+
+    actions.append(
+      button("طباعة", {
+        onClick: () =>
+          openDocument("warning", { employeeId: action.employeeId, refId: action.id }),
+      }),
+    );
+
+    if (canManage) {
+      actions.append(
+        button("تعديل", {
+          onClick: () => {
+            fillActionForm(action);
+            el("disc-form").scrollIntoView({ behavior: "smooth", block: "center" });
+          },
+        }),
+        button("حذف", {
+          className: "btn btn--danger btn--xs",
+          onClick: () => removeAction(action),
+        }),
+      );
+    }
+
+    body.append(
+      row([
+        action.incidentDate,
+        `${action.employeeCode ?? ""} — ${action.employeeName ?? ""}`,
+        LEVEL_LABELS[action.level] ?? action.level,
+        action.violationType || "—",
+        action.incidentDescription,
+        formatMoney(action.deductionAmount),
+        DISCIPLINARY_STATUS[action.status] ?? action.status,
+        actions,
+      ]),
+    );
+  }
+
+  el("disc-empty").hidden = state.actions.length > 0;
+  el("disc-form").hidden = !canManage;
+}
+
+export async function loadActions() {
+  const employeeId = el("disc-filter-employee").value;
+  const result = await api(`/disciplinary${employeeId ? `?employeeId=${employeeId}` : ""}`);
+
+  if (!result.ok) {
+    state.actions = [];
+    renderActions();
+    setAlert(el("disc-result"), result.error ?? "تعذّر تحميل الإنذارات", "error");
+    return;
+  }
+
+  state.actions = result.actions ?? [];
+  renderActions();
+}
+
+/* ── سجل النماذج المُصدرة ──────────────────────────────────────── */
+
+function renderIssues() {
+  const body = el("doc-issues-table").querySelector("tbody");
+  body.textContent = "";
+
+  for (const issue of state.issues) {
+    body.append(
+      row([
+        formatDateTime(issue.issuedAt),
+        issue.docTitle,
+        issue.employeeName ? `${issue.employeeCode ?? ""} — ${issue.employeeName}` : "—",
+        issue.branchName ?? "—",
+        issue.issuedByName ?? "—",
+      ]),
+    );
+  }
+
+  el("doc-issues-empty").hidden = state.issues.length > 0;
+}
+
+export async function loadIssues() {
+  const params = new URLSearchParams();
+  const employeeId = el("doc-issues-employee").value;
+  const docType = el("doc-issues-kind").value;
+  if (employeeId) params.set("employeeId", employeeId);
+  if (docType) params.set("doc", docType);
+
+  const query = params.toString();
+  const result = await api(`/documents/issues${query ? `?${query}` : ""}`);
+
+  if (!result.ok) {
+    state.issues = [];
+    renderIssues();
+    return;
+  }
+
+  state.issues = result.issues ?? [];
+  renderIssues();
+}
+
+function fillIssuesKindPicker() {
+  const picker = el("doc-issues-kind");
+  picker.textContent = "";
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = "كل النماذج";
+  picker.append(all);
+
+  for (const doc of state.documents) {
+    const option = document.createElement("option");
+    option.value = doc.key;
+    option.textContent = doc.title;
+    picker.append(option);
+  }
+}
+
+/* ── التهيئة ───────────────────────────────────────────────────── */
+
+export function initDocumentsModule({ can }) {
+  state.can = can;
+
+  el("doc-kind").addEventListener("change", onDocChange);
+  el("doc-employee").addEventListener("change", loadReferences);
+  el("doc-print").addEventListener("click", printSelected);
+
+  el("disc-form").addEventListener("submit", submitAction);
+  el("disc-cancel").addEventListener("click", () => fillActionForm(null));
+  el("disc-filter-run").addEventListener("click", loadActions);
+
+  el("doc-issues-run").addEventListener("click", loadIssues);
+
+  el("doc-month").value = todayIso().slice(0, 7);
+  el("disc-date").value = todayIso();
+}
+
+export async function refreshDocumentsPanel() {
+  if (state.documents.length === 0) {
+    const catalog = await api("/documents/catalog");
+    if (!catalog.ok) {
+      setAlert(el("doc-result"), catalog.error ?? "تعذّر تحميل دليل النماذج", "error");
+      return;
+    }
+
+    state.documents = catalog.documents ?? [];
+    fillCatalog();
+    fillIssuesKindPicker();
+    el("doc-legal-notice").textContent = catalog.legalNotice ?? "";
+
+    if (!catalog.canPrintForOthers) {
+      setAlert(el("doc-result"), "يمكنك طباعة نماذج ملفك الشخصي فقط حسب صلاحياتك.", "warn");
+    }
+
+    await onDocChange();
+  }
+
+  await Promise.all([loadActions(), loadIssues()]);
+}

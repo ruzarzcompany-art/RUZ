@@ -2,10 +2,15 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import {
   branches,
+  companySettings,
+  departments,
   employees,
+  inventoryItems,
+  jobTitles,
   permissions,
   rolePermissions,
   roles,
+  salaryComponents,
   salaryDefinitions,
   workSchedules,
 } from "../db/schema.js";
@@ -61,10 +66,22 @@ const ROLE_SEED: Array<{
       PERMISSIONS.custodyManage,
       PERMISSIONS.schedulesManage,
       PERMISSIONS.permissionsManage,
+      PERMISSIONS.cashierReadAll,
+      PERMISSIONS.cashierReview,
+      PERMISSIONS.inventoryRead,
+      PERMISSIONS.inventoryWrite,
+      PERMISSIONS.inventoryItemsManage,
+      PERMISSIONS.settingsManage,
+      PERMISSIONS.documentsPrint,
+      PERMISSIONS.documentsReadAll,
+      PERMISSIONS.disciplinaryManage,
       PERMISSIONS.sectionPayroll,
       PERMISSIONS.sectionCashierClosing,
       PERMISSIONS.sectionReports,
       PERMISSIONS.sectionEmployeeFile,
+      PERMISSIONS.sectionInventory,
+      PERMISSIONS.sectionSettings,
+      PERMISSIONS.sectionDocuments,
     ],
   },
   {
@@ -87,9 +104,20 @@ const ROLE_SEED: Array<{
       PERMISSIONS.formsReadAll,
       PERMISSIONS.formsApprove,
       PERMISSIONS.custodyManage,
+      PERMISSIONS.cashierSubmit,
+      PERMISSIONS.cashierReadAll,
+      PERMISSIONS.cashierReview,
+      PERMISSIONS.inventoryRead,
+      PERMISSIONS.inventoryWrite,
+      PERMISSIONS.inventoryItemsManage,
+      PERMISSIONS.documentsPrint,
+      PERMISSIONS.documentsReadAll,
+      PERMISSIONS.disciplinaryManage,
       PERMISSIONS.sectionReports,
       PERMISSIONS.sectionCashierClosing,
       PERMISSIONS.sectionEmployeeFile,
+      PERMISSIONS.sectionInventory,
+      PERMISSIONS.sectionDocuments,
     ],
   },
   {
@@ -105,8 +133,13 @@ const ROLE_SEED: Array<{
       PERMISSIONS.formsSubmit,
       PERMISSIONS.formsReadOwn,
       PERMISSIONS.formsReadAll,
+      PERMISSIONS.cashierSubmit,
+      PERMISSIONS.cashierReadAll,
+      PERMISSIONS.inventoryRead,
+      PERMISSIONS.inventoryWrite,
       PERMISSIONS.sectionPayroll,
       PERMISSIONS.sectionEmployeeFile,
+      PERMISSIONS.sectionInventory,
     ],
   },
   {
@@ -119,6 +152,11 @@ const ROLE_SEED: Array<{
       PERMISSIONS.branchesRead,
       PERMISSIONS.formsSubmit,
       PERMISSIONS.formsReadOwn,
+      /**
+       * الكاشير يرفع تقفيله اليومي بنفسه؛ ولمنع موظف بعينه من ذلك
+       * يُستخدم التخصيص الفردي (`deny cashier.submit`).
+       */
+      PERMISSIONS.cashierSubmit,
       /**
        * الموظف يرى مسيّرات رواتبه وملفه الشخصي بشكل افتراضي؛ وللموارد البشرية
        * تعطيل أي قسم منها لموظف بعينه عبر التخصيص الفردي (`deny`).
@@ -298,6 +336,72 @@ async function runSeed(): Promise<void> {
       .set({ managerEmployeeId: manager.id })
       .where(and(eq(branches.id, branch.id), isNull(branches.managerEmployeeId)));
   }
+
+  // ------------------------------------------------- إعدادات المؤسسة والمطبوعات
+  // صف واحد (`default`) يُنشأ مرة واحدة ثم يُعدَّل من لوحة الإعدادات.
+  await db
+    .insert(companySettings)
+    .values({
+      settingsKey: "default",
+      companyName: env("SEED_COMPANY_NAME") ?? "مؤسسة المطعم",
+      address: env("SEED_BRANCH_ADDRESS") ?? "الرياض، المملكة العربية السعودية",
+      city: "الرياض",
+      footerText: "هذا المستند صادر إلكترونياً من نظام سِجل لإدارة موظفي المطعم.",
+      footerNote: "للاستفسار: الموارد البشرية",
+    })
+    .onConflictDoNothing();
+
+  // ------------------------------------------- كيانات لوحة الإعدادات الأساسية
+  await db
+    .insert(departments)
+    .values([
+      { name: "الإدارة", branchId: branch?.id ?? null },
+      { name: "الموارد البشرية", branchId: branch?.id ?? null },
+      { name: "المطبخ", branchId: branch?.id ?? null },
+      { name: "الكاشير", branchId: branch?.id ?? null },
+      { name: "الصالة والتقديم", branchId: branch?.id ?? null },
+      { name: "التوصيل", branchId: branch?.id ?? null },
+    ])
+    .onConflictDoNothing();
+
+  await db
+    .insert(jobTitles)
+    .values([
+      { name: "مدير الفرع", defaultBasicSalary: 9000 },
+      { name: "مدير الموارد البشرية", defaultBasicSalary: 11000 },
+      { name: "مشرف وردية", defaultBasicSalary: 6000 },
+      { name: "كاشير", defaultBasicSalary: 4500 },
+      { name: "طاهي", defaultBasicSalary: 5000 },
+      { name: "مساعد طاهي", defaultBasicSalary: 3800 },
+      { name: "عامل تقديم", defaultBasicSalary: 3500 },
+      { name: "سائق توصيل", defaultBasicSalary: 4000 },
+    ])
+    .onConflictDoNothing();
+
+  await db
+    .insert(salaryComponents)
+    .values([
+      { code: "HOUSING", name: "بدل سكن", kind: "allowance", calculation: "percent", defaultValue: 25 },
+      { code: "TRANSPORT", name: "بدل نقل", kind: "allowance", calculation: "fixed", defaultValue: 300 },
+      { code: "FOOD", name: "بدل إعاشة", kind: "allowance", calculation: "fixed", defaultValue: 200 },
+      { code: "OTHER_ALLOWANCE", name: "بدلات أخرى", kind: "allowance", calculation: "fixed" },
+      { code: "GOSI", name: "التأمينات الاجتماعية", kind: "deduction", calculation: "percent", defaultValue: 9.75 },
+      { code: "ADVANCE", name: "خصم سلفة", kind: "deduction", calculation: "fixed" },
+      { code: "PENALTY", name: "خصم جزائي", kind: "deduction", calculation: "fixed" },
+    ])
+    .onConflictDoNothing();
+
+  // أصناف مخزون افتراضية حتى تعمل شاشة المخزون من أول تشغيل
+  await db
+    .insert(inventoryItems)
+    .values([
+      { code: "ITM-001", name: "دقيق", category: "مواد أولية", unit: "كجم", unitCost: 4, minQuantity: 25 },
+      { code: "ITM-002", name: "زيت قلي", category: "مواد أولية", unit: "لتر", unitCost: 12, minQuantity: 20 },
+      { code: "ITM-003", name: "دجاج طازج", category: "مواد أولية", unit: "كجم", unitCost: 18, minQuantity: 30 },
+      { code: "ITM-004", name: "علب تغليف", category: "مستهلكات", unit: "علبة", unitCost: 0.7, minQuantity: 200 },
+      { code: "ITM-005", name: "أكياس", category: "مستهلكات", unit: "كيس", unitCost: 0.2, minQuantity: 300 },
+    ])
+    .onConflictDoNothing();
 }
 
 let seedPromise: Promise<void> | undefined;

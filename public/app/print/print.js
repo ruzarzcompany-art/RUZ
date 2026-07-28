@@ -1,118 +1,151 @@
 /**
- * صفحة طباعة المستندات: مسير راتب، عقد عمل، سند قبض/صرف.
- * التصدير إلى PDF يتم عبر طباعة المتصفح (`@media print` في styles.css)
- * بدل إضافة مكتبة PDF إلى الخادم.
+ * صفحة طباعة المستندات.
+ *
+ * تدعم مسارين:
+ *  1) حزمة النماذج الجديدة: `?doc=<key>&employeeId=&refId=&month=` — تُملأ
+ *     تلقائياً من `GET /api/documents/data` وتُسجَّل في «النماذج المُصدرة».
+ *  2) المسار القديم: `?doc=payroll|contract|voucher&id=<id>` — يبقى عاملاً
+ *     لأن أزرار الطباعة في شاشات النماذج والرواتب تستخدمه.
+ *
+ * هوية المؤسسة (الشعار، التذييل، تصميم الورقة) تُطبَّق على المسارين معاً،
+ * والتصدير إلى PDF يتم عبر طباعة المتصفح بدل مكتبة PDF على الخادم.
  */
 
 import { api, el, formatDateTime, formatMoney, getToken, label, requireLogin } from "../api.js";
+import {
+  applyPaperDesign,
+  documentFooter,
+  documentHeader,
+  documentMeta,
+  loadIdentity,
+  watermark,
+} from "./identity.js";
+import { TEMPLATES, legalNotice, pairs, signatures } from "./templates.js";
 
 const params = new URLSearchParams(window.location.search);
-const doc = params.get("doc") ?? "payroll";
-const id = Number(params.get("id"));
+const docKey = params.get("doc") ?? "payroll";
+const legacyId = Number(params.get("id"));
 
-const ORG_NAME = "سِجل — نظام موظفي المطعم";
-
-function heading(title, subtitle) {
-  const head = document.createElement("header");
-  head.className = "sheet__head";
-
-  const org = document.createElement("p");
-  org.className = "sheet__org";
-  org.textContent = ORG_NAME;
-
-  const h1 = document.createElement("h1");
-  h1.className = "sheet__title";
-  h1.textContent = title;
-
-  const sub = document.createElement("p");
-  sub.className = "sheet__sub";
-  sub.textContent = subtitle;
-
-  head.append(org, h1, sub);
-  return head;
-}
-
-function pairs(rows) {
-  const table = document.createElement("table");
-  table.className = "sheet__pairs";
-  const body = document.createElement("tbody");
-
-  for (const [key, value] of rows) {
-    const tr = document.createElement("tr");
-    const th = document.createElement("th");
-    th.textContent = key;
-    const td = document.createElement("td");
-    td.textContent = value ?? "—";
-    tr.append(th, td);
-    body.append(tr);
-  }
-
-  table.append(body);
-  return table;
-}
-
-function signatures(labels) {
-  const wrap = document.createElement("div");
-  wrap.className = "sheet__signs";
-  for (const text of labels) {
-    const box = document.createElement("div");
-    box.className = "sheet__sign";
-    const caption = document.createElement("p");
-    caption.textContent = text;
-    const line = document.createElement("span");
-    line.className = "sheet__line";
-    box.append(caption, line);
-    wrap.append(box);
-  }
-  return wrap;
-}
+const container = () => el("doc");
 
 function fail(message) {
-  el("doc").textContent = "";
-  const note = document.createElement("p");
-  note.className = "alert alert--error";
-  note.textContent = message;
-  el("doc").append(note);
+  const node = container();
+  node.textContent = "";
+  const alert = document.createElement("p");
+  alert.className = "alert alert--error";
+  alert.textContent = message;
+  node.append(alert);
 }
 
-async function renderPayroll() {
-  const result = await api(`/payroll/slips/${id}`);
-  if (!result.ok) return fail(result.error ?? "تعذّر تحميل المسير");
+/** يبني الورقة كاملة: علامة مائية + ترويسة + محتوى + توقيعات + تذييل. */
+function compose(company, { title, subtitle, meta, body, signLabels, notice }) {
+  const node = container();
+  node.textContent = "";
+  node.classList.add("sheet--custom");
+
+  const mark = watermark(company);
+  if (mark) node.append(mark);
+
+  node.append(documentHeader(company, title, subtitle));
+
+  if (meta && meta.length > 0) node.append(documentMeta(meta));
+
+  for (const part of body) {
+    if (part) node.append(part);
+  }
+
+  const legal = legalNotice(notice);
+  if (legal) node.append(legal);
+
+  if (company.showSignatures && signLabels && signLabels.length > 0) {
+    node.append(signatures(signLabels));
+  }
+
+  const footer = documentFooter(company);
+  if (footer) node.append(footer);
+}
+
+/* ── المسار الجديد: حزمة النماذج ───────────────────────────────── */
+
+async function renderPackaged(company) {
+  const query = new URLSearchParams({ doc: docKey });
+  for (const key of ["employeeId", "refId", "month"]) {
+    const value = params.get(key);
+    if (value) query.set(key, value);
+  }
+
+  const result = await api(`/documents/data?${query.toString()}`);
+  if (!result.ok) {
+    fail(result.error ?? "تعذّر تحميل بيانات النموذج");
+    return;
+  }
+
+  const template = TEMPLATES[docKey];
+  if (!template) {
+    fail("قالب هذا النموذج غير متاح في صفحة الطباعة.");
+    return;
+  }
+
+  // إعدادات المؤسسة القادمة مع البيانات أحدث من النسخة المخزَّنة محلياً
+  const identity = { ...company, ...(result.company ?? {}) };
+  applyPaperDesign(identity);
+
+  const subtitleParts = [
+    result.employee ? `${result.employee.fullName} — ${result.employee.employeeCode}` : "",
+    result.month ?? "",
+  ].filter(Boolean);
+
+  compose(identity, {
+    title: result.doc?.title ?? docKey,
+    subtitle: subtitleParts.join(" | "),
+    meta: [
+      ["التاريخ", result.today],
+      ["الفرع", result.branch?.name],
+      ["أصدره", result.issuedBy?.fullName],
+    ],
+    body: template.render(result),
+    signLabels: template.signatures,
+    notice: result.legalNotice,
+  });
+
+  // تسجيل النموذج في «النماذج المُصدرة» — لا يُعطّل الطباعة عند الفشل
+  api("/documents/issues", {
+    method: "POST",
+    body: {
+      docType: docKey,
+      title: result.doc?.title,
+      employeeId: result.employee?.id ?? null,
+      branchId: result.branch?.id ?? null,
+      refId: params.get("refId") ? Number(params.get("refId")) : null,
+      payload: { month: result.month ?? null },
+    },
+  }).catch(() => {});
+}
+
+/* ── المسار القديم: مسير راتب، عقد مسجَّل، سند ─────────────────── */
+
+async function renderLegacyPayroll(company) {
+  const result = await api(`/payroll/slips/${legacyId}`);
+  if (!result.ok) {
+    fail(result.error ?? "تعذّر تحميل المسير");
+    return;
+  }
 
   const slip = result.item;
-  const currency = slip.currency ?? "SAR";
-  const container = el("doc");
-  container.textContent = "";
-
-  container.append(
-    heading("مسير راتب شهري", `الشهر ${slip.period} — ${slip.fullName ?? ""}`),
-    pairs([
-      ["الموظف", `${slip.employeeCode ?? ""} — ${slip.fullName ?? ""}`],
-      ["المسمى الوظيفي", slip.jobTitle],
-      ["الفرع", slip.branchName],
-      ["الشهر", slip.period],
-      ["ساعات العمل الفعلية", `${slip.workedHours ?? 0} ساعة`],
-      ["أجر الساعة", formatMoney(slip.hourlyRate, currency)],
-    ]),
-  );
+  const currency = slip.currency ?? company.currency ?? "SAR";
 
   const table = document.createElement("table");
   table.className = "sheet__table";
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const text of ["البند", "القيمة"]) {
+    const th = document.createElement("th");
+    th.textContent = text;
+    headRow.append(th);
+  }
+  thead.append(headRow);
 
-  const head = document.createElement("thead");
-  head.append(
-    (() => {
-      const tr = document.createElement("tr");
-      for (const text of ["البند", "القيمة"]) {
-        const th = document.createElement("th");
-        th.textContent = text;
-        tr.append(th);
-      }
-      return tr;
-    })(),
-  );
-
-  const body = document.createElement("tbody");
+  const tbody = document.createElement("tbody");
   const lines = [
     ["الراتب الأساسي", slip.basicSalary],
     ["إجمالي البدلات", slip.allowancesTotal],
@@ -125,12 +158,12 @@ async function renderPayroll() {
 
   for (const [name, value] of lines) {
     const tr = document.createElement("tr");
-    const th = document.createElement("td");
-    th.textContent = name;
-    const td = document.createElement("td");
-    td.textContent = formatMoney(value, currency);
-    tr.append(th, td);
-    body.append(tr);
+    const nameCell = document.createElement("td");
+    nameCell.textContent = name;
+    const valueCell = document.createElement("td");
+    valueCell.textContent = formatMoney(value, currency);
+    tr.append(nameCell, valueCell);
+    tbody.append(tr);
   }
 
   const total = document.createElement("tr");
@@ -140,97 +173,118 @@ async function renderPayroll() {
   const totalValue = document.createElement("td");
   totalValue.textContent = formatMoney(slip.netPay, currency);
   total.append(totalLabel, totalValue);
-  body.append(total);
+  tbody.append(total);
+  table.append(thead, tbody);
 
-  table.append(head, body);
-  container.append(table);
+  const notes = document.createElement("p");
+  notes.className = "sheet__note";
+  notes.textContent = slip.notes ? `ملاحظات: ${slip.notes}` : "";
 
-  if (slip.notes) {
-    const note = document.createElement("p");
-    note.className = "sheet__note";
-    note.textContent = `ملاحظات: ${slip.notes}`;
-    container.append(note);
-  }
-
-  container.append(signatures(["الموظف", "الموارد البشرية", "المدير المالي"]));
+  compose(company, {
+    title: "مسير راتب شهري",
+    subtitle: `الشهر ${slip.period} — ${slip.fullName ?? ""}`,
+    meta: [["الفرع", slip.branchName], ["الرقم الوظيفي", slip.employeeCode]],
+    body: [
+      pairs([
+        ["الموظف", `${slip.employeeCode ?? ""} — ${slip.fullName ?? ""}`],
+        ["المسمى الوظيفي", slip.jobTitle],
+        ["الفرع", slip.branchName],
+        ["الشهر", slip.period],
+        ["ساعات العمل الفعلية", `${slip.workedHours ?? 0} ساعة`],
+        ["أجر الساعة", formatMoney(slip.hourlyRate, currency)],
+      ]),
+      table,
+      slip.notes ? notes : null,
+    ],
+    signLabels: ["الموظف", "الموارد البشرية", "المدير المالي"],
+  });
 }
 
 async function loadForm(resource) {
-  const result = await api(`/forms/${resource}/${id}`);
+  const result = await api(`/forms/${resource}/${legacyId}`);
   return result.ok ? result.item : null;
 }
 
-async function renderContract() {
+async function renderLegacyContract(company) {
   const contract = await loadForm("contracts");
-  if (!contract) return fail("العقد غير موجود أو لا تملك صلاحية عرضه.");
+  if (!contract) {
+    fail("العقد غير موجود أو لا تملك صلاحية عرضه.");
+    return;
+  }
 
-  const container = el("doc");
-  container.textContent = "";
-  container.append(
-    heading("عقد عمل", `رقم العقد ${contract.contractNumber ?? "—"}`),
-    pairs([
-      ["الموظف", `${contract.employeeCode ?? ""} — ${contract.fullName ?? ""}`],
-      ["المسمى الوظيفي", contract.jobTitle],
-      ["تاريخ البداية", contract.startDate],
-      ["تاريخ النهاية", contract.endDate ?? "غير محدّد (عقد مفتوح)"],
-      ["الراتب الأساسي", formatMoney(contract.basicSalary)],
-      ["إجمالي البدلات", formatMoney(contract.allowancesTotal)],
-      ["فترة التجربة", `${contract.probationMonths ?? 0} شهر`],
-      ["ساعات العمل", contract.workingHours],
-      ["حالة العقد", label(contract.status)],
-      ["تاريخ التوقيع", contract.signedAt ?? "—"],
-    ]),
-  );
-
+  const terms = document.createElement("section");
+  terms.className = "sheet__terms";
   if (contract.terms) {
-    const terms = document.createElement("section");
-    terms.className = "sheet__terms";
     const title = document.createElement("h2");
     title.textContent = "الشروط والأحكام";
     const text = document.createElement("p");
     text.textContent = contract.terms;
     terms.append(title, text);
-    container.append(terms);
   }
 
-  container.append(signatures(["الطرف الأول (المنشأة)", "الطرف الثاني (الموظف)"]));
+  compose(company, {
+    title: "عقد عمل",
+    subtitle: `رقم العقد ${contract.contractNumber ?? "—"}`,
+    meta: [["التاريخ", contract.startDate]],
+    body: [
+      pairs([
+        ["الموظف", `${contract.employeeCode ?? ""} — ${contract.fullName ?? ""}`],
+        ["المسمى الوظيفي", contract.jobTitle],
+        ["تاريخ البداية", contract.startDate],
+        ["تاريخ النهاية", contract.endDate ?? "غير محدّد (عقد مفتوح)"],
+        ["الراتب الأساسي", formatMoney(contract.basicSalary)],
+        ["إجمالي البدلات", formatMoney(contract.allowancesTotal)],
+        ["فترة التجربة", `${contract.probationMonths ?? 0} شهر`],
+        ["ساعات العمل", contract.workingHours],
+        ["حالة العقد", label(contract.status)],
+        ["تاريخ التوقيع", contract.signedAt ?? "—"],
+      ]),
+      contract.terms ? terms : null,
+    ],
+    signLabels: ["الطرف الأول (المنشأة)", "الطرف الثاني (الموظف)"],
+    notice:
+      "هذا النموذج صيغة عامة لأغراض تنظيمية داخلية، وليس استشارة قانونية رسمية. " +
+      "يُنصح بمراجعته من مستشار قانوني مختص قبل الاعتماد أو التوقيع.",
+  });
 }
 
-async function renderVoucher() {
+async function renderLegacyVoucher(company) {
   const voucher = await loadForm("vouchers");
-  if (!voucher) return fail("السند غير موجود أو لا تملك صلاحية عرضه.");
+  if (!voucher) {
+    fail("السند غير موجود أو لا تملك صلاحية عرضه.");
+    return;
+  }
 
-  const container = el("doc");
-  container.textContent = "";
-  container.append(
-    heading(
-      voucher.type === "receipt" ? "سند قبض" : "سند صرف",
-      `رقم السند ${voucher.voucherNumber ?? "—"}`,
-    ),
-    pairs([
-      ["التاريخ", voucher.voucherDate],
-      ["المبلغ", formatMoney(voucher.amount)],
-      ["طريقة الدفع", label(voucher.method)],
-      [
-        "الموظف المرتبط",
-        voucher.fullName ? `${voucher.employeeCode ?? ""} — ${voucher.fullName}` : "—",
-      ],
-      ["المستفيد", voucher.beneficiaryName || voucher.fullName || "—"],
-      ["البيان", voucher.description],
-      ["تاريخ الإنشاء", formatDateTime(voucher.createdAt)],
-    ]),
-    signatures([
+  compose(company, {
+    title: voucher.type === "receipt" ? "سند قبض" : "سند صرف",
+    subtitle: `رقم السند ${voucher.voucherNumber ?? "—"}`,
+    meta: [["التاريخ", voucher.voucherDate]],
+    body: [
+      pairs([
+        ["التاريخ", voucher.voucherDate],
+        ["المبلغ", formatMoney(voucher.amount)],
+        ["طريقة الدفع", label(voucher.method)],
+        [
+          "الموظف المرتبط",
+          voucher.fullName ? `${voucher.employeeCode ?? ""} — ${voucher.fullName}` : "—",
+        ],
+        ["المستفيد", voucher.beneficiaryName || voucher.fullName || "—"],
+        ["البيان", voucher.description],
+        ["تاريخ الإنشاء", formatDateTime(voucher.createdAt)],
+      ]),
+    ],
+    signLabels: [
       voucher.type === "receipt" ? "المستلم" : "المستفيد",
       "أمين الصندوق",
       "الاعتماد",
-    ]),
-  );
+    ],
+  });
 }
 
-const RENDERERS = {
-  payroll: renderPayroll,
-  contract: renderContract,
-  voucher: renderVoucher,
+const LEGACY = {
+  payroll: renderLegacyPayroll,
+  contract: renderLegacyContract,
+  voucher: renderLegacyVoucher,
 };
 
 el("print-now").addEventListener("click", () => window.print());
@@ -246,19 +300,24 @@ async function boot() {
     return;
   }
 
-  if (!Number.isInteger(id) || id <= 0) {
-    fail("معرّف المستند غير صالح.");
-    return;
-  }
-
-  const renderer = RENDERERS[doc];
-  if (!renderer) {
-    fail("نوع المستند غير مدعوم.");
-    return;
-  }
+  const company = await loadIdentity();
+  applyPaperDesign(company);
 
   el("print-note").textContent = "اختر «حفظ كـPDF» من نافذة الطباعة لتصدير المستند.";
-  await renderer();
+
+  // `?id=` يعني الطباعة القديمة لسجل بعينه (مسير/عقد/سند)
+  const useLegacy = Number.isInteger(legacyId) && legacyId > 0 && LEGACY[docKey];
+  if (useLegacy) {
+    await LEGACY[docKey](company);
+    return;
+  }
+
+  if (TEMPLATES[docKey]) {
+    await renderPackaged(company);
+    return;
+  }
+
+  fail("نوع المستند غير مدعوم.");
 }
 
 boot();

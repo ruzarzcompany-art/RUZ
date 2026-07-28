@@ -321,35 +321,50 @@ async function loadPermissions() {
     (result.overrides ?? []).map((item) => [item.permissionCode, item.effect]),
   );
 
+  // البنود تُجمَّع حسب `group` القادم من الخادم لتسهيل قراءة القائمة الطويلة
+  const groups = new Map();
   for (const section of result.sections ?? []) {
-    const wrap = document.createElement("div");
-    wrap.className = "perm";
+    const key = section.group ?? "أخرى";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(section);
+  }
 
-    const text = document.createElement("div");
-    const title = document.createElement("span");
-    title.className = "perm__label";
-    title.textContent = section.label;
-    const hint = document.createElement("span");
-    hint.className = "perm__hint";
-    hint.textContent = `${section.hint} — دوره ${roleCodes.has(section.code) ? "يمنحه" : "لا يمنحه"} هذا القسم`;
-    text.append(title, hint);
+  for (const [groupName, sections] of groups) {
+    const heading = document.createElement("h4");
+    heading.className = "perm__group";
+    heading.textContent = groupName;
+    host.append(heading);
 
-    const select = document.createElement("select");
-    select.dataset.permissionCode = section.code;
-    for (const [value, optionLabel] of [
-      ["", "افتراضي الدور"],
-      ["allow", "مسموح"],
-      ["deny", "ممنوع"],
-    ]) {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = optionLabel;
-      select.append(option);
+    for (const section of sections) {
+      const wrap = document.createElement("div");
+      wrap.className = "perm";
+
+      const text = document.createElement("div");
+      const title = document.createElement("span");
+      title.className = "perm__label";
+      title.textContent = section.label;
+      const hint = document.createElement("span");
+      hint.className = "perm__hint";
+      hint.textContent = `${section.hint} — دوره ${roleCodes.has(section.code) ? "يمنحه" : "لا يمنحه"} هذا البند`;
+      text.append(title, hint);
+
+      const select = document.createElement("select");
+      select.dataset.permissionCode = section.code;
+      for (const [value, optionLabel] of [
+        ["", "افتراضي الدور"],
+        ["allow", "مسموح"],
+        ["deny", "ممنوع"],
+      ]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = optionLabel;
+        select.append(option);
+      }
+      select.value = overrideByCode.get(section.code) ?? "";
+
+      wrap.append(text, select);
+      host.append(wrap);
     }
-    select.value = overrideByCode.get(section.code) ?? "";
-
-    wrap.append(text, select);
-    host.append(wrap);
   }
 
   setAlert(

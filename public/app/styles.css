@@ -1052,6 +1052,172 @@ select option {
   color: #4a442f;
 }
 
+/* ── هوية المؤسسة على المطبوعات ─────────────────────────────────
+   القيم أدناه تُحدَّد وقت التشغيل من `company_settings` (لوحة الإعدادات):
+   حجم الورق واتجاهه، الهوامش، حجم الخط وعائلته، لون التمييز والنص.  */
+
+.body--print {
+  --sheet-paper-w: 210mm;
+  --sheet-margin: 16mm;
+  --sheet-font: 11pt;
+  --sheet-accent: #0f766e;
+  --sheet-text: #111827;
+  --sheet-family: "IBM Plex Sans Arabic", system-ui, sans-serif;
+}
+
+.sheet--custom {
+  max-width: var(--sheet-paper-w);
+  padding: var(--sheet-margin);
+  font-family: var(--sheet-family);
+  font-size: var(--sheet-font);
+  color: var(--sheet-text);
+  position: relative;
+}
+
+.sheet--custom .sheet__title,
+.sheet--custom .sheet__terms h2 {
+  font-family: var(--sheet-family);
+  color: var(--sheet-accent);
+}
+
+.sheet--custom .sheet__head {
+  border-bottom-color: var(--sheet-accent);
+}
+
+.sheet__brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+  margin-bottom: 0.6rem;
+}
+
+.sheet__logo {
+  max-height: 74px;
+  max-width: 190px;
+  object-fit: contain;
+}
+
+.sheet__brand-text {
+  text-align: start;
+}
+
+.sheet__brand-text h2 {
+  margin: 0;
+  font-size: 1.05em;
+  color: var(--sheet-accent);
+}
+
+.sheet__brand-text p {
+  margin: 0.1rem 0 0;
+  font-size: 0.78em;
+  color: #5b5340;
+  line-height: 1.6;
+}
+
+.sheet__headnote {
+  margin: 0.35rem 0 0;
+  font-size: 0.76em;
+  color: #6d6449;
+}
+
+.sheet__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  font-size: 0.76em;
+  color: #5b5340;
+  margin-bottom: 1rem;
+}
+
+.sheet__clauses {
+  margin: 0 0 1.4rem;
+  padding-inline-start: 1.2rem;
+  font-size: 0.88em;
+  line-height: 2;
+}
+
+.sheet__clauses li {
+  margin-bottom: 0.45rem;
+}
+
+.sheet__clauses li strong {
+  color: var(--sheet-accent);
+}
+
+.sheet__legal {
+  margin: 1.2rem 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px dashed var(--sheet-accent);
+  border-radius: 4px;
+  font-size: 0.76em;
+  line-height: 1.9;
+  color: #4a442f;
+  background: #fbfaf6;
+}
+
+.sheet__footer {
+  margin-top: 2rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--sheet-accent);
+  font-size: 0.72em;
+  line-height: 1.8;
+  color: #5b5340;
+  text-align: center;
+}
+
+.sheet__footer p {
+  margin: 0;
+}
+
+.sheet__watermark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  font-size: 4.4em;
+  font-weight: 700;
+  color: var(--sheet-accent);
+  opacity: 0.07;
+  transform: rotate(-28deg);
+  letter-spacing: 0.1em;
+  z-index: 0;
+}
+
+.sheet--custom > *:not(.sheet__watermark) {
+  position: relative;
+  z-index: 1;
+}
+
+/* كشف الحضور الشهري: صفوف مضغوطة وخانة توقيع يدوي */
+.sheet__attend {
+  font-size: 0.78em;
+}
+
+.sheet__attend th,
+.sheet__attend td {
+  padding: 0.28rem 0.35rem;
+  text-align: center;
+}
+
+.sheet__attend .is-off {
+  background: #f7f4ea;
+  color: #8a8168;
+}
+
+.sheet__attend .sign-cell {
+  min-width: 90px;
+}
+
+.sheet__docs {
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+}
+
 /* ── تخصيص الصلاحيات ومُلخّص التقارير ───────────────────────── */
 
 .stack {
@@ -1100,6 +1266,82 @@ select option {
   color: var(--bone);
 }
 
+/* ── الشاشات المضافة: الإعدادات، الكاشير، المخزون، النماذج ─────── */
+
+.perm__group {
+  margin: 0.9rem 0 0.35rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  color: var(--bone-dim);
+  text-transform: none;
+}
+
+.card__title--xs {
+  margin: 1rem 0 0.4rem;
+  font-size: 0.85rem;
+  color: var(--bone-dim);
+}
+
+.form-grid--nested {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.field__hint {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--bone-dim);
+  margin-top: 0.15rem;
+}
+
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.input--xs {
+  width: 6rem;
+  padding: 0.25rem 0.4rem;
+  font-size: 0.78rem;
+}
+
+/* فرق التقفيل وأرصدة المخزون: العجز أحمر والزيادة خضراء */
+.is-negative {
+  color: #e2735f;
+}
+
+.is-positive {
+  color: #86b06a;
+}
+
+.logo-preview {
+  max-height: 72px;
+  max-width: 180px;
+  object-fit: contain;
+  padding: 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(240, 236, 222, 0.92);
+}
+
+.badge--submitted {
+  border-color: rgba(196, 168, 90, 0.5);
+  color: #d8be7a;
+}
+
+.badge--reviewed {
+  border-color: rgba(134, 176, 106, 0.5);
+  color: #86b06a;
+}
+
+.badge--disputed {
+  border-color: rgba(226, 115, 95, 0.5);
+  color: #e2735f;
+}
+
 @media print {
   .no-print {
     display: none !important;
@@ -1121,6 +1363,28 @@ select option {
   .sheet__table,
   .sheet__signs {
     break-inside: avoid;
+  }
+
+  .sheet--custom {
+    padding: 0;
+    max-width: none;
+  }
+
+  /* الجدول الطويل (كشف الحضور) يُسمح بتقسيمه مع تكرار رأسه */
+  .sheet__attend {
+    break-inside: auto;
+  }
+
+  .sheet__attend thead {
+    display: table-header-group;
+  }
+
+  .sheet__attend tr {
+    break-inside: avoid;
+  }
+
+  .sheet__watermark {
+    opacity: 0.1;
   }
 
   @page {

@@ -42,11 +42,30 @@ export const PERMISSIONS = {
   schedulesManage: "schedules.manage",
   /** تخصيص صلاحيات عرض لموظف بعينه (فوق صلاحيات دوره) */
   permissionsManage: "permissions.manage",
+  /** الكاشير يرفع تقفيله اليومي بنفسه */
+  cashierSubmit: "cashier.submit",
+  /** عرض تقفيلات كل الكاشيرات لا تقفيلاته فقط */
+  cashierReadAll: "cashier.read_all",
+  /** مراجعة/اعتماد التقفيل وتعديله بعد الرفع */
+  cashierReview: "cashier.review",
+  inventoryRead: "inventory.read",
+  inventoryWrite: "inventory.write",
+  /** إدارة أصناف المخزون نفسها (لا الحركات فقط) */
+  inventoryItemsManage: "inventory.items_manage",
+  /** لوحة الإعدادات الشاملة: الكيانات الأساسية وهوية المطبوعات */
+  settingsManage: "settings.manage",
+  /** طباعة/إصدار النماذج الرسمية من حزمة المستندات */
+  documentsPrint: "documents.print",
+  documentsReadAll: "documents.read_all",
+  disciplinaryManage: "disciplinary.manage",
   /* أقسام العرض — تُستخدم لإظهار/إخفاء أقسام بعينها لموظف محدّد */
   sectionPayroll: "sections.payroll",
   sectionCashierClosing: "sections.cashier_closing",
   sectionReports: "sections.reports",
   sectionEmployeeFile: "sections.employee_file",
+  sectionInventory: "sections.inventory",
+  sectionSettings: "sections.settings",
+  sectionDocuments: "sections.documents",
 } as const;
 
 export const PERMISSION_CATALOG: Array<{ code: string; description: string }> = [
@@ -93,47 +112,157 @@ export const PERMISSION_CATALOG: Array<{ code: string; description: string }> = 
     code: PERMISSIONS.sectionEmployeeFile,
     description: "رؤية ملف الموظف الكامل",
   },
+  { code: PERMISSIONS.cashierSubmit, description: "رفع تقفيل الكاشير اليومي" },
+  {
+    code: PERMISSIONS.cashierReadAll,
+    description: "عرض تقفيلات جميع الكاشيرات",
+  },
+  { code: PERMISSIONS.cashierReview, description: "مراجعة تقفيل الكاشير وتعديله" },
+  { code: PERMISSIONS.inventoryRead, description: "عرض المخزون وحركاته" },
+  { code: PERMISSIONS.inventoryWrite, description: "تسجيل حركة مخزون (إدخال/إخراج/جرد)" },
+  { code: PERMISSIONS.inventoryItemsManage, description: "إدارة أصناف المخزون" },
+  {
+    code: PERMISSIONS.settingsManage,
+    description: "لوحة الإعدادات: الكيانات الأساسية وهوية المطبوعات",
+  },
+  { code: PERMISSIONS.documentsPrint, description: "إصدار وطباعة النماذج الرسمية" },
+  { code: PERMISSIONS.documentsReadAll, description: "عرض سجل النماذج المُصدرة" },
+  { code: PERMISSIONS.disciplinaryManage, description: "إصدار الإنذارات التأديبية" },
+  { code: PERMISSIONS.sectionInventory, description: "رؤية شاشة المخزون" },
+  { code: PERMISSIONS.sectionSettings, description: "رؤية لوحة الإعدادات" },
+  { code: PERMISSIONS.sectionDocuments, description: "رؤية شاشة النماذج القابلة للطباعة" },
 ];
 
 /**
- * الأقسام القابلة للتخصيص لموظف بعينه من شاشة الموارد البشرية.
- * كل قسم يقابل رمز صلاحية واحد يُفحص في الخادم وتُخفى واجهته في المتصفح.
+ * الأقسام والبنود القابلة للتخصيص لموظف بعينه من شاشة الموارد البشرية.
+ * كل بند يقابل رمز صلاحية واحد يُفحص في الخادم وتُخفى واجهته في المتصفح،
+ * و`group` يُستخدم لتجميع البنود في الواجهة فقط.
  */
-export const SECTION_CATALOG: Array<{ code: string; label: string; hint: string }> = [
+export const SECTION_CATALOG: Array<{
+  code: string;
+  label: string;
+  hint: string;
+  group: string;
+}> = [
   {
     code: PERMISSIONS.sectionPayroll,
     label: "قسم الرواتب",
     hint: "عرض مسيّرات الرواتب وتقرير الرواتب",
+    group: "الشاشات",
   },
   {
     code: PERMISSIONS.sectionCashierClosing,
     label: "قسم تقفيل الكاشير",
     hint: "عرض سندات القبض والصرف وتقفيل الكاشير",
+    group: "الشاشات",
   },
   {
     code: PERMISSIONS.sectionReports,
     label: "شاشة التقارير",
     hint: "عرض شاشة التقارير وتصديرها",
+    group: "الشاشات",
   },
   {
     code: PERMISSIONS.sectionEmployeeFile,
     label: "ملف الموظف الكامل",
     hint: "عرض بيانات ملف الموظف وجدول دوامه",
+    group: "الشاشات",
+  },
+  {
+    code: PERMISSIONS.sectionInventory,
+    label: "شاشة المخزون",
+    hint: "عرض حركة المخزون اليومية والأصناف",
+    group: "الشاشات",
+  },
+  {
+    code: PERMISSIONS.sectionDocuments,
+    label: "شاشة النماذج والمستندات",
+    hint: "عرض حزمة النماذج القابلة للطباعة",
+    group: "الشاشات",
+  },
+  {
+    code: PERMISSIONS.sectionSettings,
+    label: "لوحة الإعدادات",
+    hint: "عرض لوحة الإعدادات الشاملة",
+    group: "الشاشات",
   },
   {
     code: PERMISSIONS.reportsView,
     label: "التقارير (صلاحية أساسية)",
     hint: "الصلاحية التي تسمح بقراءة بيانات التقارير من الخادم",
+    group: "صلاحيات القراءة",
   },
   {
     code: PERMISSIONS.attendanceReadAll,
     label: "حضور جميع الموظفين",
     hint: "عرض سجلات حضور بقية الفريق",
+    group: "صلاحيات القراءة",
   },
   {
     code: PERMISSIONS.formsReadAll,
     label: "نماذج جميع الموظفين",
     hint: "عرض نماذج وطلبات بقية الفريق",
+    group: "صلاحيات القراءة",
+  },
+  {
+    code: PERMISSIONS.cashierReadAll,
+    label: "تقفيلات جميع الكاشيرات",
+    hint: "عرض تقفيلات الفرع كاملة لا تقفيلاته الشخصية فقط",
+    group: "صلاحيات القراءة",
+  },
+  {
+    code: PERMISSIONS.documentsReadAll,
+    label: "سجل النماذج المُصدرة",
+    hint: "عرض من طبع أي نموذج ومتى",
+    group: "صلاحيات القراءة",
+  },
+  {
+    code: PERMISSIONS.inventoryRead,
+    label: "قراءة المخزون",
+    hint: "عرض الأصناف والأرصدة والحركات",
+    group: "صلاحيات القراءة",
+  },
+  {
+    code: PERMISSIONS.cashierSubmit,
+    label: "رفع تقفيل الكاشير",
+    hint: "السماح لهذا الموظف برفع تقفيله اليومي",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.cashierReview,
+    label: "مراجعة التقفيل",
+    hint: "اعتماد أو الاعتراض على تقفيلات الكاشير",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.inventoryWrite,
+    label: "تسجيل حركة مخزون",
+    hint: "إدخال/إخراج/جرد الأصناف",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.inventoryItemsManage,
+    label: "إدارة أصناف المخزون",
+    hint: "إضافة وتعديل الأصناف نفسها",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.documentsPrint,
+    label: "إصدار النماذج الرسمية",
+    hint: "طباعة العقود والإنذارات والإقرارات",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.disciplinaryManage,
+    label: "الإنذارات التأديبية",
+    hint: "إنشاء الإنذارات وإصدارها",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.settingsManage,
+    label: "تعديل الإعدادات",
+    hint: "إضافة/تعديل/حذف الكيانات الأساسية وهوية المطبوعات",
+    group: "صلاحيات التنفيذ",
   },
 ];
 

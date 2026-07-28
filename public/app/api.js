@@ -203,6 +203,19 @@ export function openPrint(kind, id) {
   window.open(`/app/print/?doc=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`, "_blank");
 }
 
+/**
+ * يفتح نموذجاً من حزمة النماذج المطبوعة، مُملّأً تلقائياً من ملف الموظف.
+ * مثال: `openDocument("contract", { employeeId: 5, refId: 2 })`.
+ */
+export function openDocument(docKey, options = {}) {
+  const query = new URLSearchParams({ doc: docKey });
+  for (const [key, value] of Object.entries(options)) {
+    if (value === null || value === undefined || value === "") continue;
+    query.set(key, String(value));
+  }
+  window.open(`/app/print/?${query.toString()}`, "_blank");
+}
+
 export function requireLogin() {
   window.location.href = "/app/";
 }

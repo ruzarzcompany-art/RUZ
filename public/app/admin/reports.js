@@ -24,6 +24,9 @@ const REPORT_TITLES = {
   overtime: "تقرير الأوفرتايم",
   bonuses: "تقرير المكافآت",
   leaves: "تقرير الإجازات",
+  cashier: "تقرير تقفيلات الكاشير",
+  inventory: "تقرير حركة المخزون",
+  documents: "تقرير النماذج المُصدرة",
 };
 
 /** آخر تقرير مُحمَّل — يُستخدم للطباعة بلا إعادة استعلام. */
@@ -132,15 +135,28 @@ async function exportCsv() {
   );
 }
 
+/** هوية المؤسسة للطباعة — تُقرأ مرة واحدة ثم تُخزَّن. */
+let identity = null;
+
+async function loadIdentity() {
+  if (identity) return identity;
+  const result = await api("/settings/company");
+  identity = result.ok && result.settings ? result.settings : {};
+  return identity;
+}
+
 /**
  * الطباعة: نبني صفحة مستقلة بالجدول الحالي في نافذة جديدة ثم نطبعها،
- * فلا تتأثر شاشة اللوحة ولا تحتاج قواعد طباعة خاصة.
+ * فلا تتأثر شاشة اللوحة ولا تحتاج قواعد طباعة خاصة. هوية المؤسسة
+ * (الشعار والترويسة والتذييل وتصميم الورقة) تُطبَّق من لوحة الإعدادات.
  */
-function printReport() {
+async function printReport() {
   if (!current) {
     setAlert(el("report-result"), "اعرض التقرير أولاً ثم اطبعه.", "warn");
     return;
   }
+
+  const company = await loadIdentity();
 
   const window_ = window.open("", "_blank", "width=1024,height=768");
   if (!window_) {
@@ -176,24 +192,66 @@ function printReport() {
     .map((item) => `<li>${escape(item.label)}: <strong>${escape(item.value)}</strong></li>`)
     .join("");
 
+  // التقارير جداول عريضة، فنُبقيها عرضية دائماً ونأخذ من الإعدادات ما يناسبها
+  const margin = Number.isFinite(company.marginMm) ? company.marginMm : 12;
+  const paper = company.paperSize === "letter" ? "letter" : company.paperSize === "A5" ? "A5" : "A4";
+  const accent = /^#[0-9a-fA-F]{6}$/.test(company.accentColor ?? "") ? company.accentColor : "#4a442f";
+
+  const logo =
+    company.showLogo !== false && company.logoDataUrl
+      ? `<img src="${escape(company.logoDataUrl)}" alt="" class="logo" />`
+      : "";
+
+  const identityLines = [
+    [company.commercialRegister ? `س.ت: ${company.commercialRegister}` : "",
+     company.taxNumber ? `الرقم الضريبي: ${company.taxNumber}` : ""].filter(Boolean).join(" — "),
+    [company.address, company.city, company.country].filter(Boolean).join(" — "),
+  ]
+    .filter(Boolean)
+    .map((line) => `<p class="ident">${escape(line)}</p>`)
+    .join("");
+
+  const footerLines =
+    company.showFooter === false
+      ? ""
+      : [company.footerText, [company.website, company.phone, company.email].filter(Boolean).join(" | "), company.footerNote]
+          .filter(Boolean)
+          .map((line) => `<p>${escape(line)}</p>`)
+          .join("");
+
   window_.document.write(`<!doctype html>
 <html lang="ar" dir="rtl"><head><meta charset="utf-8" />
 <title>${escape(current.title ?? REPORT_TITLES[current.report] ?? "تقرير")}</title>
 <style>
   body { font-family: "IBM Plex Sans Arabic", system-ui, sans-serif; padding: 16px; color: #1a180f; }
+  header.brand { display: flex; align-items: center; gap: 10px; border-bottom: 2px solid ${accent}; padding-bottom: 6px; margin-bottom: 10px; }
+  header.brand .logo { max-height: 48px; max-width: 120px; object-fit: contain; }
+  header.brand h2 { font-size: 15px; margin: 0; color: ${accent}; }
+  header.brand .ident { font-size: 10px; margin: 1px 0; color: #4a442f; }
   h1 { font-size: 18px; margin: 0 0 4px; }
   p.meta { font-size: 12px; color: #4a442f; margin: 0 0 12px; }
   table { width: 100%; border-collapse: collapse; font-size: 11px; }
   th, td { border: 1px solid #cfc9b4; padding: 4px 6px; text-align: right; }
   th { background: #f2eee0; }
+  thead { display: table-header-group; }
   ul { font-size: 12px; padding-inline-start: 18px; }
-  @page { size: A4 landscape; margin: 12mm; }
+  footer.brand { margin-top: 14px; border-top: 1px solid #cfc9b4; padding-top: 6px; font-size: 10px; color: #4a442f; text-align: center; }
+  footer.brand p { margin: 1px 0; }
+  @page { size: ${paper} landscape; margin: ${margin}mm; }
 </style></head>
 <body>
+  <header class="brand">
+    ${logo}
+    <div>
+      <h2>${escape(company.companyName ?? "")}</h2>
+      ${identityLines}
+    </div>
+  </header>
   <h1>${escape(current.title ?? "تقرير")}</h1>
   <p class="meta">${escape(filters || "بلا تصفية")} — طُبع في ${escape(new Date().toLocaleString("ar"))}</p>
   <table><thead><tr>${header}</tr></thead><tbody>${rows}</tbody></table>
   <ul>${summary}</ul>
+  <footer class="brand">${footerLines}</footer>
 </body></html>`);
   window_.document.close();
   window_.focus();
