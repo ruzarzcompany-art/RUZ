@@ -991,6 +991,23 @@ select option {
   color: var(--bone-dim);
 }
 
+/* مُبدِّل مقاس الورق واتجاهه: يُعيد كتابة قاعدة @page للمستند الحالي
+   حتى يطابق الورق المُحمَّل في الطابعة فلا تُقطع الصفحة أو يضيع باقيها. */
+.print-toolbar__field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--bone-dim);
+}
+
+.print-toolbar__field select {
+  width: auto;
+  min-width: 8.5rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.78rem;
+}
+
 .sheet {
   display: block;
   max-width: 800px;

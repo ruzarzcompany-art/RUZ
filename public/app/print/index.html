@@ -15,6 +15,17 @@
     <div class="print-toolbar no-print">
       <button id="print-now" class="btn btn--primary btn--sm" type="button">طباعة / حفظ PDF</button>
       <button id="print-back" class="btn btn--ghost btn--sm" type="button">رجوع</button>
+      <label class="print-toolbar__field">
+        <span>مقاس الورق</span>
+        <select id="print-paper"></select>
+      </label>
+      <label class="print-toolbar__field">
+        <span>الاتجاه</span>
+        <select id="print-orientation">
+          <option value="portrait">عمودي</option>
+          <option value="landscape">أفقي</option>
+        </select>
+      </label>
       <span id="print-note" class="hint"></span>
     </div>
 

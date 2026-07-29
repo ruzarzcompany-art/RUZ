@@ -12,6 +12,13 @@ const PAPER_MM = {
   letter: { width: 216, height: 279, css: "letter" },
 };
 
+/** المقاسات المعروضة في مُبدِّل الورق أعلى صفحة الطباعة. */
+export const PAPER_CHOICES = [
+  { value: "A4", label: "A4 (210×297 مم)" },
+  { value: "letter", label: "Letter (216×279 مم)" },
+  { value: "A5", label: "A5 (148×210 مم)" },
+];
+
 const FONT_STACKS = {
   system: 'system-ui, -apple-system, "Segoe UI", sans-serif',
   naskh: '"IBM Plex Sans Arabic", "Noto Naskh Arabic", serif',
