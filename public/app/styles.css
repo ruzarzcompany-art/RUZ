@@ -758,6 +758,61 @@ select option {
   padding: 0.3rem 0.5rem;
 }
 
+/* ثلاث بصمات وجه، لكل واحدة زر التقاط مستقل */
+.face__slots {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* ── لقطة تأكيد الهوية عند التسجيل (لا تُرسل للخادم) ─────────── */
+
+.card--match {
+  display: grid;
+  gap: 0.7rem;
+  animation-delay: 0.08s;
+}
+
+.match {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.match__photo {
+  width: 84px;
+  height: 84px;
+  flex: 0 0 auto;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--ink-900);
+  /* الكاميرا الأمامية معكوسة — نقلب اللقطة ليتعرّف الموظف على نفسه */
+  transform: scaleX(-1);
+}
+
+.match__info {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.match__name {
+  margin: 0;
+  font-family: "Reem Kufi", sans-serif;
+  font-size: 1rem;
+  color: var(--bone);
+}
+
+.match__meta {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--bone-dim);
+}
+
 /* ── التبويبات ──────────────────────────────────────────────── */
 
 .tabs {
@@ -803,6 +858,11 @@ select option {
 
 .tabs--main .tab:not(.is-active) {
   border-color: var(--line);
+}
+
+/* قائمة الأقسام الإضافية في تطبيق الموظف */
+.tabs--extras {
+  margin-bottom: 1rem;
 }
 
 .panel {
@@ -903,8 +963,7 @@ select option {
   margin-bottom: 0.5rem;
 }
 
-.card--forms,
-.card--docs {
+.card--forms {
   display: grid;
   gap: 0.8rem;
   animation-delay: 0.26s;
@@ -1008,6 +1067,54 @@ select option {
   font-weight: 700;
   font-size: 1rem;
   border-top: 2px solid #1a180f;
+}
+
+/*
+ * كشف التحضير والانصراف: تسعة أعمدة تحتاج توزيعاً ثابتاً حتى تدخل في عرض
+ * الورقة، وخانات تُعبَّأ باليد فتحتاج ارتفاع سطر أوسع.
+ */
+.sheet__roster {
+  font-size: 0.78rem;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.sheet__roster th,
+.sheet__roster td {
+  height: 2.1rem;
+  padding: 0.3rem 0.35rem;
+  overflow-wrap: anywhere;
+}
+
+/* م / الرقم الوظيفي / الاسم / الإقامة ثم خانات التعبئة اليدوية */
+.sheet__roster th:nth-child(1) {
+  width: 5%;
+}
+
+.sheet__roster th:nth-child(2) {
+  width: 11%;
+}
+
+.sheet__roster th:nth-child(3) {
+  width: 20%;
+}
+
+.sheet__roster th:nth-child(4) {
+  width: 12%;
+}
+
+.sheet__roster th:nth-child(5),
+.sheet__roster th:nth-child(7) {
+  width: 9%;
+}
+
+.sheet__roster th:nth-child(6),
+.sheet__roster th:nth-child(8) {
+  width: 11%;
+}
+
+.sheet__roster th:nth-child(9) {
+  width: 12%;
 }
 
 .sheet__terms {
@@ -1316,6 +1423,21 @@ select option {
   font-size: 0.78rem;
 }
 
+/* حقول داخل خلايا الجداول (بنود تقفيل الكاشير) */
+.input--cell {
+  width: 100%;
+  min-width: 5rem;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.82rem;
+}
+
+/* عنوان اليوم داخل سجلات الحضور والتدقيق */
+.row--day td {
+  background: #f3eee2;
+  font-weight: 700;
+  color: #4a442f;
+}
+
 /* فرق التقفيل وأرصدة المخزون: العجز أحمر والزيادة خضراء */
 .is-negative {
   color: #e2735f;
@@ -1514,8 +1636,27 @@ select option {
     box-shadow: none;
   }
 
+  /*
+   * الجداول تُقسَّم على الصفحات ولا تُمنع من الانقسام: منع الانقسام على جدول
+   * أطول من صفحة يجعل المتصفح يدفعه لصفحة جديدة ثم يقصّ ما زاد عنها فيختفي
+   * باقي الكشف. المنع يبقى على الصف الواحد فقط، ورأس الجدول يتكرّر في كل صفحة.
+   */
   .sheet__pairs,
-  .sheet__table,
+  .sheet__table {
+    break-inside: auto;
+  }
+
+  .sheet__pairs thead,
+  .sheet__table thead {
+    display: table-header-group;
+  }
+
+  .sheet__pairs tr,
+  .sheet__table tr {
+    break-inside: avoid;
+  }
+
+  /* خانات التوقيع قصيرة فتبقى مجتمعة */
   .sheet__signs {
     break-inside: avoid;
   }
@@ -1525,21 +1666,21 @@ select option {
     max-width: none;
   }
 
-  /* الجدول الطويل (كشف الحضور) يُسمح بتقسيمه مع تكرار رأسه */
-  .sheet__attend {
-    break-inside: auto;
-  }
-
-  .sheet__attend thead {
-    display: table-header-group;
-  }
-
-  .sheet__attend tr {
-    break-inside: avoid;
-  }
-
+  /*
+   * العلامة المائية مُطلقة داخل ورقة قد تمتد لصفحات؛ تثبيتها يجعلها تُرسم
+   * على كل صفحة بحجم الصفحة بدل أن تُمدّ على طول المستند وتقصّ المحتوى.
+   */
   .sheet__watermark {
+    position: fixed;
     opacity: 0.1;
+  }
+
+  /* الخلفيات الرمادية في رؤوس الجداول تُطبع كما تُعرض */
+  .sheet__pairs th,
+  .sheet__table thead th,
+  .sheet__table tr.is-total td {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
   @page {

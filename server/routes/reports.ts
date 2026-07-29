@@ -559,7 +559,8 @@ formReport({
   columns: [
     { key: "requestDate", label: "تاريخ الطلب", type: "date" },
     { key: "amount", label: "المبلغ", type: "money" },
-    { key: "deductionMonth", label: "شهر الخصم", type: "text" },
+    { key: "installmentMonths", label: "عدد الأقساط", type: "text" },
+    { key: "deductionMonth", label: "أول شهر خصم", type: "text" },
     { key: "status", label: "الحالة", type: "text" },
     { key: "reason", label: "السبب", type: "text" },
     { key: "decisionNote", label: "ملاحظة القرار", type: "text" },
@@ -568,6 +569,7 @@ formReport({
     ...identity(row),
     requestDate: row.requestDate,
     amount: row.amount,
+    installmentMonths: String(row.installmentMonths ?? 1),
     deductionMonth: row.deductionMonth ?? "",
     status: statusLabel(row.status),
     reason: row.reason,

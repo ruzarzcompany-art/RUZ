@@ -175,12 +175,30 @@ inventoryRouter.post(
     }
     const quantity = round2(quantityRaw);
 
-    const unitCostRaw = asNumber(body.unitCost);
-    const unitCost = unitCostRaw === null || unitCostRaw < 0 ? item.unitCost : round2(unitCostRaw);
-
     const reason =
       asEnum(body.reason, REASONS) ??
       (movementType === "count" ? "stocktake" : movementType === "in" ? "purchase" : "consumption");
+
+    const unitCostRaw = asNumber(body.unitCost);
+    const invoiceCost = unitCostRaw === null || unitCostRaw < 0 ? null : round2(unitCostRaw);
+
+    /**
+     * الصنف ذو السعر المتغيّر يأخذ سعره من فاتورة الشراء: كل حركة إدخال شراء
+     * يجب أن تحمل سعر وحدة الفاتورة، وآخر سعر شراء يصبح سعر الوحدة المحتسب
+     * للصنف. الصنف ذو السعر الثابت يبقى على سعره المُعرَّف إن لم يُرسل سعر.
+     */
+    const isVariable = item.priceMode === "variable";
+    const isPurchaseIn = movementType === "in" && reason === "purchase";
+
+    if (isVariable && isPurchaseIn && invoiceCost === null) {
+      res.status(400).json({
+        ok: false,
+        error: "سعر هذا الصنف متغيّر: أدخل سعر الوحدة من فاتورة الشراء",
+      });
+      return;
+    }
+
+    const unitCost = invoiceCost ?? item.unitCost;
 
     // فرق الجرد عن الرصيد الدفتري — يُحسب في الخادم لا في المتصفح
     const balances = await computeBalances(branchId);
@@ -214,10 +232,31 @@ inventoryRouter.post(
       ipAddress: clientIp(req),
     });
 
+    // السعر المتغيّر: آخر فاتورة شراء تُحدّث سعر وحدة الصنف لتقييم المخزون
+    let itemCostUpdated = false;
+    if (isVariable && isPurchaseIn && invoiceCost !== null && invoiceCost !== item.unitCost) {
+      await db
+        .update(inventoryItems)
+        .set({ unitCost: invoiceCost, updatedAt: new Date() })
+        .where(eq(inventoryItems.id, itemId));
+
+      itemCostUpdated = true;
+      await recordAudit({
+        actorEmployeeId: actor.id,
+        action: "inventory.item.cost_from_invoice",
+        entityType: "inventory_items",
+        entityId: itemId,
+        before: { unitCost: item.unitCost },
+        after: { unitCost: invoiceCost, movementId: saved?.id ?? null },
+        ipAddress: clientIp(req),
+      });
+    }
+
     res.status(201).json({
       ok: true,
       movement: saved,
       bookBalance,
+      itemCostUpdated,
       newBalance:
         movementType === "count"
           ? quantity
@@ -225,7 +264,9 @@ inventoryRouter.post(
       message:
         movementType === "count"
           ? `تم تسجيل الجرد. الفرق عن الرصيد الدفتري: ${variance}`
-          : "تم تسجيل الحركة",
+          : itemCostUpdated
+            ? `تم تسجيل الحركة وتحديث سعر وحدة الصنف إلى ${invoiceCost} حسب الفاتورة`
+            : "تم تسجيل الحركة",
     });
   },
 );

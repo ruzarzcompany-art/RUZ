@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import { employees, faceTemplates } from "../db/schema.js";
 import { getFaceMatchMode, getFaceMatchThreshold } from "./config.js";
@@ -51,57 +51,97 @@ export function euclideanDistance(a: number[], b: number[]): number {
 
 export interface StoredTemplate {
   id: number;
+  slot: number;
   algorithm: string;
   vector: number[] | null;
   enrolledAt: Date;
 }
 
-/** يقرأ قالب الموظف المسجَّل ويفك تشفيره. `vector: null` = تعذّر فك التشفير. */
-export async function readTemplate(
+/**
+ * أقصى عدد قوالب لكل موظف. تسجيل ثلاث بصمات من زوايا/إضاءات مختلفة يرفع
+ * دقة المطابقة، والمطابقة تأخذ أقرب قالب من الثلاثة.
+ */
+export const FACE_SLOTS = 3;
+
+/** يحوّل صفاً من `face_templates` إلى قالب مفكوك التشفير. */
+function decodeRow(
+  row: {
+    id: number;
+    slot: number;
+    algorithm: string;
+    encryptedTemplate: string;
+    enrolledAt: Date;
+  },
   employeeId: number,
-): Promise<StoredTemplate | null> {
-  const db = getDb();
-  const [row] = await db
-    .select()
-    .from(faceTemplates)
-    .where(eq(faceTemplates.employeeId, employeeId))
-    .limit(1);
-
-  if (!row) return null;
-
+): StoredTemplate {
   let vector: number[] | null = null;
   try {
     const parsed = JSON.parse(decryptString(row.encryptedTemplate)) as unknown;
     vector = parseDescriptor(parsed);
   } catch (error) {
     console.error(
-      `[restaurant-hr] تعذّر فك تشفير قالب الوجه للموظف ${employeeId}:`,
+      `[restaurant-hr] تعذّر فك تشفير قالب الوجه للموظف ${employeeId} (خانة ${row.slot}):`,
       error instanceof Error ? error.message : error,
     );
   }
 
   return {
     id: row.id,
+    slot: row.slot,
     algorithm: row.algorithm,
     vector,
     enrolledAt: row.enrolledAt,
   };
 }
 
-/** يُنشئ أو يُحدّث قالب الموظف مشفَّراً AES-256-GCM (لا تُخزَّن أي صورة). */
+/** يقرأ كل قوالب الموظف (حتى ثلاثة) مرتّبة بالخانة ويفك تشفيرها. */
+export async function readTemplates(employeeId: number): Promise<StoredTemplate[]> {
+  const db = getDb();
+  const rows = await db
+    .select()
+    .from(faceTemplates)
+    .where(eq(faceTemplates.employeeId, employeeId))
+    .orderBy(asc(faceTemplates.slot))
+    .limit(FACE_SLOTS);
+
+  return rows.map((row) => decodeRow(row, employeeId));
+}
+
+/**
+ * يقرأ أول قالب للموظف (أقل خانة). `vector: null` = تعذّر فك التشفير.
+ * للمطابقة استخدم `readTemplates` حتى تُقارن كل الخانات.
+ */
+export async function readTemplate(
+  employeeId: number,
+): Promise<StoredTemplate | null> {
+  const [first] = await readTemplates(employeeId);
+  return first ?? null;
+}
+
+/**
+ * يُنشئ أو يُحدّث قالب الموظف في خانة محدّدة (1..3) مشفَّراً AES-256-GCM.
+ * لا تُخزَّن أي صورة إطلاقاً — المتجّه الرقمي فقط.
+ */
 export async function saveTemplate(
   employeeId: number,
   vector: number[],
-  options: { enrolledByEmployeeId?: number | null; algorithm?: string } = {},
+  options: {
+    enrolledByEmployeeId?: number | null;
+    algorithm?: string;
+    /** خانة القالب: 1 هي الأولى، وحتى `FACE_SLOTS` */
+    slot?: number;
+  } = {},
 ): Promise<void> {
   const db = getDb();
   const encryptedTemplate = encryptString(JSON.stringify(vector));
   const algorithm = options.algorithm ?? FACE_ALGORITHM;
+  const slot = Math.min(Math.max(Math.round(options.slot ?? 1), 1), FACE_SLOTS);
 
   await db
     .insert(faceTemplates)
     .values({
       employeeId,
+      slot,
       algorithm,
       dimensions: vector.length,
       encryptedTemplate,
@@ -109,7 +149,7 @@ export async function saveTemplate(
       enrolledByEmployeeId: options.enrolledByEmployeeId ?? employeeId,
     })
     .onConflictDoUpdate({
-      target: faceTemplates.employeeId,
+      target: [faceTemplates.employeeId, faceTemplates.slot],
       set: {
         algorithm,
         dimensions: vector.length,
@@ -197,10 +237,13 @@ export async function evaluateFace(options: {
     };
   }
 
-  const stored = await readTemplate(options.employeeId);
+  const stored = await readTemplates(options.employeeId);
+  const readable = stored.filter(
+    (template): template is StoredTemplate & { vector: number[] } => template.vector !== null,
+  );
 
   if (!descriptor) {
-    if (!stored) {
+    if (stored.length === 0) {
       if (mode === "enforce") {
         return {
           ...base,
@@ -228,9 +271,10 @@ export async function evaluateFace(options: {
     };
   }
 
-  if (!stored) {
+  if (stored.length === 0) {
     await saveTemplate(options.employeeId, descriptor, {
       enrolledByEmployeeId: options.actorEmployeeId ?? options.employeeId,
+      slot: 1,
     });
     return {
       ...base,
@@ -240,7 +284,7 @@ export async function evaluateFace(options: {
     };
   }
 
-  if (!stored.vector) {
+  if (readable.length === 0) {
     return {
       ...base,
       state: "unreadable",
@@ -249,7 +293,10 @@ export async function evaluateFace(options: {
     };
   }
 
-  const distance = euclideanDistance(descriptor, stored.vector);
+  // المطابقة تأخذ أقرب قالب من الخانات المسجَّلة (حتى ثلاث بصمات)
+  const distance = Math.min(
+    ...readable.map((template) => euclideanDistance(descriptor, template.vector)),
+  );
   const rounded = Math.round(distance * 10_000) / 10_000;
 
   if (distance <= threshold) {

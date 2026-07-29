@@ -354,7 +354,11 @@ function entityControl(spec, value) {
   }
 
   if (spec.kind === "enum") {
-    return select(id, (spec.values ?? []).map((item) => [item, item]), value ?? spec.values?.[0]);
+    return select(
+      id,
+      (spec.values ?? []).map((item) => [item, spec.valueLabels?.[item] ?? item]),
+      value ?? spec.values?.[0],
+    );
   }
 
   if (spec.kind === "ref") {
@@ -500,6 +504,7 @@ function cellText(spec, value) {
     const list = state.refs[spec.refEntity] ?? [];
     return list.find((item) => item.id === Number(value))?.name ?? `#${value}`;
   }
+  if (spec.kind === "enum") return spec.valueLabels?.[String(value)] ?? String(value);
   return String(value);
 }
 
@@ -513,8 +518,8 @@ function renderEntityTable() {
 
   if (!entity) return;
 
-  // نعرض أول ستة حقول فقط حتى يبقى الجدول مقروءاً على الجوال
-  const shown = entity.fields.slice(0, 6);
+  // نعرض أول سبعة حقول فقط حتى يبقى الجدول مقروءاً على الجوال
+  const shown = entity.fields.slice(0, 7);
   for (const spec of shown) {
     const cell = document.createElement("th");
     cell.textContent = spec.label;

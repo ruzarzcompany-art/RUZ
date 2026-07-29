@@ -13,8 +13,9 @@ import {
   evaluateFace,
   FACE_ALGORITHM,
   FACE_DIMENSIONS,
+  FACE_SLOTS,
   parseDescriptor,
-  readTemplate,
+  readTemplates,
   saveTemplate,
 } from "../face.js";
 import { haversineDistanceMeters, isValidCoordinates } from "../geo.js";
@@ -43,7 +44,10 @@ attendanceRouter.get(
   requireAuth,
   async (req: AuthedRequest, res: Response) => {
     const employee = req.employee!;
-    const stored = await readTemplate(employee.id);
+    const stored = await readTemplates(employee.id);
+    const readable = stored.filter((template) => template.vector !== null);
+    const first = stored[0] ?? null;
+
     res.json({
       ok: true,
       // تعطيل البصمة لموظف بعينه يعلو على الإعداد العام، فالوضع الفعلي `off`
@@ -53,53 +57,130 @@ attendanceRouter.get(
       threshold: getFaceMatchThreshold(),
       algorithm: FACE_ALGORITHM,
       dimensions: FACE_DIMENSIONS,
-      enrolled: stored !== null,
-      readable: stored ? stored.vector !== null : null,
-      enrolledAt: stored?.enrolledAt.toISOString() ?? null,
+      enrolled: stored.length > 0,
+      /** الخانات المطلوبة والمسجَّلة — لكل خانة زر التقاط في التطبيق */
+      slots: FACE_SLOTS,
+      enrolledSlots: stored.map((template) => template.slot),
+      readableCount: readable.length,
+      readable: first ? first.vector !== null : null,
+      enrolledAt: first?.enrolledAt.toISOString() ?? null,
     });
   },
 );
 
+/**
+ * تسجيل بصمات الوجه: تُقبل ثلاث بصمات (خانات 1..3) في طلب واحد أو خانة
+ * واحدة في كل طلب. إعادة تسجيل خانة مسجَّلة تحتاج تصفير القالب من الموارد
+ * البشرية، فتُتجاهل الخانات المسجَّلة سابقاً ولا تُستبدل بصمت.
+ */
 attendanceRouter.post(
   "/face/enroll",
   requireAuth,
   async (req: AuthedRequest, res: Response) => {
     const employee = req.employee!;
-    const descriptor = parseDescriptor(req.body?.descriptor ?? req.body?.template);
 
-    if (!descriptor) {
+    // إمّا `descriptors: [...]` (حتى ثلاثة) أو `descriptor` واحد مع `slot`
+    const rawList = Array.isArray(req.body?.descriptors)
+      ? req.body.descriptors
+      : [req.body?.descriptor ?? req.body?.template];
+    const requestedSlot = Number(req.body?.slot);
+
+    if (rawList.length === 0 || rawList.length > FACE_SLOTS) {
       res.status(400).json({
         ok: false,
-        error: `قالب الوجه غير صالح. المطلوب متجّه من ${FACE_DIMENSIONS} قيمة يُستخرج في المتصفح.`,
+        error: `عدد البصمات المُرسلة غير صالح — المطلوب من بصمة واحدة إلى ${FACE_SLOTS}.`,
       });
       return;
     }
 
-    const existing = await readTemplate(employee.id);
-    if (existing && existing.vector) {
+    const descriptors: number[][] = [];
+    for (const raw of rawList) {
+      const descriptor = parseDescriptor(raw);
+      if (!descriptor) {
+        res.status(400).json({
+          ok: false,
+          error: `قالب الوجه غير صالح. المطلوب متجّه من ${FACE_DIMENSIONS} قيمة يُستخرج في المتصفح.`,
+        });
+        return;
+      }
+      descriptors.push(descriptor);
+    }
+
+    const existing = await readTemplates(employee.id);
+    const takenSlots = new Set(existing.map((template) => template.slot));
+
+    if (takenSlots.size >= FACE_SLOTS) {
       res.status(409).json({
         ok: false,
         error:
-          "لديك قالب وجه مسجَّل بالفعل. إعادة التسجيل تحتاج تصفير القالب من الموارد البشرية.",
+          "بصماتك الثلاث مسجَّلة بالفعل. إعادة التسجيل تحتاج تصفير القالب من الموارد البشرية.",
       });
       return;
     }
 
-    await saveTemplate(employee.id, descriptor, {
-      enrolledByEmployeeId: employee.id,
-    });
+    // خانة صريحة لطلب ببصمة واحدة، وإلّا تُملأ أول الخانات الفارغة بالترتيب
+    const freeSlots: number[] = [];
+    for (let slot = 1; slot <= FACE_SLOTS; slot += 1) {
+      if (!takenSlots.has(slot)) freeSlots.push(slot);
+    }
+
+    if (
+      descriptors.length === 1 &&
+      Number.isInteger(requestedSlot) &&
+      requestedSlot >= 1 &&
+      requestedSlot <= FACE_SLOTS
+    ) {
+      if (takenSlots.has(requestedSlot)) {
+        res.status(409).json({
+          ok: false,
+          error: `البصمة رقم ${requestedSlot} مسجَّلة بالفعل — تصفيرها من الموارد البشرية.`,
+        });
+        return;
+      }
+      freeSlots.unshift(requestedSlot);
+    }
+
+    if (descriptors.length > freeSlots.length) {
+      res.status(409).json({
+        ok: false,
+        error: `المتاح ${freeSlots.length} خانة فقط لبصمات وجهك.`,
+      });
+      return;
+    }
+
+    const savedSlots: number[] = [];
+    for (let index = 0; index < descriptors.length; index += 1) {
+      const slot = freeSlots[index];
+      await saveTemplate(employee.id, descriptors[index], {
+        enrolledByEmployeeId: employee.id,
+        slot,
+      });
+      savedSlots.push(slot);
+    }
 
     await recordAudit({
       actorEmployeeId: employee.id,
-      action: existing ? "face.re_enroll" : "face.enroll",
+      action: existing.length > 0 ? "face.enroll_slot" : "face.enroll",
       entityType: "face_templates",
       entityId: employee.id,
-      after: { dimensions: descriptor.length, algorithm: FACE_ALGORITHM },
-      reason: "تسجيل قالب الوجه من جهاز الموظف",
+      after: {
+        slots: savedSlots,
+        dimensions: FACE_DIMENSIONS,
+        algorithm: FACE_ALGORITHM,
+      },
+      reason: "تسجيل بصمات الوجه من جهاز الموظف",
       ipAddress: clientIp(req),
     });
 
-    res.status(201).json({ ok: true, message: "تم تسجيل قالب وجهك بنجاح" });
+    const total = takenSlots.size + savedSlots.length;
+    res.status(201).json({
+      ok: true,
+      enrolledSlots: [...takenSlots, ...savedSlots].sort((a, b) => a - b),
+      message:
+        total >= FACE_SLOTS
+          ? `تم تسجيل بصمات وجهك الثلاث بنجاح`
+          : `تم تسجيل البصمة ${savedSlots.join(" و")} — المتبقي ${FACE_SLOTS - total} من ${FACE_SLOTS}`,
+    });
   },
 );
 
@@ -455,7 +536,7 @@ attendanceRouter.get(
   },
 );
 
-/** حالة تسجيل قالب الوجه لكل الموظفين — للموارد البشرية. */
+/** حالة تسجيل بصمات الوجه لكل الموظفين (عدد الخانات لكل موظف) — للموارد البشرية. */
 attendanceRouter.get(
   "/face/enrollments",
   requireAuth,
@@ -465,11 +546,46 @@ attendanceRouter.get(
     const rows = await db
       .select({
         employeeId: faceTemplates.employeeId,
+        slot: faceTemplates.slot,
         algorithm: faceTemplates.algorithm,
         enrolledAt: faceTemplates.enrolledAt,
         updatedAt: faceTemplates.updatedAt,
       })
       .from(faceTemplates);
-    res.json({ ok: true, enrollments: rows });
+
+    // صف واحد لكل موظف: عدد البصمات المسجَّلة وأقدم تاريخ تسجيل
+    const byEmployee = new Map<
+      number,
+      {
+        employeeId: number;
+        slots: number;
+        requiredSlots: number;
+        algorithm: string;
+        enrolledAt: Date;
+        updatedAt: Date | null;
+      }
+    >();
+
+    for (const row of rows) {
+      const current = byEmployee.get(row.employeeId);
+      if (!current) {
+        byEmployee.set(row.employeeId, {
+          employeeId: row.employeeId,
+          slots: 1,
+          requiredSlots: FACE_SLOTS,
+          algorithm: row.algorithm,
+          enrolledAt: row.enrolledAt,
+          updatedAt: row.updatedAt,
+        });
+        continue;
+      }
+      current.slots += 1;
+      if (row.enrolledAt < current.enrolledAt) current.enrolledAt = row.enrolledAt;
+      if (row.updatedAt && (!current.updatedAt || row.updatedAt > current.updatedAt)) {
+        current.updatedAt = row.updatedAt;
+      }
+    }
+
+    res.json({ ok: true, requiredSlots: FACE_SLOTS, enrollments: [...byEmployee.values()] });
   },
 );

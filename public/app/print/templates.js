@@ -660,6 +660,9 @@ function advance(data) {
   const currency = currencyOf(data);
   const request = data.reference ?? {};
   const blank = "................................";
+  const months = Math.max(1, Math.round(Number(request.installmentMonths ?? 1)));
+  const installment =
+    request.amount !== undefined ? Number(request.amount ?? 0) / months : null;
 
   return [
     pairs([
@@ -673,7 +676,12 @@ function advance(data) {
         request.amount !== undefined ? formatMoney(request.amount, currency) : blank,
       ],
       ["سبب الطلب", request.reason ?? blank],
-      ["شهر الخصم", request.deductionMonth ?? blank],
+      ["عدد أشهر التقسيط", `${months}`],
+      [
+        "قيمة القسط الشهري",
+        installment === null ? blank : formatMoney(installment, currency),
+      ],
+      ["أول شهر خصم", request.deductionMonth ?? blank],
       ["الخصم من الراتب", request.deductFromPayroll === false ? "لا" : "نعم"],
       ["حالة الطلب", request.status ? label(request.status) : "قيد الدراسة"],
       ["ملاحظة القرار", request.decisionNote || "—"],
@@ -681,7 +689,7 @@ function advance(data) {
     clauses([
       [
         "إقرار وتعهد",
-        `أقر بأني تقدمت بطلب سلفة مالية بالمبلغ الموضح أعلاه، وأتعهد بسدادها بخصمها من راتبي${
+        `أقر بأني تقدمت بطلب سلفة مالية بالمبلغ الموضح أعلاه، وأتعهد بسدادها بخصمها من راتبي على ${months} قسطاً شهرياً${
           request.deductionMonth ? ` بدءاً من شهر ${request.deductionMonth}` : ""
         } وفق ما تقره المنشأة.`,
       ],
@@ -827,6 +835,202 @@ function attendanceSheet(data) {
   return nodes.filter(Boolean);
 }
 
+/* ── 13) ملف تحضير و الانصراف (كل الموظفين) ────────────────────── */
+
+function rosterSheet(data) {
+  const sheet = data.rosterSheet;
+  const rows = (sheet?.rows ?? []).map((line, index) => ({
+    cells: [
+      String(index + 1),
+      line.employeeCode,
+      line.fullName,
+      line.nationalId || "",
+      // خانات تُعبّأ باليد: الحضور والتوقيع، الانصراف والتوقيع، الملاحظات
+      "",
+      "",
+      "",
+      "",
+      "",
+    ],
+  }));
+
+  const nodes = [
+    pairs([
+      ["التاريخ", formatDate(sheet?.date ?? data.today)],
+      ["الفرع", sheet?.branch?.name ?? "كل الفروع"],
+      ["عدد الموظفين", rows.length],
+      ["المنطقة الزمنية", data.timezone],
+    ]),
+    table(
+      [
+        "م",
+        "الرقم الوظيفي",
+        "الاسم",
+        "الإقامة",
+        "وقت الحضور",
+        "توقيع الحضور",
+        "وقت الانصراف",
+        "توقيع الانصراف",
+        "ملاحظات",
+      ],
+      rows,
+      "sheet__table sheet__roster",
+    ),
+    note(
+      "يُعبَّأ هذا الكشف باليد في الفرع: يكتب الموظف وقت حضوره ويوقّع، ثم وقت انصرافه ويوقّع. " +
+        "الكشف الورقي مرجع مساند فقط؛ الوقت الرسمي هو المسجَّل في النظام.",
+    ),
+  ];
+
+  return nodes.filter(Boolean);
+}
+
+/* ── 14) تقفيل الكاشير (يوم واحد / كشف فترة) ────────────────────── */
+
+const LINE_CATEGORY_LABELS = {
+  network: "الشبكة",
+  delivery_app: "تطبيقات التواصل",
+};
+
+/** بنود تصنيف واحد داخل مطبوعة التقفيل. */
+function closingLinesTable(lines, category, currency) {
+  const own = lines.filter((line) => line.category === category);
+  if (own.length === 0) return null;
+
+  const title = LINE_CATEGORY_LABELS[category] ?? category;
+  const total = own.reduce((sum, line) => sum + Number(line.amount ?? 0), 0);
+  const rows = own.map((line) => [
+    line.label,
+    line.reference || "",
+    formatMoney(line.amount, currency),
+  ]);
+  rows.push([`إجمالي ${title}`, "", formatMoney(total, currency)]);
+
+  return table([title, "المرجع", "المبلغ"], rows);
+}
+
+const SHIFT_LABELS = { morning: "صباحية", evening: "مسائية", full: "كامل اليوم" };
+
+function cashierClosing(data) {
+  const closing = data.cashier?.closings?.[0] ?? {};
+  const currency = data.company?.currency || "SAR";
+  const lines = closing.lines ?? [];
+
+  const nodes = [
+    pairs([
+      ["تاريخ العمل", formatDate(closing.businessDate)],
+      ["الوردية", SHIFT_LABELS[closing.shift] ?? closing.shift],
+      ["الفرع", closing.branchName],
+      ["الكاشير", `${closing.employeeCode ?? ""} ${closing.employeeName ?? ""}`.trim()],
+      ["الحالة", label(closing.status)],
+      ["عدد الفواتير", closing.invoiceCount],
+    ]),
+    pairs([
+      ["عهدة بداية الوردية", formatMoney(closing.openingFloat ?? 0, currency)],
+      ["إجمالي المبيعات", formatMoney(closing.totalSales ?? 0, currency)],
+      ["مبيعات نقدية", formatMoney(closing.cashSales ?? 0, currency)],
+      ["مبيعات شبكة (الإجمالي)", formatMoney(closing.cardSales ?? 0, currency)],
+      ["شبكة foodics", formatMoney(closing.foodicsSales ?? 0, currency)],
+      ["تحويلات", formatMoney(closing.transferSales ?? 0, currency)],
+      ["تطبيقات التواصل (الإجمالي)", formatMoney(closing.deliverySales ?? 0, currency)],
+      ["مبيعات أخرى", formatMoney(closing.otherSales ?? 0, currency)],
+      ["الخصومات", formatMoney(closing.discounts ?? 0, currency)],
+      ["المرتجعات", formatMoney(closing.refunds ?? 0, currency)],
+      ["مصروفات نقدية", formatMoney(closing.expenses ?? 0, currency)],
+      ["النقد المتوقّع في الدرج", formatMoney(closing.expectedCash ?? 0, currency)],
+      ["النقد المعدود", formatMoney(closing.countedCash ?? 0, currency)],
+      ["الفارق", formatMoney(closing.difference ?? 0, currency)],
+    ]),
+    closingLinesTable(lines, "network", currency),
+    closingLinesTable(lines, "delivery_app", currency),
+    closing.notes ? note(`ملاحظات الكاشير: ${closing.notes}`) : null,
+    closing.reviewNote ? note(`ملاحظة المراجعة: ${closing.reviewNote}`) : null,
+    note(
+      "الفارق = النقد المعدود − النقد المتوقّع (سالب = عجز). إجمالي الشبكة يشمل شبكة foodics " +
+        "وبنود الشبكة المُضافة، وإجمالي التوصيل هو مجموع بنود تطبيقات التواصل.",
+    ),
+  ];
+
+  return nodes.filter(Boolean);
+}
+
+function cashierClosingsRange(data) {
+  const payload = data.cashier ?? {};
+  const currency = data.company?.currency || "SAR";
+  const closings = payload.closings ?? [];
+  const totals = payload.totals ?? {};
+
+  const rows = closings.map((closing) => [
+    closing.businessDate,
+    closing.branchName ?? "",
+    `${closing.employeeCode ?? ""} ${closing.employeeName ?? ""}`.trim(),
+    SHIFT_LABELS[closing.shift] ?? closing.shift,
+    formatMoney(closing.totalSales ?? 0, currency),
+    formatMoney(closing.cashSales ?? 0, currency),
+    formatMoney(closing.cardSales ?? 0, currency),
+    formatMoney(closing.foodicsSales ?? 0, currency),
+    formatMoney(closing.deliverySales ?? 0, currency),
+    formatMoney(closing.difference ?? 0, currency),
+    label(closing.status),
+  ]);
+
+  // مجموع بنود التطبيقات والشبكات على كل تقفيلات الفترة
+  const lineTotals = new Map();
+  for (const closing of closings) {
+    for (const line of closing.lines ?? []) {
+      const key = `${line.category}|${line.label}`;
+      lineTotals.set(key, (lineTotals.get(key) ?? 0) + Number(line.amount ?? 0));
+    }
+  }
+
+  const lineRows = [...lineTotals.entries()].map(([key, amount]) => {
+    const [category, name] = key.split("|");
+    return [LINE_CATEGORY_LABELS[category] ?? category, name, formatMoney(amount, currency)];
+  });
+
+  const nodes = [
+    pairs([
+      ["من تاريخ", formatDate(payload.from)],
+      ["إلى تاريخ", formatDate(payload.to)],
+      ["الفرع", payload.branch?.name ?? "كل الفروع"],
+      ["عدد التقفيلات", totals.count ?? closings.length],
+    ]),
+    table(
+      [
+        "التاريخ",
+        "الفرع",
+        "الكاشير",
+        "الوردية",
+        "الإجمالي",
+        "نقدي",
+        "شبكة",
+        "foodics",
+        "تطبيقات",
+        "الفارق",
+        "الحالة",
+      ],
+      rows,
+    ),
+    pairs([
+      ["إجمالي المبيعات", formatMoney(totals.totalSales ?? 0, currency)],
+      ["المبيعات النقدية", formatMoney(totals.cashSales ?? 0, currency)],
+      ["مبيعات الشبكة", formatMoney(totals.cardSales ?? 0, currency)],
+      ["شبكة foodics", formatMoney(totals.foodicsSales ?? 0, currency)],
+      ["تطبيقات التواصل", formatMoney(totals.deliverySales ?? 0, currency)],
+      ["التحويلات", formatMoney(totals.transferSales ?? 0, currency)],
+      ["المصروفات النقدية", formatMoney(totals.expenses ?? 0, currency)],
+      ["صافي الفروقات", formatMoney(totals.difference ?? 0, currency)],
+      ["عدد الفواتير", totals.invoiceCount ?? 0],
+    ]),
+    lineRows.length > 0
+      ? table(["التصنيف", "البند", "إجمالي الفترة"], lineRows)
+      : null,
+    closings.length === 0 ? note("لا توجد تقفيلات مرفوعة في هذه الفترة.") : null,
+  ];
+
+  return nodes.filter(Boolean);
+}
+
 /* ── الدليل ────────────────────────────────────────────────────── */
 
 export const TEMPLATES = {
@@ -881,5 +1085,17 @@ export const TEMPLATES = {
   attendance_sheet: {
     signatures: ["الموظف", "مدير الفرع", "الموارد البشرية"],
     render: attendanceSheet,
+  },
+  attendance_roster_sheet: {
+    signatures: ["مسؤول التحضير", "مدير الفرع", "الموارد البشرية"],
+    render: rosterSheet,
+  },
+  cashier_closing: {
+    signatures: ["الكاشير", "مدير الفرع", "المراجعة المالية"],
+    render: cashierClosing,
+  },
+  cashier_closings_range: {
+    signatures: ["مُعِدّ الكشف", "مدير الفرع", "المراجعة المالية"],
+    render: cashierClosingsRange,
   },
 };

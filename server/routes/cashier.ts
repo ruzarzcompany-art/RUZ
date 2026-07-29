@@ -1,7 +1,12 @@
 import { Router, type Response } from "express";
-import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { getDb } from "../../db/index.js";
-import { branches, cashierClosings, employees } from "../../db/schema.js";
+import {
+  branches,
+  cashierClosingLines,
+  cashierClosings,
+  employees,
+} from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
 import { PERMISSIONS, hasAnyPermission, requirePermission } from "../rbac.js";
@@ -13,12 +18,31 @@ export const cashierRouter = Router();
 const SHIFTS = ["morning", "evening", "full"] as const;
 const STATUSES = ["submitted", "reviewed", "disputed"] as const;
 
+/** تصنيفات بنود التقفيل القابلة للإضافة والتعديل والحذف. */
+export const LINE_CATEGORIES = ["network", "delivery_app"] as const;
+type LineCategory = (typeof LINE_CATEGORIES)[number];
+
+/** أقصى عدد بنود لكل تصنيف في تقفيل واحد. */
+const MAX_LINES_PER_CATEGORY = 40;
+
+/** تطبيقات التواصل والتوصيل المُضافة مسبقاً في شاشة التقفيل. */
+export const DEFAULT_DELIVERY_APPS = [
+  "هنجرستيشن",
+  "كيتا",
+  "جاهز",
+  "ذاشيف",
+] as const;
+
+/** بنود الشبكة المقترحة عند أول تقفيل. */
+export const DEFAULT_NETWORK_LINES = ["شبكة مدى", "شبكة فيزا / ماستر"] as const;
+
 /** الحقول المالية التي يرفعها الكاشير. */
 const MONEY_FIELDS = [
   "openingFloat",
   "totalSales",
   "cashSales",
   "cardSales",
+  "foodicsSales",
   "transferSales",
   "deliverySales",
   "otherSales",
@@ -82,6 +106,124 @@ async function branchTimezone(branchId: number | null): Promise<string> {
   return safeTimeZone(row?.timezone ?? "Asia/Riyadh");
 }
 
+/* ── بنود الشبكة وتطبيقات التواصل ──────────────────────────────── */
+
+interface ParsedLine {
+  category: LineCategory;
+  label: string;
+  amount: number;
+  reference: string;
+  sortOrder: number;
+}
+
+export type { ParsedLine as CashierClosingLine };
+
+/**
+ * يقرأ بنود التقفيل المُرسلة من الشاشة. الإرجاع `null` يعني أن الطلب لم يذكر
+ * البنود إطلاقاً (عميل قديم) فتُترك كما هي، بينما المصفوفة الفارغة تعني
+ * «احذف كل البنود».
+ */
+function readLines(
+  body: Record<string, unknown>,
+): { lines: ParsedLine[] } | { error: string } | null {
+  const raw = body.lines;
+  if (raw === undefined || raw === null) return null;
+  if (!Array.isArray(raw)) return { error: "بنود التقفيل يجب أن تكون قائمة" };
+
+  const lines: ParsedLine[] = [];
+  const counts: Record<LineCategory, number> = { network: 0, delivery_app: 0 };
+
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const item = entry as Record<string, unknown>;
+
+    const category = asEnum(item.category, LINE_CATEGORIES);
+    if (category === null) return { error: "تصنيف البند غير معروف" };
+
+    const label = asString(item.label, 120);
+    if (!label) return { error: "لكل بند اسم مطلوب (اسم الشبكة أو التطبيق)" };
+
+    const amountRaw = asNumber(item.amount);
+    const amount = amountRaw === null ? 0 : amountRaw;
+    if (amount < 0) return { error: "لا تُقبل مبالغ سالبة في بنود التقفيل" };
+    if (amount > 10_000_000) return { error: "المبلغ المُدخل كبير بشكل غير منطقي" };
+
+    counts[category] += 1;
+    if (counts[category] > MAX_LINES_PER_CATEGORY) {
+      return { error: `لا يمكن إضافة أكثر من ${MAX_LINES_PER_CATEGORY} بنداً في التصنيف نفسه` };
+    }
+
+    lines.push({
+      category,
+      label,
+      amount: round2(amount),
+      reference: asString(item.reference, 120) ?? "",
+      sortOrder: lines.length,
+    });
+  }
+
+  return { lines };
+}
+
+/** مجموع بنود تصنيف معيّن. */
+function sumLines(lines: ParsedLine[], category: LineCategory): number {
+  return round2(
+    lines
+      .filter((line) => line.category === category)
+      .reduce((total, line) => total + line.amount, 0),
+  );
+}
+
+/** يستبدل بنود تقفيل بالبنود المُرسلة (إضافة/تعديل/حذف في عملية واحدة). */
+async function replaceLines(closingId: number, lines: ParsedLine[]): Promise<void> {
+  const db = getDb();
+  await db.delete(cashierClosingLines).where(eq(cashierClosingLines.closingId, closingId));
+  if (lines.length === 0) return;
+  await db
+    .insert(cashierClosingLines)
+    .values(lines.map((line) => ({ closingId, ...line })));
+}
+
+/** بنود مجموعة تقفيلات مرتّبة، مفتاحها معرّف التقفيل. */
+export async function loadLines(closingIds: number[]): Promise<Map<number, ParsedLine[]>> {
+  const map = new Map<number, ParsedLine[]>();
+  if (closingIds.length === 0) return map;
+
+  const db = getDb();
+  const rows = await db
+    .select()
+    .from(cashierClosingLines)
+    .where(inArray(cashierClosingLines.closingId, closingIds))
+    .orderBy(asc(cashierClosingLines.sortOrder), asc(cashierClosingLines.id));
+
+  for (const row of rows) {
+    const list = map.get(row.closingId) ?? [];
+    list.push({
+      category: row.category as LineCategory,
+      label: row.label,
+      amount: row.amount,
+      reference: row.reference,
+      sortOrder: row.sortOrder,
+    });
+    map.set(row.closingId, list);
+  }
+
+  return map;
+}
+
+/**
+ * إجماليّا الشبكة والتوصيل يُشتقّان من البنود عند إرسالها:
+ * `cardSales` = مجموع بنود الشبكة + شبكة foodics،
+ * و`deliverySales` = مجموع بنود تطبيقات التواصل.
+ */
+function applyLineTotals(
+  values: Record<MoneyField, number>,
+  lines: ParsedLine[],
+): void {
+  values.cardSales = round2(sumLines(lines, "network") + values.foodicsSales);
+  values.deliverySales = sumLines(lines, "delivery_app");
+}
+
 /* ── رفع التقفيل اليومي (الكاشير بنفسه) ────────────────────────── */
 
 cashierRouter.post(
@@ -139,6 +281,13 @@ cashierRouter.post(
       return;
     }
 
+    const parsedLines = readLines(body);
+    if (parsedLines && "error" in parsedLines) {
+      res.status(400).json({ ok: false, error: parsedLines.error });
+      return;
+    }
+    if (parsedLines) applyLineTotals(money.values, parsedLines.lines);
+
     const totals = computeTotals(money.values);
     const notes = asString(body.notes, 1000) ?? "";
 
@@ -185,19 +334,21 @@ cashierRouter.post(
           .returning()
       : await db.insert(cashierClosings).values(payload).returning();
 
+    if (parsedLines && saved) await replaceLines(saved.id, parsedLines.lines);
+
     await recordAudit({
       actorEmployeeId: actor.id,
       action: existing ? "cashier.closing.update" : "cashier.closing.create",
       entityType: "cashier_closings",
       entityId: saved?.id ?? null,
-      after: saved,
+      after: parsedLines ? { ...saved, lines: parsedLines.lines } : saved,
       reason: notes,
       ipAddress: clientIp(req),
     });
 
     res.status(existing ? 200 : 201).json({
       ok: true,
-      closing: saved,
+      closing: saved ? { ...saved, lines: parsedLines?.lines ?? [] } : saved,
       message: existing ? "تم تحديث تقفيل اليوم" : "تم رفع التقفيل بنجاح",
     });
   },
@@ -263,6 +414,11 @@ cashierRouter.get(
       branchName: row.branchName,
     }));
 
+    const linesByClosing = await loadLines(closings.map((item) => item.id));
+    for (const closing of closings) {
+      (closing as Record<string, unknown>).lines = linesByClosing.get(closing.id) ?? [];
+    }
+
     const summary = closings.reduce(
       (acc, item) => ({
         count: acc.count + 1,
@@ -299,13 +455,18 @@ cashierRouter.get(
         ),
       );
 
+    const linesByClosing = await loadLines(rows.map((row) => row.id));
+
     res.json({
       ok: true,
       businessDate,
       timezone,
       branchId: actor.branchId ?? null,
-      closings: rows,
+      closings: rows.map((row) => ({ ...row, lines: linesByClosing.get(row.id) ?? [] })),
       shifts: SHIFTS,
+      lineCategories: LINE_CATEGORIES,
+      defaultNetworkLines: DEFAULT_NETWORK_LINES,
+      defaultDeliveryApps: DEFAULT_DELIVERY_APPS,
     });
   },
 );
@@ -404,6 +565,13 @@ cashierRouter.patch(
       return;
     }
 
+    const parsedLines = readLines(body);
+    if (parsedLines && "error" in parsedLines) {
+      res.status(400).json({ ok: false, error: parsedLines.error });
+      return;
+    }
+    if (parsedLines) applyLineTotals(money.values, parsedLines.lines);
+
     const totals = computeTotals(money.values);
     const invoiceCountRaw = asNumber(body.invoiceCount);
 
@@ -422,6 +590,8 @@ cashierRouter.patch(
       .where(eq(cashierClosings.id, id))
       .returning();
 
+    if (parsedLines) await replaceLines(id, parsedLines.lines);
+
     await recordAudit({
       actorEmployeeId: actor.id,
       action: "cashier.closing.correct",
@@ -433,7 +603,12 @@ cashierRouter.patch(
       ipAddress: clientIp(req),
     });
 
-    res.json({ ok: true, closing: updated });
+    res.json({
+      ok: true,
+      closing: updated
+        ? { ...updated, lines: parsedLines?.lines ?? (await loadLines([id])).get(id) ?? [] }
+        : updated,
+    });
   },
 );
 

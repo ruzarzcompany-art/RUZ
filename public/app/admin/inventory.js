@@ -6,7 +6,17 @@
  * المعدودة)، وهذه الشاشة تعرضها فقط ولا تعيد حسابها.
  */
 
-import { api, button, el, formatMoney, row, setAlert, setBusy, todayIso } from "../api.js";
+import {
+  api,
+  button,
+  el,
+  formatMoney,
+  openDocument,
+  row,
+  setAlert,
+  setBusy,
+  todayIso,
+} from "../api.js";
 
 const MOVEMENT_LABELS = { in: "إدخال", out: "إخراج", count: "جرد" };
 const REASON_LABELS = {
@@ -23,7 +33,53 @@ const state = {
   access: { canRead: false, canWrite: false, canManageItems: false },
   items: [],
   movements: [],
+  /** رقم آخر حركة سُجّلت في هذه الجلسة، لطباعة سندها فوراً بعد التسجيل */
+  lastMovementId: null,
 };
+
+/* ── الطباعة ───────────────────────────────────────────────────── */
+
+/** سند حركة واحدة (يُفتح في تبويب الطباعة). */
+function printMovement(movementId) {
+  openDocument("inventory_movement", { refId: movementId });
+}
+
+/** ورقة الجرد اليومي للفرع والتاريخ المعروضين. */
+function printDailySheet() {
+  const branchId = currentBranch();
+  if (!branchId) {
+    setAlert(el("inventory-daily-result"), "اختر الفرع لطباعة ورقة الجرد.", "warn");
+    return;
+  }
+  openDocument("inventory_count_sheet", {
+    branchId,
+    date: el("inventory-daily-date").value || todayIso(),
+  });
+}
+
+/** كشف الحركات بنفس فلاتر الشاشة حتى يطابق المطبوع المعروض. */
+function printMovements() {
+  const branchId = currentBranch();
+  if (!branchId) {
+    setAlert(el("inventory-movements-result"), "اختر الفرع لطباعة الكشف.", "warn");
+    return;
+  }
+
+  const from = el("inventory-filter-from").value;
+  const to = el("inventory-filter-to").value;
+  if (from && to && to < from) {
+    setAlert(el("inventory-movements-result"), "تاريخ النهاية قبل تاريخ البداية.", "error");
+    return;
+  }
+
+  openDocument("inventory_movements_range", {
+    branchId,
+    itemId: el("inventory-filter-item").value,
+    movementType: el("inventory-filter-type").value,
+    from,
+    to,
+  });
+}
 
 /* ── الأصناف والأرصدة ──────────────────────────────────────────── */
 
@@ -69,6 +125,7 @@ function renderItems() {
           onClick: () => {
             el("inventory-item").value = String(item.id);
             el("inventory-unitcost").value = item.unitCost;
+            applyItemPriceMode();
             el("inventory-form").scrollIntoView({ behavior: "smooth", block: "center" });
           },
         })
@@ -82,6 +139,7 @@ function renderItems() {
         balance,
         `${item.minQuantity} ${item.unit}`,
         formatMoney(item.unitCost),
+        item.priceMode === "variable" ? "متغيّر" : "ثابت",
         formatMoney(item.stockValue),
         item.lastCountDate ?? "—",
         actions,
@@ -124,6 +182,7 @@ async function loadItems() {
   state.items = result.items ?? [];
   fillItemPickers();
   renderItems();
+  applyItemPriceMode();
 }
 
 /* ── ورقة الجرد اليومي ─────────────────────────────────────────── */
@@ -224,6 +283,30 @@ async function loadDaily() {
 
 /* ── الحركات ───────────────────────────────────────────────────── */
 
+/**
+ * الصنف ذو السعر المتغيّر يأخذ سعره من فاتورة الشراء، فحقل سعر الوحدة
+ * يصبح إلزامياً في حركة الشراء ويُشار إلى ذلك للمستخدم قبل الإرسال.
+ */
+function applyItemPriceMode() {
+  const item = state.items.find((entry) => entry.id === Number(el("inventory-item").value));
+  const isPurchase =
+    el("inventory-type").value === "in" && el("inventory-reason").value === "purchase";
+  const variable = item?.priceMode === "variable";
+  const required = Boolean(variable && isPurchase);
+
+  const costNode = el("inventory-unitcost");
+  costNode.required = required;
+  costNode.placeholder = required ? "سعر الوحدة من الفاتورة" : "";
+
+  el("inventory-price-hint").textContent = !item
+    ? ""
+    : required
+      ? "سعر هذا الصنف متغيّر: أدخل سعر الوحدة كما في فاتورة الشراء، وسيصبح سعر الصنف المحتسب."
+      : variable
+        ? "سعر هذا الصنف متغيّر ويُؤخذ من آخر فاتورة شراء."
+        : "سعر هذا الصنف ثابت كما هو مُعرَّف في الإعدادات.";
+}
+
 async function submitMovement(event) {
   event.preventDefault();
   const submit = el("inventory-submit");
@@ -256,6 +339,11 @@ async function submitMovement(event) {
     el("inventory-quantity").value = "";
     el("inventory-reference").value = "";
     el("inventory-notes").value = "";
+
+    // زر طباعة سند الحركة المسجَّلة يظهر بعد نجاح التسجيل
+    state.lastMovementId = result.movement?.id ?? null;
+    el("inventory-print-last").hidden = state.lastMovementId === null;
+
     await Promise.all([loadItems(), loadMovements(), loadDaily()]);
   }
 }
@@ -285,12 +373,17 @@ function renderMovements() {
     if (movement.variance < 0) variance.classList.add("is-negative");
     if (movement.variance > 0) variance.classList.add("is-positive");
 
-    const actions = state.access.canManageItems
-      ? button("حذف", {
+    const actions = document.createElement("span");
+    actions.className = "row-actions";
+    actions.append(button("طباعة", { onClick: () => printMovement(movement.id) }));
+    if (state.access.canManageItems) {
+      actions.append(
+        button("حذف", {
           className: "btn btn--danger btn--xs",
           onClick: () => removeMovement(movement),
-        })
-      : "—";
+        }),
+      );
+    }
 
     body.append(
       row([
@@ -352,6 +445,11 @@ export function initInventoryModule({ can }) {
   });
   el("inventory-filter-run").addEventListener("click", loadMovements);
   el("inventory-daily-run").addEventListener("click", loadDaily);
+  el("inventory-daily-print").addEventListener("click", printDailySheet);
+  el("inventory-movements-print").addEventListener("click", printMovements);
+  el("inventory-print-last").addEventListener("click", () => {
+    if (state.lastMovementId !== null) printMovement(state.lastMovementId);
+  });
 
   el("inventory-date").value = todayIso();
   el("inventory-daily-date").value = todayIso();
@@ -360,6 +458,7 @@ export function initInventoryModule({ can }) {
   el("inventory-item").addEventListener("change", () => {
     const item = state.items.find((entry) => entry.id === Number(el("inventory-item").value));
     if (item) el("inventory-unitcost").value = item.unitCost;
+    applyItemPriceMode();
   });
 
   // الجرد يُثبّت الرصيد، فالسبب يُضبط تلقائياً ويُخفى حقل التكلفة
@@ -369,7 +468,10 @@ export function initInventoryModule({ can }) {
       type === "count" ? "stocktake" : type === "in" ? "purchase" : "consumption";
     el("inventory-quantity-label").textContent =
       type === "count" ? "الكمية المعدودة" : "الكمية";
+    applyItemPriceMode();
   });
+
+  el("inventory-reason").addEventListener("change", applyItemPriceMode);
 }
 
 export async function refreshInventoryPanel() {

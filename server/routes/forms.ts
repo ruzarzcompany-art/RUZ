@@ -40,7 +40,7 @@ import {
  * أو المدير. لذلك تُولَّد مساراتها من وصف واحد لكل نموذج مع تدقيق كامل.
  */
 
-type FieldKind = "string" | "money" | "number" | "date" | "enum" | "bool" | "month";
+type FieldKind = "string" | "money" | "number" | "int" | "date" | "enum" | "bool" | "month";
 
 interface FieldSpec {
   name: string;
@@ -92,6 +92,14 @@ const RESOURCES: ResourceSpec[] = [
       { name: "reason", kind: "string", labelAr: "السبب", self: true },
       { name: "deductFromPayroll", kind: "bool", labelAr: "خصم من الراتب" },
       { name: "deductionMonth", kind: "month", labelAr: "شهر الخصم" },
+      {
+        name: "installmentMonths",
+        kind: "int",
+        labelAr: "عدد أشهر التقسيط",
+        self: true,
+        min: 1,
+        max: 60,
+      },
       { name: "status", kind: "enum", labelAr: "الحالة", values: DECISION_STATUSES },
       { name: "decisionNote", kind: "string", labelAr: "ملاحظة القرار" },
     ],
@@ -321,6 +329,14 @@ function coerceField(
       if (field.max !== undefined && value > field.max) return fail(`لا يزيد عن ${field.max}`);
       return { ok: true, value: field.kind === "money" ? round2(value) : round2(value) };
     }
+    case "int": {
+      const value = asNumber(raw);
+      if (value === null) return fail("قيمة رقمية غير صالحة");
+      const whole = Math.round(value);
+      if (field.min !== undefined && whole < field.min) return fail(`لا يقل عن ${field.min}`);
+      if (field.max !== undefined && whole > field.max) return fail(`لا يزيد عن ${field.max}`);
+      return { ok: true, value: whole };
+    }
     case "date": {
       if (raw === null || raw === "") return { ok: true, value: null };
       const value = asDateOnly(raw);
@@ -491,10 +507,46 @@ formsRouter.get("/forms/schema", requireAuth, (_req: AuthedRequest, res: Respons
         required: field.required ?? false,
         self: field.self ?? false,
         values: field.values ?? null,
+        min: field.min ?? null,
+        max: field.max ?? null,
       })),
     })),
   });
 });
+
+/**
+ * سياسة الاعتماد الموحّدة للنماذج القابلة للقرار (أوفرتايم، إجازات،
+ * مكافآت، سلف): يعتمدها مدير الفرع لموظفي فرعه، والموارد البشرية لكل
+ * الفروع، ولا يعتمد أحد نموذجاً لنفسه — فصل المهام. المالك الأعلى
+ * مستثنى من منع الاعتماد الشخصي حتى لا تتوقف المنشأة إن كان المسؤول
+ * الوحيد. تُرجع سبب المنع نصاً، أو `null` إن كان الاعتماد مسموحاً.
+ */
+async function approvalBlockReason(
+  req: AuthedRequest,
+  ownerId: unknown,
+): Promise<string | null> {
+  const actor = req.employee!;
+  if (typeof ownerId !== "number") return null;
+
+  if (ownerId === actor.id && actor.roleName !== "super_admin") {
+    return "لا يمكن اعتماد نموذج لنفسك — القرار لمدير الفرع أو الموارد البشرية.";
+  }
+
+  // الموارد البشرية تعتمد لكل الفروع؛ من دونها يقتصر القرار على فرع المدير
+  if (await hasAnyPermission(req, [PERMISSIONS.employeesWrite])) return null;
+
+  const [owner] = await getDb()
+    .select({ branchId: employees.branchId })
+    .from(employees)
+    .where(eq(employees.id, ownerId))
+    .limit(1);
+
+  if (!owner || owner.branchId === null || owner.branchId !== actor.branchId) {
+    return "هذا النموذج لموظف من فرع آخر — يعتمده مدير فرعه أو الموارد البشرية.";
+  }
+
+  return null;
+}
 
 for (const resource of RESOURCES) {
   const columns = table(resource);
@@ -646,6 +698,15 @@ for (const resource of RESOURCES) {
       // الطلب المُقدَّم من الموظف يبدأ دائماً «معلّقاً»
       if (resource.decidable && !canManage) values.status = "pending";
 
+      // الإدخال اليدوي المعتمد يمرّ بنفس سياسة الاعتماد (فرع ومن غير النفس)
+      if (resource.decidable && values.status === "approved") {
+        const blocked = await approvalBlockReason(req, values.employeeId);
+        if (blocked) {
+          res.status(403).json({ ok: false, error: blocked });
+          return;
+        }
+      }
+
       if (resource.beforeCreate) {
         await resource.beforeCreate(values, (values.employeeId as number | null) ?? null);
       }
@@ -724,6 +785,15 @@ for (const resource of RESOURCES) {
       const values: Record<string, unknown> = { ...collected.values };
       if ("updatedAt" in columns) values.updatedAt = new Date();
 
+      // تحويل الحالة إلى «معتمد» من شاشة التعديل يمرّ بسياسة الاعتماد نفسها
+      if (resource.decidable && values.status === "approved" && record.status !== "approved") {
+        const blocked = await approvalBlockReason(req, record.employeeId);
+        if (blocked) {
+          res.status(403).json({ ok: false, error: blocked });
+          return;
+        }
+      }
+
       const [after] = await db
         .update(resource.table)
         .set(values as never)
@@ -779,6 +849,20 @@ for (const resource of RESOURCES) {
         if (!before) {
           res.status(404).json({ ok: false, error: "النموذج غير موجود" });
           return;
+        }
+
+        /* سياسة الاعتماد (الأوفرتايم والإجازات والمكافآت والسلف):
+         * القرار لمدير الفرع لموظفي فرعه، وللموارد البشرية لكل الفروع،
+         * ولا يعتمد أحد طلب نفسه — فصل المهام. */
+        if (status !== "pending") {
+          const blocked = await approvalBlockReason(
+            req,
+            (before as Record<string, unknown>).employeeId,
+          );
+          if (blocked) {
+            res.status(403).json({ ok: false, error: blocked });
+            return;
+          }
         }
 
         const values: Record<string, unknown> = {

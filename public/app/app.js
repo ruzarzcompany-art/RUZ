@@ -22,7 +22,6 @@ import {
   loadRuntimeConfig,
   markActivity,
   onSessionExpired,
-  openPrint,
   row,
   setAlert,
   setBusy,
@@ -48,10 +47,18 @@ const state = {
     systemMode: "optional",
     enabled: true,
     enrolled: false,
+    slots: 3,
+    enrolledSlots: [],
     threshold: 0.55,
     supported: isFaceCaptureSupported(),
   },
   myResource: "advances",
+  /** القسم الإضافي المعروض من القائمة العلوية */
+  panel: "requests",
+  /** الأقسام الإضافية المسموحة لهذا الموظف */
+  allowedPanels: new Set(["requests", "password"]),
+  /** آخر اسم موظف مسجَّل — يُعرض مع لقطة المطابقة */
+  fullName: "",
   schema: null,
   idleSeconds: DEFAULT_IDLE_SECONDS,
   /** هل يستطيع الموقع إرسال رمز الاستعادة بالبريد؟ */
@@ -253,19 +260,42 @@ function paintFaceCard() {
   card.hidden = state.face.mode === "off" && !disabledForMe;
   if (card.hidden) return;
 
+  const slotsTotal = state.face.slots ?? 3;
+  const done = state.face.enrolledSlots.length;
+
   const badge = el("face-badge");
   badge.textContent = disabledForMe
     ? "معطّلة لحسابك"
-    : state.face.enrolled
-      ? "بصمة مسجّلة"
-      : "بلا بصمة";
-  badge.classList.toggle("badge--ok", !disabledForMe && state.face.enrolled);
-  badge.classList.toggle("badge--warn", disabledForMe || !state.face.enrolled);
+    : done === 0
+      ? "بلا بصمة"
+      : `${done}/${slotsTotal} بصمات`;
+  badge.classList.toggle("badge--ok", !disabledForMe && done >= slotsTotal);
+  badge.classList.toggle("badge--warn", disabledForMe || done < slotsTotal);
 
-  el("face-enroll").hidden = disabledForMe || state.face.enrolled || !state.face.supported;
+  // خانات التسجيل: تظهر ما لم تكتمل الثلاث بصمات
+  const slotsBlock = el("face-slots");
+  slotsBlock.hidden = disabledForMe || !state.face.supported || done >= slotsTotal;
+  for (const button of slotsBlock.querySelectorAll("[data-face-slot]")) {
+    const slot = Number(button.dataset.faceSlot);
+    const taken = state.face.enrolledSlots.includes(slot);
+    button.disabled = taken;
+    button.textContent = taken
+      ? `البصمة ${slot} مسجَّلة ✓`
+      : `التقاط البصمة ${slot === 1 ? "الأولى" : slot === 2 ? "الثانية" : "الثالثة"}`;
+  }
+  el("face-slots-state").textContent =
+    done === 0
+      ? `لم تُسجَّل أي بصمة بعد — المطلوب ${slotsTotal} بصمات بزر لكل واحدة.`
+      : `المسجَّل ${done} من ${slotsTotal}؛ أكمل الباقي لترتفع دقة المطابقة.`;
+
   el("face-warm").hidden = disabledForMe;
-  el("face-toggle").disabled = disabledForMe || !state.face.supported;
+  el("face-toggle").disabled =
+    disabledForMe || !state.face.supported || state.face.mode === "enforce";
   if (disabledForMe || !state.face.supported) el("face-toggle").checked = false;
+  // في الوضع الإلزامي لا خيار للموظف في تعطيل الوجه
+  if (state.face.mode === "enforce" && !disabledForMe && state.face.supported) {
+    el("face-toggle").checked = true;
+  }
 
   const lines = disabledForMe
     ? ["أوقفت الإدارة مطابقة الوجه لحسابك — يُسجَّل حضورك بالموقع الجغرافي فقط."]
@@ -287,6 +317,12 @@ async function refreshFaceStatus() {
     enabled: result.faceEnabled !== false,
     threshold: result.threshold,
     enrolled: Boolean(result.enrolled),
+    slots: result.slots ?? state.face.slots,
+    enrolledSlots: Array.isArray(result.enrolledSlots)
+      ? result.enrolledSlots
+      : result.enrolled
+        ? [1]
+        : [],
   };
   paintFaceCard();
 }
@@ -295,16 +331,44 @@ function faceProgress(text) {
   el("face-hint").textContent = text;
 }
 
-async function grabFaceDescriptor() {
+/**
+ * يلتقط بصمة من الكاميرا. اللقطة المُعادة للعرض على الجهاز فقط،
+ * والمُرسل للخادم هو المتجّه الرقمي وحده.
+ */
+async function grabFaceCapture() {
   const video = el("face-video");
   video.classList.add("is-live");
   try {
-    const { descriptor } = await captureFaceDescriptor(video, faceProgress);
-    return descriptor;
+    return await captureFaceDescriptor(video, faceProgress);
   } finally {
     video.classList.remove("is-live");
     faceProgress("تُستخرج بصمة الوجه على جهازك، ولا تُرسل أي صورة إلى الخادم.");
   }
+}
+
+/** يعرض لقطة التحقق مع اسم الموظف بعد مطابقة ناجحة (على الجهاز فقط). */
+function paintMatchCard(snapshot, face) {
+  const card = el("match-card");
+  if (!snapshot) {
+    card.hidden = true;
+    return;
+  }
+
+  const verified = Boolean(face?.verified);
+  el("match-photo").src = snapshot;
+  el("match-name").textContent = state.fullName || "—";
+  el("match-meta").textContent = verified
+    ? face?.distance === null || face?.distance === undefined
+      ? "تم تسجيل بصمة وجهك من هذه اللقطة."
+      : `مطابقة صحيحة (فرق ${face.distance} من حد ${face.threshold}).`
+    : "لم تُعتمد المطابقة — راجع المسؤول.";
+
+  const badge = el("match-badge");
+  badge.textContent = verified ? "الوجه مطابق" : "بحاجة لمراجعة";
+  badge.classList.toggle("badge--ok", verified);
+  badge.classList.toggle("badge--warn", !verified);
+
+  card.hidden = false;
 }
 
 /* ── طلباتي ────────────────────────────────────────────────── */
@@ -363,39 +427,36 @@ async function renderMyForm() {
   await refreshMyForms();
 }
 
-async function refreshMySlips() {
-  const result = await api("/payroll/slips");
-  const body = el("slips-table").querySelector("tbody");
-  body.textContent = "";
+/* ── قائمة الإضافات العلوية ────────────────────────────────── */
 
-  if (!result.ok) return;
-  const items = result.items ?? [];
-  el("slips-empty").hidden = items.length > 0;
+/** أقسام القائمة العلوية: الطلبات، الملف الوظيفي، تغيير كلمة المرور. */
+const EXTRA_PANELS = [
+  { key: "requests", nodeId: "panel-requests" },
+  { key: "file", nodeId: "file-card" },
+  { key: "password", nodeId: "panel-password" },
+];
 
-  for (const slip of items) {
-    const print = document.createElement("button");
-    print.type = "button";
-    print.className = "btn btn--ghost btn--xs";
-    print.textContent = "طباعة";
-    print.addEventListener("click", () => openPrint("payroll", slip.id));
+/** يعرض القسم المختار من القائمة ويخفي البقية (والممنوع يُخفى زره أيضاً). */
+function paintPanels() {
+  for (const panel of EXTRA_PANELS) {
+    const allowed = state.allowedPanels.has(panel.key);
+    const node = el(panel.nodeId);
+    if (node) node.hidden = !(allowed && state.panel === panel.key);
 
-    body.append(
-      row([
-        slip.period,
-        formatMoney(slip.basicSalary, slip.currency),
-        formatMoney(slip.allowancesTotal, slip.currency),
-        formatMoney(slip.overtimeAmount, slip.currency),
-        formatMoney(
-          (slip.advancesAmount ?? 0) +
-            (slip.hoursDeductionAmount ?? 0) +
-            (slip.otherDeductions ?? 0),
-          slip.currency,
-        ),
-        formatMoney(slip.netPay, slip.currency),
-        print,
-      ]),
-    );
+    const tab = el("extras-nav").querySelector(`[data-panel="${panel.key}"]`);
+    if (!tab) continue;
+    tab.hidden = !allowed;
+    tab.classList.toggle("is-active", allowed && state.panel === panel.key);
   }
+}
+
+/** ينتقل إلى قسم إضافي ويحمّل بياناته عند الحاجة. */
+async function showPanel(key) {
+  if (!state.allowedPanels.has(key)) return;
+  state.panel = key;
+  paintPanels();
+
+  if (key === "file") await refreshMyFile();
 }
 
 /* ── ملفي الوظيفي ─────────────────────────────────────────── */
@@ -407,7 +468,10 @@ async function refreshMyFile() {
 
   const result = await api("/employees/me/file");
   if (!result.ok) {
-    card.hidden = true;
+    // الملف غير متاح لهذا الحساب: يُسحب من قائمة الإضافات بدل عرض قسم فارغ
+    state.allowedPanels.delete("file");
+    if (state.panel === "file") state.panel = "requests";
+    paintPanels();
     return;
   }
 
@@ -461,6 +525,7 @@ async function loadProfile() {
 
   state.branch = result.branch;
   state.permissions = result.permissions ?? [];
+  state.fullName = result.employee.fullName;
   state.serverOffsetMs = new Date(result.serverTime).getTime() - Date.now();
 
   el("who-name").textContent = result.employee.fullName;
@@ -472,12 +537,11 @@ async function loadProfile() {
   el("set-branch").hidden = !(state.permissions.includes("branches.write") && state.branch);
   el("admin-link").hidden = !state.permissions.some((code) => ADMIN_PERMISSIONS.includes(code));
 
-  // أقسام قابلة للتعطيل لموظف بعينه من شاشة تخصيص الصلاحيات
-  el("file-card").hidden = !state.permissions.includes("sections.employee_file");
-  el("slips-card").hidden = !(
-    state.permissions.includes("sections.payroll") ||
-    state.permissions.includes("payroll.manage")
-  );
+  // أقسام القائمة العلوية: الملف الوظيفي قابل للتعطيل لموظف بعينه
+  state.allowedPanels = new Set(["requests", "password"]);
+  if (state.permissions.includes("sections.employee_file")) state.allowedPanels.add("file");
+  if (!state.allowedPanels.has(state.panel)) state.panel = "requests";
+  paintPanels();
 
   el("punch-btn").disabled = false;
   el("punch-sub").textContent = "اضغط للسماح بالموقع وتسجيل الحركة";
@@ -495,13 +559,7 @@ async function loadProfile() {
   markActivity();
   watchIdle();
 
-  await Promise.all([
-    refreshToday(),
-    refreshFaceStatus(),
-    renderMyForm(),
-    refreshMySlips(),
-    refreshMyFile(),
-  ]);
+  await Promise.all([refreshToday(), refreshFaceStatus(), renderMyForm()]);
 }
 
 /* ── الأحداث ───────────────────────────────────────────────── */
@@ -671,12 +729,15 @@ el("punch-btn").addEventListener("click", async () => {
 
   const useFace = state.face.mode !== "off" && state.face.supported && el("face-toggle").checked;
   let faceDescriptor;
+  let faceSnapshot = null;
 
   try {
     if (useFace) {
       el("punch-sub").textContent = "جارٍ التحقق من الوجه…";
       try {
-        faceDescriptor = await grabFaceDescriptor();
+        const capture = await grabFaceCapture();
+        faceDescriptor = capture.descriptor;
+        faceSnapshot = capture.snapshot;
       } catch (error) {
         if (state.face.mode === "enforce") throw error;
         setAlert(result, `${error.message} سيُسجَّل الحضور بالموقع الجغرافي فقط.`, "warn");
@@ -704,6 +765,8 @@ el("punch-btn").addEventListener("click", async () => {
 
     const attendance = response.attendance;
     if (attendance) paintDistance(attendance.distanceMeters, attendance.allowedRadiusMeters);
+    // صورة التأكيد تُعرض على الجهاز فقط عند نجاح التسجيل بمطابقة الوجه
+    paintMatchCard(response.ok ? faceSnapshot : null, attendance?.face);
 
     if (response.ok) {
       const extra = response.warning ? ` (${response.warning})` : "";
@@ -731,23 +794,37 @@ el("punch-btn").addEventListener("click", async () => {
   }
 });
 
-el("face-enroll").addEventListener("click", async (event) => {
-  const button = event.currentTarget;
+/* تسجيل البصمات: زر لكل بصمة من الثلاث، ولكل زر التقاط مستقل */
+el("face-slots").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-face-slot]");
+  if (!button || button.disabled) return;
+
+  const slot = Number(button.dataset.faceSlot);
   setBusy(button, true);
 
   try {
-    const descriptor = await grabFaceDescriptor();
-    const response = await api("/face/enroll", { method: "POST", body: { descriptor } });
+    const capture = await grabFaceCapture();
+    const response = await api("/face/enroll", {
+      method: "POST",
+      body: { descriptor: capture.descriptor, slot },
+    });
+
     setAlert(
       el("punch-result"),
       response.ok ? response.message : (response.error ?? "تعذّر تسجيل البصمة"),
       response.ok ? "ok" : "error",
     );
-    if (response.ok) await refreshFaceStatus();
+
+    if (response.ok) {
+      // لقطة البصمة المُسجَّلة تُعرض للتأكيد على الجهاز فقط
+      paintMatchCard(capture.snapshot, { verified: true, distance: null });
+      await refreshFaceStatus();
+    }
   } catch (error) {
     setAlert(el("punch-result"), error.message, "error");
   } finally {
     setBusy(button, false);
+    paintFaceCard();
   }
 });
 
@@ -794,6 +871,12 @@ el("my-form").addEventListener("submit", async (event) => {
   );
 
   if (response.ok) await refreshMyForms();
+});
+
+el("extras-nav").addEventListener("click", async (event) => {
+  const tab = event.target.closest("[data-panel]");
+  if (!tab) return;
+  await showPanel(tab.dataset.panel);
 });
 
 el("file-refresh").addEventListener("click", refreshMyFile);

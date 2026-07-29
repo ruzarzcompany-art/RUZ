@@ -80,6 +80,11 @@ async function onDocChange() {
   el("doc-month-field").hidden = !doc.needsMonth;
   el("doc-ref-field").hidden = !doc.refType;
   el("doc-legal-hint").hidden = !doc.legal;
+  // كشوف الفرع (مثل ملف التحضير والانصراف) تحتاج فرعاً وتاريخاً بدل الموظف
+  el("doc-branch-field").hidden = !doc.needsBranch;
+  el("doc-date-field").hidden = !doc.needsDate;
+  el("doc-from-field").hidden = !doc.needsRange;
+  el("doc-to-field").hidden = !doc.needsRange;
 
   if (doc.refType) {
     el("doc-ref-label").textContent = doc.refLabel;
@@ -128,6 +133,10 @@ function printSelected() {
     employeeId: doc.needsEmployee ? employeeId : "",
     refId: doc.refType ? el("doc-ref").value : "",
     month: doc.needsMonth ? el("doc-month").value : "",
+    branchId: doc.needsBranch ? el("doc-branch").value : "",
+    date: doc.needsDate ? el("doc-date").value : "",
+    from: doc.needsRange ? el("doc-from").value : "",
+    to: doc.needsRange ? el("doc-to").value : "",
   });
 
   // سجل الإصدار يُكتب من صفحة الطباعة نفسها؛ نُحدّث القائمة بعد لحظة
@@ -408,6 +417,9 @@ export function initDocumentsModule({ can }) {
   });
 
   el("doc-month").value = todayIso().slice(0, 7);
+  el("doc-date").value = todayIso();
+  el("doc-from").value = todayIso();
+  el("doc-to").value = todayIso();
   el("disc-date").value = todayIso();
 }
 

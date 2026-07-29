@@ -2,8 +2,11 @@
  * صفحة طباعة المستندات.
  *
  * تدعم مسارين:
- *  1) حزمة النماذج الجديدة: `?doc=<key>&employeeId=&refId=&month=` — تُملأ
- *     تلقائياً من `GET /api/documents/data` وتُسجَّل في «النماذج المُصدرة».
+ *  1) حزمة النماذج الجديدة:
+ *     `?doc=<key>&employeeId=&refId=&month=&branchId=&date=&from=&to=&closingId=`
+ *     — تُملأ تلقائياً من `GET /api/documents/data` وتُسجَّل في «النماذج المُصدرة».
+ *     الكشوف غير المرتبطة بموظف (كشف التحضير والانصراف، تقفيلات الكاشير)
+ *     تستخدم `branchId` + `date` أو `from`/`to`.
  *  2) المسار القديم: `?doc=payroll|contract|voucher&id=<id>` — يبقى عاملاً
  *     لأن أزرار الطباعة في شاشات النماذج والرواتب تستخدمه.
  *
@@ -18,6 +21,7 @@ import {
   documentHeader,
   documentMeta,
   loadIdentity,
+  paperNote,
   watermark,
 } from "./identity.js";
 import { TEMPLATES, legalNotice, pairs, signatures } from "./templates.js";
@@ -69,7 +73,18 @@ function compose(company, { title, subtitle, meta, body, signLabels, notice }) {
 
 async function renderPackaged(company) {
   const query = new URLSearchParams({ doc: docKey });
-  for (const key of ["employeeId", "refId", "month"]) {
+  for (const key of [
+    "employeeId",
+    "refId",
+    "month",
+    "branchId",
+    "date",
+    "from",
+    "to",
+    "closingId",
+    "itemId",
+    "movementType",
+  ]) {
     const value = params.get(key);
     if (value) query.set(key, value);
   }
@@ -89,10 +104,19 @@ async function renderPackaged(company) {
   // إعدادات المؤسسة القادمة مع البيانات أحدث من النسخة المخزَّنة محلياً
   const identity = { ...company, ...(result.company ?? {}) };
   applyPaperDesign(identity);
+  el("print-note").textContent = paperNote(identity);
 
   const subtitleParts = [
     result.employee ? `${result.employee.fullName} — ${result.employee.employeeCode}` : "",
     result.month ?? "",
+    result.rosterSheet ? `كشف يوم ${result.rosterSheet.date}` : "",
+    result.cashier && result.cashier.from !== result.cashier.to
+      ? `${result.cashier.from} — ${result.cashier.to}`
+      : "",
+    result.inventory?.kind === "movement"
+      ? `حركة رقم ${result.inventory.movement?.id ?? ""}`
+      : "",
+    result.inventory?.kind === "countSheet" ? `جرد يوم ${result.inventory.date}` : "",
   ].filter(Boolean);
 
   compose(identity, {
@@ -117,7 +141,12 @@ async function renderPackaged(company) {
       employeeId: result.employee?.id ?? null,
       branchId: result.branch?.id ?? null,
       refId: params.get("refId") ? Number(params.get("refId")) : null,
-      payload: { month: result.month ?? null },
+      payload: {
+        month: result.month ?? null,
+        date: result.rosterSheet?.date ?? null,
+        from: result.cashier?.from ?? null,
+        to: result.cashier?.to ?? null,
+      },
     },
   }).catch(() => {});
 }
@@ -303,7 +332,7 @@ async function boot() {
   const company = await loadIdentity();
   applyPaperDesign(company);
 
-  el("print-note").textContent = "اختر «حفظ كـPDF» من نافذة الطباعة لتصدير المستند.";
+  el("print-note").textContent = paperNote(company);
 
   // `?id=` يعني الطباعة القديمة لسجل بعينه (مسير/عقد/سند)
   const useLegacy = Number.isInteger(legacyId) && legacyId > 0 && LEGACY[docKey];

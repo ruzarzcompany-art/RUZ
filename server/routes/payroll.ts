@@ -68,6 +68,48 @@ export interface PayrollComputation {
 
 const DEFAULT_CONTRACT_HOURS = 240;
 
+/** يزيد شهراً بصيغة `YYYY-MM` بمقدار `count` شهراً. */
+function addMonths(period: string, count: number): string {
+  const [year, month] = period.split("-").map(Number);
+  const index = (year * 12 + (month - 1)) + count;
+  return `${String(Math.floor(index / 12)).padStart(4, "0")}-${String((index % 12) + 1).padStart(2, "0")}`;
+}
+
+/**
+ * قسط السلفة المستحق في شهر معيّن.
+ *
+ * `installmentMonths = 1` يخصم المبلغ كاملاً في شهر الخصم (السلوك السابق)،
+ * وأكثر من ذلك يوزّعه بالتساوي بدءاً من شهر الخصم، والقسط الأخير يستوعب
+ * فروق التقريب حتى لا يزيد مجموع الأقساط أو ينقص عن مبلغ السلفة.
+ */
+export function advanceInstallmentFor(
+  advance: {
+    amount: number | null;
+    requestDate: string | null;
+    deductionMonth: string | null;
+    deductFromPayroll: boolean;
+    installmentMonths?: number | null;
+  },
+  period: string,
+): number {
+  if (!advance.deductFromPayroll) return 0;
+
+  const first = advance.deductionMonth || (advance.requestDate ?? "").slice(0, 7);
+  if (!first) return 0;
+
+  const total = round2(advance.amount ?? 0);
+  const months = Math.max(1, Math.round(advance.installmentMonths ?? 1));
+
+  for (let index = 0; index < months; index += 1) {
+    if (addMonths(first, index) !== period) continue;
+    const installment = round2(total / months);
+    // القسط الأخير = المتبقي بعد الأقساط المتساوية السابقة
+    return index === months - 1 ? round2(total - installment * (months - 1)) : installment;
+  }
+
+  return 0;
+}
+
 /**
  * ساعات العمل الفعلية = مجموع الفروق بين كل `check_in` وأول `check_out` بعده
  * داخل مدى الشهر بتوقيت الفرع. الورديات المفتوحة (بلا انصراف) تُحتسب صفراً
@@ -232,18 +274,16 @@ export async function computePayroll(options: {
       requestDate: advances.requestDate,
       deductionMonth: advances.deductionMonth,
       deductFromPayroll: advances.deductFromPayroll,
+      installmentMonths: advances.installmentMonths,
     })
     .from(advances)
     .where(and(eq(advances.employeeId, employeeId), eq(advances.status, "approved")));
 
   const advancesAmount = round2(
-    approvedAdvances
-      .filter((row) => {
-        if (!row.deductFromPayroll) return false;
-        const target = row.deductionMonth || (row.requestDate ?? "").slice(0, 7);
-        return target === period;
-      })
-      .reduce((total, row) => total + (row.amount ?? 0), 0),
+    approvedAdvances.reduce(
+      (total, row) => total + advanceInstallmentFor(row, period),
+      0,
+    ),
   );
 
   const basicSalary = round2(salary?.basicSalary ?? 0);
@@ -299,6 +339,12 @@ export async function computePayroll(options: {
     notes.push("لا يوجد جدول دوام — التأخير غير محسوب وساعات العقد من تعريف الراتب.");
   } else if (lateMinutes > 0) {
     notes.push(`إجمالي التأخير ${Math.round(lateMinutes)} دقيقة حسب جدول الدوام.`);
+  }
+  // سياسة الأوفرتايم: تجاوز وقت الانصراف لا يُحتسب تلقائياً، بل بطلب معتمد فقط
+  if (scheduleOvertimeHours > 0) {
+    notes.push(
+      `تجاوز الدوام المجدول بمقدار ${round2(scheduleOvertimeHours)} ساعة (للعلم فقط)؛ المحتسب في المسير ${overtimeHours} ساعة أوفرتايم معتمدة بطلب.`,
+    );
   }
 
   return {
@@ -624,6 +670,68 @@ payrollRouter.get(
         jobTitle: row.jobTitle,
         branchName: row.branchName,
       },
+    });
+  },
+);
+
+/**
+ * حذف مسير راتب محفوظ. المسير سجل مالي، فالحذف يحتاج صلاحية إدارة الرواتب
+ * ويُوثَّق كاملاً في سجل التدقيق (بكل قيم الصف قبل الحذف) حتى يبقى أثر
+ * لما حُذف ومن حذفه. حذف المسير لا يمسّ الحضور ولا السلف ولا المكافآت،
+ * فإعادة توليده لنفس الشهر تعطي القيم ذاتها.
+ */
+payrollRouter.delete(
+  "/payroll/slips/:id",
+  requireAuth,
+  requireAnyPermission(PERMISSIONS.payrollManage),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const id = asId(req.params.id);
+
+    if (id === null) {
+      res.status(400).json({ ok: false, error: "معرّف المسير غير صالح" });
+      return;
+    }
+
+    const [before] = await db
+      .select({
+        row: payrollSlips,
+        employeeCode: employees.employeeCode,
+        fullName: employees.fullName,
+      })
+      .from(payrollSlips)
+      .leftJoin(employees, eq(payrollSlips.employeeId, employees.id))
+      .where(eq(payrollSlips.id, id))
+      .limit(1);
+
+    if (!before) {
+      res.status(404).json({ ok: false, error: "المسير غير موجود" });
+      return;
+    }
+
+    await db.delete(payrollSlips).where(eq(payrollSlips.id, id));
+
+    const period = monthKey(before.row.periodYear, before.row.periodMonth);
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "payroll.delete",
+      entityType: "payroll_slips",
+      entityId: id,
+      before: {
+        ...before.row,
+        period,
+        employeeCode: before.employeeCode,
+        fullName: before.fullName,
+      },
+      reason: asString(req.body?.reason, 500) ?? "",
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      message: `تم حذف مسير ${before.fullName ?? "الموظف"} لشهر ${period}`,
     });
   },
 );

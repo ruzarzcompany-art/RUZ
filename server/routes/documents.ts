@@ -7,6 +7,7 @@ import {
   attendanceLogs,
   bonuses,
   branches,
+  cashierClosings,
   contracts,
   custodyItems,
   departments,
@@ -43,6 +44,7 @@ import {
   round2,
 } from "../validate.js";
 import { getOffDates, monthBounds, offScheduleLabel } from "../schedule.js";
+import { loadLines as loadCashierLines } from "./cashier.js";
 import { loadCompanySettings } from "./settings.js";
 
 export const documentsRouter = Router();
@@ -64,7 +66,7 @@ interface DocSpec {
   title: string;
   group: string;
   description: string;
-  /** هل يحتاج اختيار موظف؟ كل النماذج هنا تُملأ من ملف موظف */
+  /** هل يحتاج اختيار موظف؟ معظم النماذج هنا تُملأ من ملف موظف */
   needsEmployee: boolean;
   /** الجدول المرجعي الذي يُختار منه سجل (إن وُجد) */
   refType: string | null;
@@ -73,6 +75,19 @@ interface DocSpec {
   needsMonth: boolean;
   /** هل تظهر عليه صياغة قانونية عامة؟ */
   legal: boolean;
+  /** هل يحتاج اختيار فرع (نماذج تشمل كل موظفي الفرع)؟ */
+  needsBranch?: boolean;
+  /** هل يحتاج تاريخ يوم واحد؟ */
+  needsDate?: boolean;
+  /** هل يحتاج مدى تاريخي (من / إلى)؟ */
+  needsRange?: boolean;
+  /** لا يظهر في قائمة حزمة النماذج — تفتحه شاشته الخاصة (زر طباعة) */
+  hidden?: boolean;
+  /**
+   * صلاحيات مطلوبة للنماذج غير المخصّصة لموظف بعينه (كشوف الفرع والكاشير).
+   * يكفي امتلاك واحدة منها.
+   */
+  permissions?: readonly string[];
 }
 
 /**
@@ -222,6 +237,57 @@ export const DOC_CATALOG: DocSpec[] = [
     refLabel: "",
     needsMonth: true,
     legal: false,
+  },
+  {
+    key: "attendance_roster_sheet",
+    title: "ملف تحضير و الانصراف",
+    group: "الدوام والإجازات",
+    description:
+      "كشف بكل الموظفين (الرقم الوظيفي، الاسم، الإقامة) مع خانات فارغة لوقت الحضور والتوقيع، " +
+      "ووقت الانصراف والتوقيع، والملاحظات — يُطبع ويُعبّأ باليد في الفرع.",
+    needsEmployee: false,
+    refType: null,
+    refLabel: "",
+    needsMonth: false,
+    legal: false,
+    needsBranch: true,
+    needsDate: true,
+  },
+  {
+    key: "cashier_closing",
+    title: "تقفيل كاشير — يوم واحد",
+    group: "الكاشير",
+    description: "طباعة تقفيل مرفوع بكل بنوده (الشبكات، شبكة foodics، تطبيقات التواصل).",
+    needsEmployee: false,
+    refType: null,
+    refLabel: "",
+    needsMonth: false,
+    legal: false,
+    hidden: true,
+    permissions: [
+      PERMISSIONS.cashierSubmit,
+      PERMISSIONS.cashierReadAll,
+      PERMISSIONS.cashierReview,
+    ],
+  },
+  {
+    key: "cashier_closings_range",
+    title: "تقفيلات الكاشير — يومي / شهري / مدى",
+    group: "الكاشير",
+    description: "كشف تقفيلات لفترة محدّدة مع إجماليّاتها وبنود الشبكة والتطبيقات.",
+    needsEmployee: false,
+    refType: null,
+    refLabel: "",
+    needsMonth: false,
+    legal: false,
+    needsBranch: true,
+    needsRange: true,
+    hidden: true,
+    permissions: [
+      PERMISSIONS.cashierSubmit,
+      PERMISSIONS.cashierReadAll,
+      PERMISSIONS.cashierReview,
+    ],
   },
 ];
 
@@ -536,6 +602,163 @@ async function loadAttendanceSheet(
   return { month, days, totalHours, workedDays };
 }
 
+/**
+ * ملف تحضير و الانصراف: كل الموظفين النشطين (في فرع محدّد أو كل الفروع)
+ * بالرقم الوظيفي والاسم والإقامة. أوقات الحضور والانصراف والتوقيعات
+ * والملاحظات تبقى خانات فارغة تُعبّأ باليد في المطبوعة.
+ */
+async function loadRosterSheet(
+  branchId: number | null,
+  date: string,
+): Promise<{
+  date: string;
+  branch: { id: number; name: string } | null;
+  rows: Array<{
+    employeeCode: string;
+    fullName: string;
+    nationalId: string;
+    jobTitle: string;
+    department: string;
+    branchName: string;
+  }>;
+}> {
+  const db = getDb();
+
+  const filters: SQL[] = [eq(employees.isActive, true)];
+  if (branchId !== null) filters.push(eq(employees.branchId, branchId));
+
+  const rows = await db
+    .select({
+      employeeCode: employees.employeeCode,
+      fullName: employees.fullName,
+      nationalId: employees.nationalId,
+      jobTitle: employees.jobTitle,
+      department: employees.department,
+      branchName: branches.name,
+    })
+    .from(employees)
+    .leftJoin(branches, eq(employees.branchId, branches.id))
+    .where(and(...filters))
+    .orderBy(asc(employees.employeeCode))
+    .limit(1000);
+
+  let branch: { id: number; name: string } | null = null;
+  if (branchId !== null) {
+    const [found] = await db
+      .select({ id: branches.id, name: branches.name })
+      .from(branches)
+      .where(eq(branches.id, branchId))
+      .limit(1);
+    branch = found ?? null;
+  }
+
+  return {
+    date,
+    branch,
+    rows: rows.map((row) => ({
+      employeeCode: row.employeeCode,
+      fullName: row.fullName,
+      nationalId: row.nationalId ?? "",
+      jobTitle: row.jobTitle,
+      department: row.department,
+      branchName: row.branchName ?? "",
+    })),
+  };
+}
+
+/**
+ * تقفيلات الكاشير للطباعة: تقفيل واحد (`closingId`) أو كشف لفترة.
+ * البنود المُضافة (الشبكات وتطبيقات التواصل) تُقرأ من `cashier_closing_lines`.
+ */
+async function loadCashierClosings(options: {
+  closingId: number | null;
+  branchId: number | null;
+  employeeId: number | null;
+  from: string | null;
+  to: string | null;
+}): Promise<{
+  from: string | null;
+  to: string | null;
+  branch: { id: number; name: string } | null;
+  closings: Array<Record<string, unknown>>;
+  totals: Record<string, number>;
+}> {
+  const db = getDb();
+
+  const filters: SQL[] = [];
+  if (options.closingId !== null) filters.push(eq(cashierClosings.id, options.closingId));
+  if (options.branchId !== null) filters.push(eq(cashierClosings.branchId, options.branchId));
+  if (options.employeeId !== null) {
+    filters.push(eq(cashierClosings.employeeId, options.employeeId));
+  }
+  if (options.from !== null) filters.push(gte(cashierClosings.businessDate, options.from));
+  if (options.to !== null) filters.push(lte(cashierClosings.businessDate, options.to));
+
+  const rows = await db
+    .select({
+      closing: cashierClosings,
+      employeeName: employees.fullName,
+      employeeCode: employees.employeeCode,
+      branchName: branches.name,
+    })
+    .from(cashierClosings)
+    .leftJoin(employees, eq(cashierClosings.employeeId, employees.id))
+    .leftJoin(branches, eq(cashierClosings.branchId, branches.id))
+    .where(filters.length === 0 ? undefined : and(...filters))
+    .orderBy(asc(cashierClosings.businessDate), asc(cashierClosings.employeeId))
+    .limit(500);
+
+  const lines = await loadCashierLines(rows.map((row) => row.closing.id));
+
+  const totals = {
+    count: rows.length,
+    totalSales: 0,
+    cashSales: 0,
+    cardSales: 0,
+    foodicsSales: 0,
+    transferSales: 0,
+    deliverySales: 0,
+    otherSales: 0,
+    discounts: 0,
+    refunds: 0,
+    expenses: 0,
+    countedCash: 0,
+    expectedCash: 0,
+    difference: 0,
+    invoiceCount: 0,
+  };
+
+  const closings = rows.map((row) => {
+    for (const key of Object.keys(totals)) {
+      if (key === "count") continue;
+      const value = (row.closing as unknown as Record<string, number>)[key];
+      if (typeof value === "number") {
+        totals[key as keyof typeof totals] = round2(totals[key as keyof typeof totals] + value);
+      }
+    }
+
+    return {
+      ...row.closing,
+      employeeName: row.employeeName,
+      employeeCode: row.employeeCode,
+      branchName: row.branchName,
+      lines: lines.get(row.closing.id) ?? [],
+    };
+  });
+
+  let branch: { id: number; name: string } | null = null;
+  if (options.branchId !== null) {
+    const [found] = await db
+      .select({ id: branches.id, name: branches.name })
+      .from(branches)
+      .where(eq(branches.id, options.branchId))
+      .limit(1);
+    branch = found ?? null;
+  }
+
+  return { from: options.from, to: options.to, branch, closings, totals };
+}
+
 /* ── دليل النماذج ──────────────────────────────────────────────── */
 
 documentsRouter.get(
@@ -549,7 +772,7 @@ documentsRouter.get(
 
     res.json({
       ok: true,
-      documents: DOC_CATALOG,
+      documents: DOC_CATALOG.filter((doc) => !doc.hidden),
       legalNotice: LEGAL_NOTICE,
       canPrintForOthers: canPrint,
       warningLevels: WARNING_LEVELS,
@@ -582,15 +805,31 @@ documentsRouter.get(
       return;
     }
 
-    const isSelf = employeeId === actor.id;
+    const isSelf = employeeId !== null && employeeId === actor.id;
     const canPrintOthers = await hasAnyPermission(req, [
       PERMISSIONS.documentsPrint,
       PERMISSIONS.formsReadAll,
     ]);
 
-    if (!isSelf && !canPrintOthers) {
+    if (employeeId !== null && !isSelf && !canPrintOthers) {
       res.status(403).json({ ok: false, error: "لا تملك صلاحية طباعة نماذج موظف آخر" });
       return;
+    }
+
+    /**
+     * النماذج الجماعية (كشف الفرع، تقفيلات الكاشير) لا تُخصّص لموظف،
+     * فصلاحيتها تُفحص من وصف النموذج نفسه.
+     */
+    if (employeeId === null) {
+      const required = doc.permissions ?? [
+        PERMISSIONS.documentsPrint,
+        PERMISSIONS.formsReadAll,
+        PERMISSIONS.attendanceReadAll,
+      ];
+      if (!(await hasAnyPermission(req, [...required]))) {
+        res.status(403).json({ ok: false, error: "لا تملك صلاحية طباعة هذا الكشف" });
+        return;
+      }
     }
 
     const bundle = employeeId === null ? null : await loadEmployeeBundle(employeeId);
@@ -653,6 +892,80 @@ documentsRouter.get(
 
     const company = await loadCompanySettings();
 
+    /* كشوف الفرع والكاشير: الفرع والتاريخ/المدى تُقرأ من الرابط */
+    const requestedBranchId = asId(req.query.branchId);
+    const branchId =
+      doc.needsBranch || doc.key === "cashier_closing"
+        ? (requestedBranchId ?? actor.branchId ?? null)
+        : null;
+
+    let sheetTimezone = timezone;
+    if (branchId !== null) {
+      const db = getDb();
+      const [branchRow] = await db
+        .select({ timezone: branches.timezone })
+        .from(branches)
+        .where(eq(branches.id, branchId))
+        .limit(1);
+      sheetTimezone = safeTimeZone(branchRow?.timezone ?? timezone);
+    }
+
+    const sheetToday = isoDateInZone(new Date(), sheetTimezone);
+
+    let rosterSheet: Awaited<ReturnType<typeof loadRosterSheet>> | null = null;
+    if (doc.key === "attendance_roster_sheet") {
+      rosterSheet = await loadRosterSheet(
+        branchId,
+        asDateOnly(req.query.date) ?? sheetToday,
+      );
+    }
+
+    let cashier: Awaited<ReturnType<typeof loadCashierClosings>> | null = null;
+    if (doc.key === "cashier_closing" || doc.key === "cashier_closings_range") {
+      // من لا يملك الاطّلاع الكامل يطبع تقفيلاته هو فقط
+      const canReadAllClosings = await hasAnyPermission(req, [
+        PERMISSIONS.cashierReadAll,
+        PERMISSIONS.cashierReview,
+        PERMISSIONS.reportsView,
+      ]);
+      const scopeEmployeeId = canReadAllClosings
+        ? (asId(req.query.employeeId) ?? null)
+        : actor.id;
+
+      if (doc.key === "cashier_closing") {
+        const closingId = asId(req.query.refId) ?? asId(req.query.closingId);
+        if (closingId === null) {
+          res.status(400).json({ ok: false, error: "لا يوجد تقفيل مرفوع لطباعته" });
+          return;
+        }
+        cashier = await loadCashierClosings({
+          closingId,
+          branchId: null,
+          employeeId: scopeEmployeeId,
+          from: null,
+          to: null,
+        });
+        if (cashier.closings.length === 0) {
+          res.status(404).json({ ok: false, error: "التقفيل غير موجود أو لا تملك صلاحية طباعته" });
+          return;
+        }
+      } else {
+        const from = asDateOnly(req.query.from) ?? sheetToday;
+        const to = asDateOnly(req.query.to) ?? from;
+        if (to < from) {
+          res.status(400).json({ ok: false, error: "تاريخ النهاية قبل تاريخ البداية" });
+          return;
+        }
+        cashier = await loadCashierClosings({
+          closingId: null,
+          branchId,
+          employeeId: scopeEmployeeId,
+          from,
+          to,
+        });
+      }
+    }
+
     res.json({
       ok: true,
       doc,
@@ -660,12 +973,16 @@ documentsRouter.get(
       company,
       month,
       attendanceSheet,
+      rosterSheet,
+      cashier,
       reference,
       ...(bundle ?? { employee: null, branch: null, salary: null, schedule: null }),
+      // كشوف الفرع لا تملك حزمة موظف، فيُملأ الفرع من الكشف نفسه ليظهر في الترويسة
+      ...(bundle ? {} : { branch: rosterSheet?.branch ?? cashier?.branch ?? null }),
       issuedBy: { id: actor.id, fullName: actor.fullName, jobTitle: actor.jobTitle },
       generatedAt: new Date().toISOString(),
-      timezone,
-      today: isoDateInZone(new Date(), timezone),
+      timezone: bundle ? timezone : sheetTimezone,
+      today: bundle ? isoDateInZone(new Date(), timezone) : sheetToday,
     });
   },
 );
