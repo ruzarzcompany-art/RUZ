@@ -4,7 +4,7 @@
  * الصياغة القانونية عامة، ويظهر معها إشعار «ليست استشارة قانونية».
  */
 
-import { formatDate, formatMoney, label } from "../api.js";
+import { formatDate, formatDateTime, formatMoney, label } from "../api.js";
 
 const WEEKDAYS = [
   "الأحد",
@@ -1031,6 +1031,194 @@ function cashierClosingsRange(data) {
   return nodes.filter(Boolean);
 }
 
+/* ── 15) المخزون: سند حركة، ورقة جرد، كشف حركات ─────────────────── */
+
+const MOVEMENT_LABELS = { in: "إدخال", out: "إخراج", count: "جرد" };
+
+const MOVEMENT_REASON_LABELS = {
+  purchase: "شراء",
+  consumption: "استهلاك",
+  waste: "هالك",
+  transfer: "تحويل",
+  stocktake: "جرد",
+  other: "أخرى",
+};
+
+/** سند حركة مخزون واحدة: يُوقَّع ويُحفظ مع فاتورة الشراء أو أمر الصرف. */
+function inventoryMovement(data) {
+  const movement = data.inventory?.movement ?? {};
+  const currency = data.company?.currency || "SAR";
+  const isCount = movement.movementType === "count";
+
+  const nodes = [
+    pairs([
+      ["رقم الحركة", movement.id],
+      ["نوع الحركة", MOVEMENT_LABELS[movement.movementType] ?? movement.movementType],
+      ["تاريخ الحركة", formatDate(movement.businessDate)],
+      ["الفرع", movement.branchName],
+      ["الصنف", `${movement.itemCode ?? ""} — ${movement.itemName ?? ""}`],
+      ["التصنيف", movement.category],
+    ]),
+    pairs([
+      [
+        isCount ? "الكمية المعدودة" : "الكمية",
+        `${movement.quantity ?? 0} ${movement.unit ?? ""}`,
+      ],
+      [
+        "سعر الوحدة",
+        movement.unitCost === null || movement.unitCost === undefined
+          ? "—"
+          : formatMoney(movement.unitCost, currency),
+      ],
+      [
+        "التكلفة الإجمالية",
+        movement.totalCost === null || movement.totalCost === undefined
+          ? "—"
+          : formatMoney(movement.totalCost, currency),
+      ],
+      ["السبب", MOVEMENT_REASON_LABELS[movement.reason] ?? movement.reason],
+      ["المرجع", movement.reference],
+      ...(isCount ? [["فرق الجرد عن الرصيد الدفتري", movement.variance ?? 0]] : []),
+      ["سجّلها", movement.createdByName],
+      ["وقت التسجيل", formatDateTime(movement.createdAt)],
+    ]),
+    movement.notes ? note(`ملاحظات: ${movement.notes}`) : null,
+    note(
+      isCount
+        ? "حركة الجرد تُثبّت الرصيد على الكمية المعدودة، والفرق الموضّح أعلاه هو فرق الجرد عن الرصيد الدفتري قبل التثبيت."
+        : "هذا السند مستند مخزني داخلي يُحفظ مرفقاً بفاتورة الشراء أو أمر الصرف المرتبط به.",
+    ),
+  ];
+
+  return nodes.filter(Boolean);
+}
+
+/** ورقة الجرد اليومي: تُطبع ويُعبَّأ العمود المعدود والفرق باليد في المستودع. */
+function inventoryCountSheet(data) {
+  const payload = data.inventory ?? {};
+  const rows = payload.rows ?? [];
+  const totals = payload.totals ?? {};
+
+  const bodyRows = rows.map((line, index) => ({
+    className: line.belowMinimum ? "is-low" : "",
+    cells: [
+      String(index + 1),
+      line.code,
+      line.name,
+      line.unit,
+      line.balance,
+      line.todayIn,
+      line.todayOut,
+      // خانات تُعبّأ باليد: الكمية المعدودة، الفرق، الملاحظات
+      line.countedToday === null || line.countedToday === undefined ? "" : line.countedToday,
+      "",
+      "",
+    ],
+  }));
+
+  const nodes = [
+    pairs([
+      ["تاريخ الجرد", formatDate(payload.date ?? data.today)],
+      ["الفرع", payload.branch?.name],
+      ["عدد الأصناف", totals.items ?? rows.length],
+      ["أصناف تحت الحد الأدنى", totals.belowMinimum ?? 0],
+      ["إجمالي وارد اليوم", totals.todayIn ?? 0],
+      ["إجمالي صادر اليوم", totals.todayOut ?? 0],
+    ]),
+    table(
+      [
+        "م",
+        "الرمز",
+        "الصنف",
+        "الوحدة",
+        "الرصيد الدفتري",
+        "وارد اليوم",
+        "صادر اليوم",
+        "الكمية المعدودة",
+        "الفرق",
+        "ملاحظات",
+      ],
+      bodyRows,
+      "sheet__table sheet__count",
+    ),
+    rows.length === 0 ? note("لا توجد أصناف نشطة لعرضها في ورقة الجرد.") : null,
+    note(
+      "يُعبَّأ عمودا «الكمية المعدودة» و«الفرق» باليد في المستودع، ثم تُسجَّل الكميات في النظام " +
+        "كحركة جرد ليُثبَّت الرصيد عليها. الأصناف المظلَّلة رصيدها تحت الحد الأدنى.",
+    ),
+  ];
+
+  return nodes.filter(Boolean);
+}
+
+/** كشف حركات المخزون لفترة بنفس فلاتر الشاشة. */
+function inventoryMovementsRange(data) {
+  const payload = data.inventory ?? {};
+  const rows = payload.rows ?? [];
+  const totals = payload.totals ?? {};
+  const currency = data.company?.currency || "SAR";
+
+  const bodyRows = rows.map((line) => [
+    line.businessDate,
+    MOVEMENT_LABELS[line.movementType] ?? line.movementType,
+    line.itemCode,
+    line.itemName,
+    `${line.quantity ?? 0} ${line.unit ?? ""}`,
+    line.unitCost === null || line.unitCost === undefined
+      ? ""
+      : formatMoney(line.unitCost, currency),
+    line.totalCost === null || line.totalCost === undefined
+      ? ""
+      : formatMoney(line.totalCost, currency),
+    MOVEMENT_REASON_LABELS[line.reason] ?? line.reason,
+    line.reference,
+    line.createdByName,
+  ]);
+
+  const nodes = [
+    pairs([
+      ["الفرع", payload.branch?.name],
+      ["من تاريخ", payload.from ? formatDate(payload.from) : "من البداية"],
+      ["إلى تاريخ", payload.to ? formatDate(payload.to) : "حتى آخر حركة"],
+      [
+        "نوع الحركة",
+        payload.movementType
+          ? (MOVEMENT_LABELS[payload.movementType] ?? payload.movementType)
+          : "كل الأنواع",
+      ],
+      ["عدد الحركات", totals.count ?? rows.length],
+    ]),
+    table(
+      [
+        "التاريخ",
+        "النوع",
+        "الرمز",
+        "الصنف",
+        "الكمية",
+        "سعر الوحدة",
+        "التكلفة",
+        "السبب",
+        "المرجع",
+        "سجّلها",
+      ],
+      bodyRows,
+      "sheet__table sheet__movements",
+    ),
+    pairs([
+      ["إجمالي الوارد", totals.quantityIn ?? 0],
+      ["إجمالي الصادر", totals.quantityOut ?? 0],
+      ["إجمالي التكلفة", formatMoney(totals.cost ?? 0, currency)],
+    ]),
+    rows.length === 0 ? note("لا توجد حركات مطابقة للفلاتر المختارة.") : null,
+    note(
+      "الكشف يعرض أحدث ٥٠٠ حركة مطابقة للفلاتر. حركات الجرد لا تُجمع في الوارد أو الصادر " +
+        "لأنها تُثبّت الرصيد على الكمية المعدودة.",
+    ),
+  ];
+
+  return nodes.filter(Boolean);
+}
+
 /* ── الدليل ────────────────────────────────────────────────────── */
 
 export const TEMPLATES = {
@@ -1097,5 +1285,17 @@ export const TEMPLATES = {
   cashier_closings_range: {
     signatures: ["مُعِدّ الكشف", "مدير الفرع", "المراجعة المالية"],
     render: cashierClosingsRange,
+  },
+  inventory_movement: {
+    signatures: ["أمين المستودع", "مدير الفرع", "المراجعة"],
+    render: inventoryMovement,
+  },
+  inventory_count_sheet: {
+    signatures: ["القائم بالجرد", "أمين المستودع", "مدير الفرع"],
+    render: inventoryCountSheet,
+  },
+  inventory_movements_range: {
+    signatures: ["مُعِدّ الكشف", "أمين المستودع", "مدير الفرع"],
+    render: inventoryMovementsRange,
   },
 };

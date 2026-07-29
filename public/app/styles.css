@@ -1117,6 +1117,101 @@ select option {
   width: 12%;
 }
 
+/*
+ * كشوف المخزون: أعمدة كثيرة على ورقة واحدة، فالتوزيع ثابت والخط أصغر
+ * والالتفاف داخل الخانة حتى لا يتجاوز الجدول عرض الورقة عند الطباعة.
+ */
+.sheet__count,
+.sheet__movements {
+  font-size: 0.74rem;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.sheet__count th,
+.sheet__count td,
+.sheet__movements th,
+.sheet__movements td {
+  padding: 0.3rem 0.3rem;
+  overflow-wrap: anywhere;
+}
+
+/* م / الرمز / الصنف / الوحدة / الرصيد / وارد / صادر ثم خانات يدوية */
+.sheet__count th:nth-child(1) {
+  width: 5%;
+}
+
+.sheet__count th:nth-child(2) {
+  width: 10%;
+}
+
+.sheet__count th:nth-child(3) {
+  width: 21%;
+}
+
+.sheet__count th:nth-child(4) {
+  width: 8%;
+}
+
+.sheet__count th:nth-child(5),
+.sheet__count th:nth-child(6),
+.sheet__count th:nth-child(7),
+.sheet__count th:nth-child(8),
+.sheet__count th:nth-child(9) {
+  width: 9%;
+}
+
+.sheet__count th:nth-child(10) {
+  width: 11%;
+}
+
+.sheet__count tbody td:nth-child(8),
+.sheet__count tbody td:nth-child(9),
+.sheet__count tbody td:nth-child(10) {
+  height: 2rem;
+}
+
+/* صنف رصيده تحت الحد الأدنى: تظليل خفيف لتمييزه على الورقة */
+.sheet__count tr.is-low td {
+  background: #f6efe0;
+  font-weight: 600;
+}
+
+/* التاريخ / النوع / الرمز / الصنف / الكمية / السعر / التكلفة / السبب / المرجع / سجّلها */
+.sheet__movements th:nth-child(1) {
+  width: 10%;
+}
+
+.sheet__movements th:nth-child(2) {
+  width: 7%;
+}
+
+.sheet__movements th:nth-child(3) {
+  width: 9%;
+}
+
+.sheet__movements th:nth-child(4) {
+  width: 17%;
+}
+
+.sheet__movements th:nth-child(5),
+.sheet__movements th:nth-child(6),
+.sheet__movements th:nth-child(7) {
+  width: 10%;
+}
+
+.sheet__movements th:nth-child(8) {
+  width: 8%;
+}
+
+.sheet__movements th:nth-child(9) {
+  width: 10%;
+}
+
+.sheet__movements th:nth-child(10) {
+  width: 9%;
+}
+
 .sheet__terms {
   margin-bottom: 1.4rem;
 }
@@ -1624,26 +1719,60 @@ select option {
     display: none !important;
   }
 
+  /*
+   * الجذر لا يُقيَّد بارتفاع ولا يقصّ: أي ارتفاع مفروض أو `overflow` مخفي على
+   * html/body يجعل المتصفح يطبع الصفحة الأولى ويحجب الباقي.
+   */
+  html,
+  body {
+    width: auto;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
   .body--print {
     background: #fff;
   }
 
   .sheet {
     margin: 0;
-    max-width: none;
+    width: auto;
+    max-width: 100%;
     padding: 0;
     border-radius: 0;
     box-shadow: none;
+    overflow: visible;
   }
 
   /*
-   * الجداول تُقسَّم على الصفحات ولا تُمنع من الانقسام: منع الانقسام على جدول
+   * لا جدول يتجاوز عرض الورقة: التوزيع الثابت يجبر الأعمدة على الدخول في
+   * العرض المتاح، والالتفاف داخل الخانة يمنع دفع الجدول خارج الورقة. بدونه
+   * يخرج الجدول العريض عن حدود الصفحة فيُقصّ ما تجاوزها ويظهر نصف الكشف فقط.
+   *
+   * والجداول تُقسَّم على الصفحات ولا تُمنع من الانقسام: منع الانقسام على جدول
    * أطول من صفحة يجعل المتصفح يدفعه لصفحة جديدة ثم يقصّ ما زاد عنها فيختفي
    * باقي الكشف. المنع يبقى على الصف الواحد فقط، ورأس الجدول يتكرّر في كل صفحة.
    */
   .sheet__pairs,
   .sheet__table {
+    table-layout: fixed;
+    width: 100%;
+    max-width: 100%;
     break-inside: auto;
+  }
+
+  .sheet__pairs th,
+  .sheet__pairs td,
+  .sheet__table th,
+  .sheet__table td {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .sheet__logo,
+  .sheet img {
+    max-width: 100%;
   }
 
   .sheet__pairs thead,
@@ -1663,21 +1792,28 @@ select option {
 
   .sheet--custom {
     padding: 0;
-    max-width: none;
+    width: auto;
+    max-width: 100%;
   }
 
   /*
-   * العلامة المائية مُطلقة داخل ورقة قد تمتد لصفحات؛ تثبيتها يجعلها تُرسم
-   * على كل صفحة بحجم الصفحة بدل أن تُمدّ على طول المستند وتقصّ المحتوى.
+   * العلامة المائية مطبوعة على الصفحة الأولى فقط وبارتفاع صفحة واحدة:
+   * `position: fixed` أو صندوق يمتد بطول المستند يعبثان بتقسيم الصفحات في
+   * المتصفح فتُطبع صفحة واحدة ويضيع الباقي.
    */
   .sheet__watermark {
-    position: fixed;
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 100vh;
+    max-height: 100vh;
+    overflow: hidden;
     opacity: 0.1;
   }
 
   /* الخلفيات الرمادية في رؤوس الجداول تُطبع كما تُعرض */
   .sheet__pairs th,
   .sheet__table thead th,
+  .sheet__count tr.is-low td,
   .sheet__table tr.is-total td {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;

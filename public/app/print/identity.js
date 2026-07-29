@@ -82,6 +82,24 @@ export function applyPaperDesign(company) {
   style.textContent = `@page { size: ${paper.css} ${landscape ? "landscape" : "portrait"}; margin: ${margin}mm; }`;
 }
 
+/**
+ * سطر إرشادي بإعدادات نافذة الطباعة الصحيحة. أشهر سبب لخروج نصف الكشف
+ * أو ضياع بقية الصفحات هو اختيار ورق أو مقياس مختلف عن تصميم المستند،
+ * فيُذكر المقاس المطلوب صريحاً للمستخدم قبل الطباعة.
+ */
+export function paperNote(company) {
+  const paper = PAPER_MM[company.paperSize] ?? PAPER_MM.A4;
+  const landscape = company.paperOrientation === "landscape";
+  const width = landscape ? paper.height : paper.width;
+  const height = landscape ? paper.width : paper.height;
+  const name = company.paperSize === "letter" ? "Letter" : (company.paperSize ?? "A4");
+  return (
+    `الورق: ${name} ${landscape ? "أفقي" : "عمودي"} (${width}×${height} مم). ` +
+    "في نافذة الطباعة اختر هذا المقاس، واجعل المقياس 100٪ والهوامش «افتراضية»، " +
+    "ونطاق الصفحات «الكل» حتى تُطبع كل الصفحات كاملة. للتصدير اختر «حفظ كـPDF»."
+  );
+}
+
 /** ترويسة المستند: الشعار + اسم المؤسسة وبياناتها + عنوان المستند. */
 export function documentHeader(company, title, subtitle) {
   const head = document.createElement("header");

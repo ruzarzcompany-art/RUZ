@@ -14,6 +14,8 @@ import {
   disciplinaryActions,
   documentIssues,
   employees,
+  inventoryItems,
+  inventoryMovements,
   leaveRequests,
   overtimeRequests,
   payrollSlips,
@@ -45,6 +47,7 @@ import {
 } from "../validate.js";
 import { getOffDates, monthBounds, offScheduleLabel } from "../schedule.js";
 import { loadLines as loadCashierLines } from "./cashier.js";
+import { loadDailySheet } from "./inventory.js";
 import { loadCompanySettings } from "./settings.js";
 
 export const documentsRouter = Router();
@@ -288,6 +291,50 @@ export const DOC_CATALOG: DocSpec[] = [
       PERMISSIONS.cashierReadAll,
       PERMISSIONS.cashierReview,
     ],
+  },
+  {
+    key: "inventory_movement",
+    title: "سند حركة مخزون",
+    group: "المخزون",
+    description: "طباعة حركة مسجَّلة (إدخال، إخراج، جرد) بكميتها وسببها ومرجعها.",
+    needsEmployee: false,
+    refType: null,
+    refLabel: "الحركة",
+    needsMonth: false,
+    legal: false,
+    hidden: true,
+    permissions: [PERMISSIONS.inventoryRead],
+  },
+  {
+    key: "inventory_count_sheet",
+    title: "ورقة الجرد اليومي",
+    group: "المخزون",
+    description:
+      "ورقة جرد بالرصيد الدفتري ووارد اليوم وصادره، مع خانات فارغة للكمية المعدودة والفرق.",
+    needsEmployee: false,
+    refType: null,
+    refLabel: "",
+    needsMonth: false,
+    legal: false,
+    needsBranch: true,
+    needsDate: true,
+    hidden: true,
+    permissions: [PERMISSIONS.inventoryRead],
+  },
+  {
+    key: "inventory_movements_range",
+    title: "كشف حركات المخزون",
+    group: "المخزون",
+    description: "كشف الحركات بنفس الفلاتر المعروضة على الشاشة مع إجماليّات الوارد والصادر.",
+    needsEmployee: false,
+    refType: null,
+    refLabel: "",
+    needsMonth: false,
+    legal: false,
+    needsBranch: true,
+    needsRange: true,
+    hidden: true,
+    permissions: [PERMISSIONS.inventoryRead],
   },
 ];
 
@@ -759,6 +806,143 @@ async function loadCashierClosings(options: {
   return { from: options.from, to: options.to, branch, closings, totals };
 }
 
+/* ── المخزون: سند حركة، ورقة جرد، كشف حركات ────────────────────── */
+
+/** بيانات الفرع للترويسة (اسم الفرع يظهر في سطر بيانات المستند). */
+async function branchHeader(branchId: number | null) {
+  if (branchId === null) return null;
+  const db = getDb();
+  const [found] = await db
+    .select({ id: branches.id, name: branches.name })
+    .from(branches)
+    .where(eq(branches.id, branchId))
+    .limit(1);
+  return found ?? null;
+}
+
+/** سند حركة مخزون واحدة بكل بياناتها المرجعية. */
+async function loadInventoryMovement(movementId: number) {
+  const db = getDb();
+
+  const [found] = await db
+    .select({
+      movement: inventoryMovements,
+      itemCode: inventoryItems.code,
+      itemName: inventoryItems.name,
+      unit: inventoryItems.unit,
+      category: inventoryItems.category,
+      branchName: branches.name,
+      createdByName: employees.fullName,
+    })
+    .from(inventoryMovements)
+    .leftJoin(inventoryItems, eq(inventoryMovements.itemId, inventoryItems.id))
+    .leftJoin(branches, eq(inventoryMovements.branchId, branches.id))
+    .leftJoin(employees, eq(inventoryMovements.createdByEmployeeId, employees.id))
+    .where(eq(inventoryMovements.id, movementId))
+    .limit(1);
+
+  if (!found) return null;
+
+  return {
+    kind: "movement" as const,
+    branch: { id: found.movement.branchId, name: found.branchName ?? "" },
+    movement: {
+      ...found.movement,
+      itemCode: found.itemCode ?? "",
+      itemName: found.itemName ?? "",
+      unit: found.unit ?? "",
+      category: found.category ?? "",
+      branchName: found.branchName ?? "",
+      createdByName: found.createdByName ?? "",
+    },
+  };
+}
+
+/**
+ * ورقة الجرد اليومي: تُبنى من نفس دالة شاشة المخزون حتى يتطابق الرصيد
+ * الدفتري على الورق مع المعروض، ثم يُدخل القائم بالجرد الكميات المعدودة يدوياً.
+ */
+async function loadInventoryCountSheet(branchId: number, businessDate: string) {
+  const [branch, rows] = await Promise.all([
+    branchHeader(branchId),
+    loadDailySheet(branchId, businessDate),
+  ]);
+
+  return {
+    kind: "countSheet" as const,
+    branch: branch ?? { id: branchId, name: "" },
+    date: businessDate,
+    rows,
+    totals: {
+      items: rows.length,
+      belowMinimum: rows.filter((row) => row.belowMinimum).length,
+      todayIn: round2(rows.reduce((sum, row) => sum + row.todayIn, 0)),
+      todayOut: round2(rows.reduce((sum, row) => sum + row.todayOut, 0)),
+    },
+  };
+}
+
+/** كشف حركات المخزون بنفس فلاتر الشاشة (فرع، صنف، نوع، مدى تاريخي). */
+async function loadInventoryMovements(options: {
+  branchId: number;
+  itemId: number | null;
+  movementType: string | null;
+  from: string | null;
+  to: string | null;
+}) {
+  const db = getDb();
+
+  const filters: SQL[] = [eq(inventoryMovements.branchId, options.branchId)];
+  if (options.itemId !== null) filters.push(eq(inventoryMovements.itemId, options.itemId));
+  if (options.movementType !== null) {
+    filters.push(eq(inventoryMovements.movementType, options.movementType));
+  }
+  if (options.from !== null) filters.push(gte(inventoryMovements.businessDate, options.from));
+  if (options.to !== null) filters.push(lte(inventoryMovements.businessDate, options.to));
+
+  const rows = await db
+    .select({
+      movement: inventoryMovements,
+      itemCode: inventoryItems.code,
+      itemName: inventoryItems.name,
+      unit: inventoryItems.unit,
+      createdByName: employees.fullName,
+    })
+    .from(inventoryMovements)
+    .leftJoin(inventoryItems, eq(inventoryMovements.itemId, inventoryItems.id))
+    .leftJoin(employees, eq(inventoryMovements.createdByEmployeeId, employees.id))
+    .where(and(...filters))
+    .orderBy(desc(inventoryMovements.businessDate), desc(inventoryMovements.id))
+    .limit(500);
+
+  const totals = { count: rows.length, quantityIn: 0, quantityOut: 0, cost: 0 };
+  for (const row of rows) {
+    if (row.movement.movementType === "in") {
+      totals.quantityIn = round2(totals.quantityIn + row.movement.quantity);
+    } else if (row.movement.movementType === "out") {
+      totals.quantityOut = round2(totals.quantityOut + row.movement.quantity);
+    }
+    totals.cost = round2(totals.cost + (row.movement.totalCost ?? 0));
+  }
+
+  return {
+    kind: "movements" as const,
+    branch: (await branchHeader(options.branchId)) ?? { id: options.branchId, name: "" },
+    from: options.from,
+    to: options.to,
+    itemId: options.itemId,
+    movementType: options.movementType,
+    rows: rows.map((row) => ({
+      ...row.movement,
+      itemCode: row.itemCode ?? "",
+      itemName: row.itemName ?? "",
+      unit: row.unit ?? "",
+      createdByName: row.createdByName ?? "",
+    })),
+    totals,
+  };
+}
+
 /* ── دليل النماذج ──────────────────────────────────────────────── */
 
 documentsRouter.get(
@@ -966,6 +1150,57 @@ documentsRouter.get(
       }
     }
 
+    /*
+     * مستندات المخزون: سند حركة واحدة، أو ورقة الجرد اليومي، أو كشف الحركات
+     * بنفس الفلاتر المعروضة على الشاشة (الفرع والصنف والنوع والمدى).
+     */
+    let inventory:
+      | Awaited<ReturnType<typeof loadInventoryMovement>>
+      | Awaited<ReturnType<typeof loadInventoryCountSheet>>
+      | Awaited<ReturnType<typeof loadInventoryMovements>>
+      | null = null;
+
+    if (doc.key === "inventory_movement") {
+      const movementId = asId(req.query.refId);
+      if (movementId === null) {
+        res.status(400).json({ ok: false, error: "لا توجد حركة محدّدة لطباعتها" });
+        return;
+      }
+      inventory = await loadInventoryMovement(movementId);
+      if (!inventory) {
+        res.status(404).json({ ok: false, error: "الحركة غير موجودة" });
+        return;
+      }
+    } else if (doc.key === "inventory_count_sheet") {
+      if (branchId === null) {
+        res.status(400).json({ ok: false, error: "اختر الفرع أولاً" });
+        return;
+      }
+      inventory = await loadInventoryCountSheet(
+        branchId,
+        asDateOnly(req.query.date) ?? sheetToday,
+      );
+    } else if (doc.key === "inventory_movements_range") {
+      if (branchId === null) {
+        res.status(400).json({ ok: false, error: "اختر الفرع أولاً" });
+        return;
+      }
+      // المدى اختياري: الكشف المطبوع يطابق الشاشة التي تعرض آخر الحركات دون تاريخ
+      const from = asDateOnly(req.query.from);
+      const to = asDateOnly(req.query.to);
+      if (from !== null && to !== null && to < from) {
+        res.status(400).json({ ok: false, error: "تاريخ النهاية قبل تاريخ البداية" });
+        return;
+      }
+      inventory = await loadInventoryMovements({
+        branchId,
+        itemId: asId(req.query.itemId),
+        movementType: asEnum(req.query.movementType, ["in", "out", "count"] as const),
+        from,
+        to,
+      });
+    }
+
     res.json({
       ok: true,
       doc,
@@ -975,10 +1210,15 @@ documentsRouter.get(
       attendanceSheet,
       rosterSheet,
       cashier,
+      inventory,
       reference,
       ...(bundle ?? { employee: null, branch: null, salary: null, schedule: null }),
       // كشوف الفرع لا تملك حزمة موظف، فيُملأ الفرع من الكشف نفسه ليظهر في الترويسة
-      ...(bundle ? {} : { branch: rosterSheet?.branch ?? cashier?.branch ?? null }),
+      ...(bundle
+        ? {}
+        : {
+            branch: rosterSheet?.branch ?? cashier?.branch ?? inventory?.branch ?? null,
+          }),
       issuedBy: { id: actor.id, fullName: actor.fullName, jobTitle: actor.jobTitle },
       generatedAt: new Date().toISOString(),
       timezone: bundle ? timezone : sheetTimezone,

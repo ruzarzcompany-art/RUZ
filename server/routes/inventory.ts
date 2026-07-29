@@ -33,7 +33,7 @@ const BALANCE_SCAN_LIMIT = 20_000;
  * فحركة الجرد (`count`) تُثبّت الرصيد على الكمية المعدودة، والإدخال
  * يزيد والإخراج يُنقص. هذا يجعل الجرد مصدر الحقيقة عند أي فرق.
  */
-async function computeBalances(branchId: number): Promise<
+export async function computeBalances(branchId: number): Promise<
   Map<number, { balance: number; lastMovementDate: string | null; lastCountDate: string | null }>
 > {
   const db = getDb();
@@ -365,6 +365,77 @@ inventoryRouter.delete(
 );
 
 /**
+ * صفوف ورقة الجرد اليومي لفرع في تاريخ محدّد: الرصيد الدفتري لكل صنف نشط
+ * مع وارد اليوم وصادره والكمية المعدودة إن سُجّلت. تستخدمها شاشة المخزون
+ * والنموذج المطبوع معاً حتى يبقى الرقم واحداً على الشاشة وعلى الورق.
+ */
+export async function loadDailySheet(
+  branchId: number,
+  businessDate: string,
+): Promise<
+  Array<{
+    itemId: number;
+    code: string;
+    name: string;
+    unit: string;
+    category: string;
+    minQuantity: number;
+    balance: number;
+    todayIn: number;
+    todayOut: number;
+    countedToday: number | null;
+    belowMinimum: boolean;
+  }>
+> {
+  const db = getDb();
+
+  const [items, todayRows, balances] = await Promise.all([
+    db
+      .select()
+      .from(inventoryItems)
+      .where(eq(inventoryItems.isActive, true))
+      .orderBy(asc(inventoryItems.code)),
+    db
+      .select()
+      .from(inventoryMovements)
+      .where(
+        and(
+          eq(inventoryMovements.branchId, branchId),
+          eq(inventoryMovements.businessDate, businessDate),
+        ),
+      ),
+    computeBalances(branchId),
+  ]);
+
+  const byItem = new Map<number, { in: number; out: number; count: number | null }>();
+  for (const row of todayRows) {
+    const entry = byItem.get(row.itemId) ?? { in: 0, out: 0, count: null };
+    if (row.movementType === "in") entry.in = round2(entry.in + row.quantity);
+    else if (row.movementType === "out") entry.out = round2(entry.out + row.quantity);
+    else entry.count = row.quantity;
+    byItem.set(row.itemId, entry);
+  }
+
+  return items.map((item) => {
+    const today = byItem.get(item.id) ?? { in: 0, out: 0, count: null };
+    const balance = balances.get(item.id)?.balance ?? 0;
+    return {
+      itemId: item.id,
+      code: item.code,
+      name: item.name,
+      unit: item.unit,
+      category: item.category,
+      minQuantity: item.minQuantity,
+      balance,
+      todayIn: today.in,
+      todayOut: today.out,
+      countedToday: today.count,
+      belowMinimum: balance < item.minQuantity,
+    };
+  });
+}
+
+/**
  * ورقة الجرد اليومي: أصناف الفرع مع رصيدها الدفتري وحركات اليوم —
  * يفتحها المسؤول ليُدخل الكميات المعدودة.
  */
@@ -373,7 +444,6 @@ inventoryRouter.get(
   requireAuth,
   requirePermission(PERMISSIONS.inventoryRead),
   async (req: AuthedRequest, res: Response) => {
-    const db = getDb();
     const actor = req.employee!;
     const branchId = asId(req.query.branchId) ?? actor.branchId ?? null;
 
@@ -385,55 +455,12 @@ inventoryRouter.get(
     const timezone = await branchTimezone(branchId);
     const businessDate = asDateOnly(req.query.date) ?? isoDateInZone(new Date(), timezone);
 
-    const [items, todayRows, balances] = await Promise.all([
-      db
-        .select()
-        .from(inventoryItems)
-        .where(eq(inventoryItems.isActive, true))
-        .orderBy(asc(inventoryItems.code)),
-      db
-        .select()
-        .from(inventoryMovements)
-        .where(
-          and(
-            eq(inventoryMovements.branchId, branchId),
-            eq(inventoryMovements.businessDate, businessDate),
-          ),
-        ),
-      computeBalances(branchId),
-    ]);
-
-    const byItem = new Map<number, { in: number; out: number; count: number | null }>();
-    for (const row of todayRows) {
-      const entry = byItem.get(row.itemId) ?? { in: 0, out: 0, count: null };
-      if (row.movementType === "in") entry.in = round2(entry.in + row.quantity);
-      else if (row.movementType === "out") entry.out = round2(entry.out + row.quantity);
-      else entry.count = row.quantity;
-      byItem.set(row.itemId, entry);
-    }
-
     res.json({
       ok: true,
       branchId,
       businessDate,
       timezone,
-      rows: items.map((item) => {
-        const today = byItem.get(item.id) ?? { in: 0, out: 0, count: null };
-        const balance = balances.get(item.id)?.balance ?? 0;
-        return {
-          itemId: item.id,
-          code: item.code,
-          name: item.name,
-          unit: item.unit,
-          category: item.category,
-          minQuantity: item.minQuantity,
-          balance,
-          todayIn: today.in,
-          todayOut: today.out,
-          countedToday: today.count,
-          belowMinimum: balance < item.minQuantity,
-        };
-      }),
+      rows: await loadDailySheet(branchId, businessDate),
     });
   },
 );
