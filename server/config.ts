@@ -95,14 +95,18 @@ export function getMailConfig(): {
 /**
  * وضع مطابقة الوجه:
  * - `off`      : تجاهل الوجه تماماً (سلوك النسخة الأولى).
- * - `optional` : (الافتراضي) مَن سُجِّل قالبه يجب أن يطابقه؛ ومَن لم يُسجَّل بعد
- *                يُسجَّل قالبه تلقائياً في أول تسجيل حضور يرسله. والتسجيل بدون
- *                قالب لموظف مسجَّل يُحفظ بحالة `flagged` للمراجعة.
- * - `enforce`  : القالب مطلوب في كل تسجيل، وبدونه يُرفض الطلب.
+ * - `optional` : مَن سُجِّل قالبه يجب أن يطابقه؛ ومَن لم يُسجَّل بعد يُسجَّل
+ *                قالبه تلقائياً في أول تسجيل حضور يرسله. والتسجيل بدون قالب
+ *                لموظف مسجَّل يُحفظ بحالة `flagged` للمراجعة.
+ * - `enforce`  : (الافتراضي) القالب مطلوب في كل تسجيل، وبدونه يُرفض الطلب —
+ *                فمطابقة الوجه إلزامية لكل حضور وانصراف.
+ *
+ * تعطيل البصمة لموظف بعينه (`employees.face_enabled`) يعلو على هذا الإعداد،
+ * ويبقى `FACE_MATCH_MODE` متاحاً لتخفيف السياسة عند الحاجة.
  */
 export function getFaceMatchMode(): "off" | "optional" | "enforce" {
-  const raw = (env("FACE_MATCH_MODE") ?? "optional").trim().toLowerCase();
-  return raw === "off" || raw === "enforce" ? raw : "optional";
+  const raw = (env("FACE_MATCH_MODE") ?? "enforce").trim().toLowerCase();
+  return raw === "off" || raw === "optional" ? raw : "enforce";
 }
 
 /**

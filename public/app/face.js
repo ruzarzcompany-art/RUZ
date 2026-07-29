@@ -86,10 +86,36 @@ function stopCamera(stream, video) {
 }
 
 /**
+ * يرسم الإطار الحالي من الكاميرا إلى صورة صغيرة **للعرض داخل الجهاز فقط**:
+ * تُستخدم لتأكيد هوية الموظف بصرياً عند نجاح المطابقة، ولا تُرسل إلى الخادم
+ * ولا تُخزَّن إطلاقاً.
+ * @returns {string|null} صورة data URL أو null إن تعذّر الرسم
+ */
+function frameSnapshot(video) {
+  try {
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+    if (!width || !height) return null;
+
+    const scale = Math.min(1, 240 / Math.max(width, height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.7);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * يلتقط لقطة واحدة من الكاميرا ويُعيد قالب الوجه.
  * @param {HTMLVideoElement} video عنصر معاينة الكاميرا
  * @param {(text: string) => void} [onProgress]
- * @returns {Promise<{descriptor: number[], score: number}>}
+ * @returns {Promise<{descriptor: number[], score: number, snapshot: string|null}>}
  */
 export async function captureFaceDescriptor(video, onProgress = () => {}) {
   if (!isFaceCaptureSupported()) {
@@ -133,6 +159,8 @@ export async function captureFaceDescriptor(video, onProgress = () => {}) {
         return {
           descriptor: Array.from(result.descriptor),
           score: Number(result.detection?.score ?? 0),
+          // لقطة للعرض على الجهاز فقط — لا تُرسل مع القالب
+          snapshot: frameSnapshot(video),
         };
       }
 

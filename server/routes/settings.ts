@@ -322,6 +322,8 @@ interface EntityField {
   required?: boolean;
   max?: number;
   values?: readonly string[];
+  /** تسميات عربية لقيم `enum` — الواجهة تعرضها بدل القيمة الخام */
+  valueLabels?: Record<string, string>;
   min?: number;
   maxValue?: number;
   /** الكيان المرجعي في الواجهة (لعرض قائمة اختيار) */
@@ -488,6 +490,14 @@ const ENTITY_SPECS: EntitySpec[] = [
       { key: "category", label: "التصنيف", kind: "text", max: 120 },
       { key: "unit", label: "وحدة القياس", kind: "text", max: 40 },
       { key: "unitCost", label: "سعر الوحدة", kind: "money" },
+      {
+        key: "priceMode",
+        label: "نوع سعر الوحدة",
+        kind: "enum",
+        values: ["fixed", "variable"] as const,
+        valueLabels: { fixed: "ثابت", variable: "متغيّر" },
+        hint: "المتغيّر يأخذ السعر من فاتورة الشراء في كل حركة إدخال، وآخر سعر شراء يصبح سعر الوحدة",
+      },
       { key: "minQuantity", label: "الحد الأدنى للرصيد", kind: "number", min: 0 },
       { key: "note", label: "ملاحظة", kind: "text", max: 400 },
       { key: "isActive", label: "نشط", kind: "bool" },

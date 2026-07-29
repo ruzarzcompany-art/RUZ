@@ -341,6 +341,11 @@ export const faceTemplates = pgTable(
       .references(() => employees.id, { onDelete: "cascade" }),
     /** اسم/إصدار النموذج الذي أنتج القالب — القوالب غير متبادلة بين النماذج */
     algorithm: text().notNull().default("face-api:faceRecognitionNet@1.7"),
+    /**
+     * ترتيب البصمة للموظف (1..3): تطبيق الحضور يسجّل ثلاث بصمات من زوايا
+     * وإضاءات مختلفة، والمطابقة تأخذ أقرب مسافة بينها.
+     */
+    slot: integer().notNull().default(1),
     dimensions: integer().notNull().default(128),
     /** النص المشفَّر بصيغة v1.<iv>.<tag>.<ciphertext> — base64url */
     encryptedTemplate: text("encrypted_template").notNull(),
@@ -352,7 +357,9 @@ export const faceTemplates = pgTable(
     enrolledAt: timestamp("enrolled_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [uniqueIndex("face_templates_employee_unique_idx").on(table.employeeId)],
+  (table) => [
+    uniqueIndex("face_templates_employee_unique_idx").on(table.employeeId, table.slot),
+  ],
 );
 
 /**
@@ -437,8 +444,14 @@ export const advances = pgTable(
     /** pending | approved | rejected */
     status: text().notNull().default("pending"),
     deductFromPayroll: boolean("deduct_from_payroll").notNull().default(true),
-    /** شهر الخصم بصيغة YYYY-MM */
+    /** شهر الخصم بصيغة YYYY-MM (أول قسط) */
     deductionMonth: text("deduction_month"),
+    /**
+     * تقسيط السلفة على عدد أشهر: 1 = تُخصم كاملة في شهر الخصم،
+     * وأكثر من ذلك يوزّع المبلغ بالتساوي بدءاً من شهر الخصم
+     * (القسط الأخير يستوعب فروق التقريب).
+     */
+    installmentMonths: integer("installment_months").notNull().default(1),
     decisionNote: text("decision_note").notNull().default(""),
     decidedByEmployeeId: integer("decided_by_employee_id").references(
       () => employees.id,
@@ -821,6 +834,8 @@ export const cashierClosings = pgTable(
     totalSales: money("total_sales"),
     cashSales: money("cash_sales"),
     cardSales: money("card_sales"),
+    /** مبيعات شبكة فودكس (Foodics) — تُرصد منفصلة عن باقي الشبكات */
+    foodicsSales: money("foodics_sales"),
     transferSales: money("transfer_sales"),
     deliverySales: money("delivery_sales"),
     otherSales: money("other_sales"),
@@ -858,6 +873,34 @@ export const cashierClosings = pgTable(
 );
 
 /**
+ * cashier_closing_lines — بنود التقفيل التي يضيفها المستخدم بنفسه:
+ * `network` = أجهزة/حسابات الشبكة، و`delivery_app` = تطبيقات التواصل والتوصيل
+ * (هنجرستيشن، كيتا، جاهز، ذاشيف...). كل بند سطر مستقل يمكن إضافته وتعديله
+ * وحذفه، ومجموع كل تصنيف يُرحّل إلى `card_sales` و`delivery_sales`.
+ */
+export const cashierClosingLines = pgTable(
+  "cashier_closing_lines",
+  {
+    id: serial().primaryKey(),
+    closingId: integer("closing_id")
+      .notNull()
+      .references(() => cashierClosings.id, { onDelete: "cascade" }),
+    /** network | delivery_app */
+    category: text().notNull().default("network"),
+    label: text().notNull(),
+    amount: money("amount"),
+    /** رقم الجهاز أو رقم الدفعة كما في التقرير */
+    reference: text().notNull().default(""),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("cashier_closing_lines_closing_idx").on(table.closingId, table.category),
+  ],
+);
+
+/**
  * inventory_items — أصناف المخزون (مواد أولية، مستهلكات).
  */
 export const inventoryItems = pgTable("inventory_items", {
@@ -868,6 +911,12 @@ export const inventoryItems = pgTable("inventory_items", {
   /** وحدة القياس: كجم، لتر، علبة ... */
   unit: text().notNull().default("قطعة"),
   unitCost: money("unit_cost"),
+  /**
+   * fixed = سعر الوحدة ثابت كما هو مُعرَّف هنا.
+   * variable = السعر متغيّر ويُؤخذ من فاتورة الشراء في كل حركة إدخال،
+   * وآخر سعر شراء يصبح سعر الوحدة المحتسب للصنف.
+   */
+  priceMode: text("price_mode").notNull().default("fixed"),
   minQuantity: doublePrecision("min_quantity").notNull().default(0),
   note: text().notNull().default(""),
   isActive: boolean("is_active").notNull().default(true),

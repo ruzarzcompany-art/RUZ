@@ -130,6 +130,16 @@
             <select id="filter-employee"><option value="">الكل</option></select>
           </label>
           <label class="field field--sm">
+            <span class="field__label">العرض</span>
+            <select id="filter-period">
+              <option value="recent" selected>آخر 3 أيام</option>
+              <option value="day">يومي</option>
+              <option value="week">أسبوعي</option>
+              <option value="month">شهري</option>
+              <option value="range">من — إلى</option>
+            </select>
+          </label>
+          <label class="field field--sm">
             <span class="field__label">من</span>
             <input id="filter-from" type="date" />
           </label>
@@ -139,6 +149,16 @@
           </label>
           <button id="filter-apply" class="btn btn--ghost btn--sm" type="button">تحديث</button>
         </div>
+        <p class="hint">
+          العرض الافتراضي آخر 3 أيام؛ لبقية الأيام اختر يومياً أو أسبوعياً أو
+          شهرياً أو «من — إلى». وكل يوم في المدى المختار يظهر بعنوانه، والأيام
+          التي لا حركة فيها تظهر مكتوباً عليها «لا توجد حركات».
+        </p>
+        <p class="hint">
+          تجاوز وقت الانصراف أو التأخير لا يُنشئ وقتاً إضافياً تلقائياً؛ الأوفرتايم
+          لا يُحتسب في المسير إلا بطلب من الموظف يعتمده مدير الفرع، أو بإدخال يدوي
+          معتمد من الموارد البشرية — وكذلك الإجازات والمكافآت.
+        </p>
 
         <div class="table-wrap">
           <table class="table" id="logs-table">
@@ -359,6 +379,11 @@
         <div class="card__head">
           <h2 class="card__title card__title--sm">المسيّرات المحفوظة</h2>
         </div>
+        <p class="hint">
+          حذف المسير يُسجَّل في سجل التدقيق بكل قيمه ومن حذفه. الحذف لا يمسّ
+          الحضور ولا السلف ولا المكافآت، فيمكن توليد مسير الشهر من جديد.
+        </p>
+        <p id="saved-slips-result" class="alert" role="status" hidden></p>
         <div class="table-wrap">
           <table class="table" id="saved-slips">
             <thead>
@@ -816,6 +841,22 @@
             <span class="field__label">الشهر</span>
             <input id="doc-month" type="month" />
           </label>
+          <label class="field field--sm" id="doc-branch-field" hidden>
+            <span class="field__label">الفرع</span>
+            <select id="doc-branch"></select>
+          </label>
+          <label class="field field--sm" id="doc-date-field" hidden>
+            <span class="field__label">التاريخ</span>
+            <input id="doc-date" type="date" />
+          </label>
+          <label class="field field--sm" id="doc-from-field" hidden>
+            <span class="field__label">من تاريخ</span>
+            <input id="doc-from" type="date" />
+          </label>
+          <label class="field field--sm" id="doc-to-field" hidden>
+            <span class="field__label">إلى تاريخ</span>
+            <input id="doc-to" type="date" />
+          </label>
           <button id="doc-print" class="btn btn--primary btn--sm" type="button">
             فتح للطباعة
           </button>
@@ -1020,16 +1061,20 @@
             <input id="cashier-cashSales" type="number" step="any" min="0" value="0" />
           </label>
           <label class="field field--sm">
-            <span class="field__label">مبيعات شبكة</span>
-            <input id="cashier-cardSales" type="number" step="any" min="0" value="0" />
+            <span class="field__label">مبيعات شبكة (محسوبة)</span>
+            <input id="cashier-cardSales" type="number" step="any" min="0" value="0" readonly />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">شبكة foodics</span>
+            <input id="cashier-foodicsSales" type="number" step="any" min="0" value="0" />
           </label>
           <label class="field field--sm">
             <span class="field__label">تحويلات</span>
             <input id="cashier-transferSales" type="number" step="any" min="0" value="0" />
           </label>
           <label class="field field--sm">
-            <span class="field__label">مبيعات التوصيل</span>
-            <input id="cashier-deliverySales" type="number" step="any" min="0" value="0" />
+            <span class="field__label">مبيعات التوصيل (محسوبة)</span>
+            <input id="cashier-deliverySales" type="number" step="any" min="0" value="0" readonly />
           </label>
           <label class="field field--sm">
             <span class="field__label">مبيعات أخرى</span>
@@ -1051,6 +1096,64 @@
             <span class="field__label">النقد المعدود في الدرج</span>
             <input id="cashier-countedCash" type="number" step="any" min="0" value="0" />
           </label>
+
+          <div class="field--wide" id="cashier-lines-network-wrap">
+            <div class="card__head">
+              <h3 class="card__title card__title--xs">بنود مبيعات الشبكة</h3>
+              <button
+                id="cashier-add-network"
+                class="btn btn--ghost btn--xs"
+                type="button"
+              >
+                إضافة بند شبكة
+              </button>
+            </div>
+            <div class="table-wrap">
+              <table class="table" id="cashier-lines-network">
+                <thead>
+                  <tr>
+                    <th>البند</th>
+                    <th>رقم الجهاز / المرجع</th>
+                    <th>المبلغ</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <p id="cashier-lines-network-empty" class="empty" hidden>
+              لا توجد بنود شبكة — أضف بنداً لكل جهاز أو نوع شبكة.
+            </p>
+          </div>
+
+          <div class="field--wide" id="cashier-lines-delivery-wrap">
+            <div class="card__head">
+              <h3 class="card__title card__title--xs">تطبيقات التواصل والتوصيل</h3>
+              <button
+                id="cashier-add-delivery"
+                class="btn btn--ghost btn--xs"
+                type="button"
+              >
+                إضافة تطبيق
+              </button>
+            </div>
+            <div class="table-wrap">
+              <table class="table" id="cashier-lines-delivery">
+                <thead>
+                  <tr>
+                    <th>التطبيق</th>
+                    <th>رقم الدفعة / المرجع</th>
+                    <th>المبلغ</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <p id="cashier-lines-delivery-empty" class="empty" hidden>
+              لا توجد تطبيقات — أضف تطبيقاً لتسجيل مبيعاته.
+            </p>
+          </div>
 
           <div class="row row--wrap" id="cashier-onbehalf" hidden>
             <label class="field field--sm">
@@ -1078,14 +1181,22 @@
             <button id="cashier-submit" class="btn btn--primary btn--sm" type="submit">
               رفع التقفيل
             </button>
+            <button id="cashier-print" class="btn btn--ghost btn--sm" type="button" disabled>
+              طباعة تقفيل اليوم
+            </button>
           </div>
         </form>
 
         <p id="cashier-today-note" class="hint"></p>
+        <p id="cashier-print-hint" class="hint">
+          الطباعة تتاح بعد رفع تقفيل اليوم فقط.
+        </p>
         <p id="cashier-result" class="alert" role="status" hidden></p>
         <p class="hint">
           النقد المتوقّع = عهدة البداية + المبيعات النقدية − المصروفات − المرتجعات، والفرق
           يُحسب في الخادم. رفع التقفيل مرة أخرى لنفس اليوم والوردية يُحدّث السجل السابق.
+          «مبيعات شبكة» = مجموع بنود الشبكة + شبكة foodics، و«مبيعات التوصيل» = مجموع
+          بنود تطبيقات التواصل، فتُحسب تلقائياً ولا تُدخل يدوياً.
         </p>
       </section>
 
@@ -1095,6 +1206,14 @@
         </div>
 
         <div class="filters">
+          <label class="field field--sm">
+            <span class="field__label">المدى</span>
+            <select id="cashier-filter-period">
+              <option value="day">يوم واحد</option>
+              <option value="month">شهر</option>
+              <option value="range" selected>من — إلى</option>
+            </select>
+          </label>
           <label class="field field--sm">
             <span class="field__label">من</span>
             <input id="cashier-filter-from" type="date" />
@@ -1117,6 +1236,9 @@
             </select>
           </label>
           <button id="cashier-filter-run" class="btn btn--ghost btn--sm" type="button">عرض</button>
+          <button id="cashier-print-range" class="btn btn--ghost btn--sm" type="button">
+            طباعة الكشف
+          </button>
         </div>
 
         <p id="cashier-summary" class="row row--wrap"></p>
@@ -1170,6 +1292,7 @@
                 <th>الرصيد</th>
                 <th>الحد الأدنى</th>
                 <th>تكلفة الوحدة</th>
+                <th>نوع السعر</th>
                 <th>قيمة المخزون</th>
                 <th>آخر جرد</th>
                 <th></th>
@@ -1237,11 +1360,16 @@
             <button id="inventory-submit" class="btn btn--primary btn--sm" type="submit">
               تسجيل الحركة
             </button>
+            <button id="inventory-print-last" class="btn btn--ghost btn--sm" type="button" hidden>
+              طباعة سند آخر حركة
+            </button>
           </div>
         </form>
+        <p id="inventory-price-hint" class="hint"></p>
         <p class="hint">
           حركة «الجرد» تُثبّت الرصيد على الكمية المعدودة ويحسب الخادم الفرق عن الرصيد
-          الدفتري تلقائياً.
+          الدفتري تلقائياً. الأصناف ذات السعر المتغيّر تأخذ سعرها من فاتورة الشراء،
+          وآخر سعر فاتورة يصبح سعر الوحدة المحتسب للصنف.
         </p>
       </section>
 
@@ -1252,6 +1380,9 @@
             <input id="inventory-daily-date" type="date" />
             <button id="inventory-daily-run" class="btn btn--ghost btn--xs" type="button">
               عرض
+            </button>
+            <button id="inventory-daily-print" class="btn btn--ghost btn--xs" type="button">
+              طباعة ورقة الجرد
             </button>
           </div>
         </div>
@@ -1306,6 +1437,9 @@
           </label>
           <button id="inventory-filter-run" class="btn btn--ghost btn--sm" type="button">
             عرض
+          </button>
+          <button id="inventory-movements-print" class="btn btn--ghost btn--sm" type="button">
+            طباعة الكشف
           </button>
         </div>
 
@@ -1448,6 +1582,31 @@
           <h2 class="card__title card__title--sm">سجل التدقيق</h2>
           <button id="audit-refresh" class="btn btn--ghost btn--xs" type="button">تحديث</button>
         </div>
+        <div class="filters">
+          <label class="field field--sm">
+            <span class="field__label">العرض</span>
+            <select id="audit-period">
+              <option value="recent" selected>آخر 3 أيام</option>
+              <option value="day">يومي</option>
+              <option value="week">أسبوعي</option>
+              <option value="month">شهري</option>
+              <option value="range">من — إلى</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">من</span>
+            <input id="audit-from" type="date" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">إلى</span>
+            <input id="audit-to" type="date" />
+          </label>
+        </div>
+        <p class="hint">
+          العرض الافتراضي آخر 3 أيام؛ لبقية الأيام اختر يومياً أو أسبوعياً أو
+          شهرياً أو «من — إلى». وكل يوم في المدى المختار يظهر بعنوانه، والأيام
+          الخالية تظهر مكتوباً عليها «لا توجد قيود».
+        </p>
         <div class="table-wrap">
           <table class="table" id="audit-table">
             <thead>

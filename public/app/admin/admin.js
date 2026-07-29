@@ -28,6 +28,7 @@ import {
   setToken,
   startIdleWatch,
   stopIdleWatch,
+  todayIso,
   toLocalInputValue,
 } from "../api.js";
 import {
@@ -158,7 +159,100 @@ function logActions(log) {
   return wrap;
 }
 
+/* ── مدى العرض المشترك (يومي / أسبوعي / شهري / من — إلى) ──── */
+
+const isoOf = (date) => date.toISOString().slice(0, 10);
+
+/** عدد أيام العرض الافتراضي في سجلات الحضور والتدقيق. */
+const RECENT_DAYS = 3;
+
+/**
+ * يملأ حقلي التاريخ حسب المدى المختار. «من — إلى» يترك الحقلين للمستخدم،
+ * وبقية الخيارات تُحسب من تاريخ البداية الحالي (أو اليوم).
+ * الأسبوع يبدأ السبت كما هو المعتاد في التقويم المحلي.
+ *
+ * «آخر 3 أيام» هو الافتراضي، وهو مدى نسبي بالكامل: يُحسب من تاريخ اليوم في
+ * كل تحديث، وحقل «من» يبقى للقراءة فيه. ولأنه نسبي لا يُتَّخذ تاريخه مرساةً
+ * للمدى الذي يُختار بعده، وإلا لانزلق اليوم/الأسبوع/الشهر إلى الماضي.
+ */
+function applyRangePeriod(periodId, fromId, toId) {
+  const period = el(periodId).value;
+  const fromNode = el(fromId);
+  const toNode = el(toId);
+  const anchor = (fromNode.dataset.autoRange === "1" ? "" : fromNode.value) || todayIso();
+
+  fromNode.dataset.autoRange = period === "recent" ? "1" : "0";
+
+  if (period === "recent") {
+    const start = new Date(`${todayIso()}T00:00:00Z`);
+    start.setUTCDate(start.getUTCDate() - (RECENT_DAYS - 1));
+    fromNode.value = isoOf(start);
+    toNode.value = todayIso();
+  } else if (period === "day") {
+    fromNode.value = anchor;
+    toNode.value = anchor;
+  } else if (period === "week") {
+    const start = new Date(`${anchor}T00:00:00Z`);
+    start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 1) % 7));
+    const end = new Date(start);
+    end.setUTCDate(end.getUTCDate() + 6);
+    fromNode.value = isoOf(start);
+    toNode.value = isoOf(end);
+  } else if (period === "month") {
+    const [year, month] = anchor.split("-").map(Number);
+    fromNode.value = `${anchor.slice(0, 7)}-01`;
+    toNode.value = isoOf(new Date(Date.UTC(year, month, 0)));
+  }
+
+  fromNode.readOnly = period === "recent";
+  toNode.readOnly = period !== "range";
+}
+
+/**
+ * كل أيام المدى تنازلياً حتى تظهر الأيام الخالية من الحركات أيضاً.
+ * يعود بـ `null` إذا كان المدى مفتوحاً أو أطول من الحد (فيُعرض ما وُجد فقط).
+ */
+function calendarDays(from, to, maxDays = 92) {
+  if (!from || !to || to < from) return null;
+
+  const days = [];
+  const cursor = new Date(`${to}T00:00:00Z`);
+  const start = new Date(`${from}T00:00:00Z`);
+
+  while (cursor >= start) {
+    days.push(isoOf(cursor));
+    if (days.length > maxDays) return null;
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+
+  return days;
+}
+
+/** صف عنوان اليوم داخل الجدول. */
+function dayHeaderRow(day, columns, summary) {
+  const tr = document.createElement("tr");
+  tr.className = "row--day";
+  const cell = document.createElement("td");
+  cell.colSpan = columns;
+  cell.textContent = `${day} — ${summary}`;
+  tr.append(cell);
+  return tr;
+}
+
+/** يجمّع سجلات تحمل `localDate` في خريطة يوم ← سجلات. */
+function groupByDay(entries) {
+  const byDay = new Map();
+  for (const entry of entries) {
+    const key = entry.localDate ?? String(entry.serverTime ?? entry.createdAt ?? "").slice(0, 10);
+    if (!byDay.has(key)) byDay.set(key, []);
+    byDay.get(key).push(entry);
+  }
+  return byDay;
+}
+
 async function refreshLogs() {
+  applyRangePeriod("filter-period", "filter-from", "filter-to");
+
   const params = new URLSearchParams();
   const employeeId = el("filter-employee").value;
   const from = el("filter-from").value;
@@ -167,7 +261,7 @@ async function refreshLogs() {
   if (employeeId) params.set("employeeId", employeeId);
   if (from) params.set("from", `${from}T00:00:00`);
   if (to) params.set("to", `${to}T23:59:59`);
-  params.set("limit", "200");
+  params.set("limit", "500");
 
   const result = await api(`/admin/attendance?${params.toString()}`);
   const body = el("logs-table").querySelector("tbody");
@@ -181,24 +275,42 @@ async function refreshLogs() {
   const logs = result.logs ?? [];
   el("logs-empty").hidden = logs.length > 0;
 
-  for (const log of logs) {
+  // كل يوم في المدى يظهر بعنوانه، ولو لم تُسجَّل فيه أي حركة
+  const byDay = groupByDay(logs);
+  const days = calendarDays(from, to) ?? [...byDay.keys()];
+
+  for (const day of days) {
+    const dayLogs = byDay.get(day) ?? [];
     body.append(
-      row(
-        [
-          `${log.employeeCode} — ${log.fullName}`,
-          label(log.type),
-          log.localTime ?? formatDateTime(log.serverTime),
-          log.branchName ?? "—",
-          label(log.status),
-          label(log.source),
-          log.distanceMeters === null ? "—" : `${Math.round(log.distanceMeters)} م`,
-          log.faceVerified ? "✓" : log.faceDistance === null ? "—" : "✗",
-          log.deductedHours ? `${log.deductedHours} س` : "—",
-          logActions(log),
-        ],
-        { className: log.status === "rejected" ? "is-rejected" : log.status === "flagged" ? "is-flagged" : "" },
-      ),
+      dayHeaderRow(day, 10, dayLogs.length > 0 ? `${dayLogs.length} حركة` : "لا توجد حركات"),
     );
+
+    for (const log of dayLogs) {
+      body.append(
+        row(
+          [
+            `${log.employeeCode} — ${log.fullName}`,
+            label(log.type),
+            log.localTime ?? formatDateTime(log.serverTime),
+            log.branchName ?? "—",
+            label(log.status),
+            label(log.source),
+            log.distanceMeters === null ? "—" : `${Math.round(log.distanceMeters)} م`,
+            log.faceVerified ? "✓" : log.faceDistance === null ? "—" : "✗",
+            log.deductedHours ? `${log.deductedHours} س` : "—",
+            logActions(log),
+          ],
+          {
+            className:
+              log.status === "rejected"
+                ? "is-rejected"
+                : log.status === "flagged"
+                  ? "is-flagged"
+                  : "",
+          },
+        ),
+      );
+    }
   }
 }
 
@@ -547,17 +659,55 @@ async function refreshSavedSlips() {
   body.textContent = "";
   if (!result.ok) return;
 
+  const canManage = can("payroll.manage");
+
   for (const slip of result.items ?? []) {
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    actions.append(button("طباعة", { onClick: () => openPrint("payroll", slip.id) }));
+
+    if (canManage) {
+      actions.append(
+        button("حذف", {
+          className: "btn btn--danger btn--xs",
+          onClick: () => deleteSavedSlip(slip),
+        }),
+      );
+    }
+
     body.append(
       row([
         slip.period,
         `${slip.employeeCode ?? ""} ${slip.fullName ?? ""}`.trim(),
         formatMoney(slip.netPay, slip.currency),
         label(slip.status),
-        button("طباعة", { onClick: () => openPrint("payroll", slip.id) }),
+        actions,
       ]),
     );
   }
+}
+
+/**
+ * حذف مسير محفوظ. المسير سجل مالي فيُطلب تأكيد صريح وسبب يُسجَّل في
+ * التدقيق؛ وحذفه لا يمسّ الحضور ولا السلف، فيمكن توليده مرة أخرى لنفس الشهر.
+ */
+async function deleteSavedSlip(slip) {
+  const who = `${slip.employeeCode ?? ""} ${slip.fullName ?? ""}`.trim() || "الموظف";
+  if (!window.confirm(`حذف مسير ${who} لشهر ${slip.period} نهائياً؟`)) return;
+
+  const reason = window.prompt("سبب الحذف (يُسجَّل في التدقيق):", "") ?? "";
+  const result = await api(`/payroll/slips/${slip.id}`, {
+    method: "DELETE",
+    body: { reason },
+  });
+
+  setAlert(
+    el("saved-slips-result"),
+    result.ok ? result.message : (result.error ?? "تعذّر حذف المسير"),
+    result.ok ? "ok" : "error",
+  );
+
+  if (result.ok) await refreshSavedSlips();
 }
 
 /* ── الموظفون وبصمات الوجه ────────────────────────────────── */
@@ -693,7 +843,9 @@ async function refreshPeople() {
         employee.branchManagerName ?? "—",
         employee.roleNameAr ?? employee.roleName ?? "—",
         faceEnabledCell(employee),
-        face ? `مسجّلة (${formatDateTime(face.enrolledAt)})` : "غير مسجّلة",
+        face
+          ? `مسجّلة (${face.slots ?? 1}/${face.requiredSlots ?? 3} · ${formatDateTime(face.enrolledAt)})`
+          : "غير مسجّلة",
         actions,
       ]),
     );
@@ -824,12 +976,21 @@ function fillNewPanelSelects() {
   fillBranches(el("cashier-branch"), { placeholder: "فرعي" });
   fillBranches(el("cashier-filter-branch"), { placeholder: "الكل" });
   fillBranches(el("inventory-branch"), { placeholder: "فرعي" });
+  fillBranches(el("doc-branch"), { placeholder: "فرعي" });
 }
 
 /* ── سجل التدقيق ──────────────────────────────────────────── */
 
 async function refreshAudit() {
-  const result = await api("/admin/audit?limit=200");
+  applyRangePeriod("audit-period", "audit-from", "audit-to");
+
+  const params = new URLSearchParams({ limit: "500" });
+  const from = el("audit-from").value;
+  const to = el("audit-to").value;
+  if (from) params.set("from", `${from}T00:00:00`);
+  if (to) params.set("to", `${to}T23:59:59`);
+
+  const result = await api(`/admin/audit?${params.toString()}`);
   const body = el("audit-table").querySelector("tbody");
   body.textContent = "";
 
@@ -841,16 +1002,27 @@ async function refreshAudit() {
   const entries = result.entries ?? [];
   el("audit-empty").hidden = entries.length > 0;
 
-  for (const entry of entries) {
+  // كل يوم في المدى يظهر بعنوانه ولو خلا من القيود
+  const byDay = groupByDay(entries);
+  const days = calendarDays(from, to) ?? [...byDay.keys()];
+
+  for (const day of days) {
+    const dayEntries = byDay.get(day) ?? [];
     body.append(
-      row([
-        formatDateTime(entry.createdAt),
-        entry.actorName ? `${entry.actorCode ?? ""} ${entry.actorName}`.trim() : "النظام",
-        entry.action,
-        `${entry.entityType}#${entry.entityId ?? "—"}`,
-        entry.reason || "—",
-      ]),
+      dayHeaderRow(day, 5, dayEntries.length > 0 ? `${dayEntries.length} قيد` : "لا توجد قيود"),
     );
+
+    for (const entry of dayEntries) {
+      body.append(
+        row([
+          formatDateTime(entry.createdAt),
+          entry.actorName ? `${entry.actorCode ?? ""} ${entry.actorName}`.trim() : "النظام",
+          entry.action,
+          `${entry.entityType}#${entry.entityId ?? "—"}`,
+          entry.reason || "—",
+        ]),
+      );
+    }
   }
 }
 
@@ -985,6 +1157,9 @@ el("close-stale").addEventListener("click", async (event) => {
 });
 
 el("filter-apply").addEventListener("click", refreshLogs);
+el("filter-period").addEventListener("change", refreshLogs);
+el("filter-from").addEventListener("change", refreshLogs);
+el("filter-to").addEventListener("change", refreshLogs);
 
 el("forms-tabs").addEventListener("click", async (event) => {
   const tab = event.target.closest(".tab");
@@ -1056,6 +1231,9 @@ el("salary-form").addEventListener("submit", async (event) => {
 
 el("payroll-preview").addEventListener("click", previewPayroll);
 el("audit-refresh").addEventListener("click", refreshAudit);
+el("audit-period").addEventListener("change", refreshAudit);
+el("audit-from").addEventListener("change", refreshAudit);
+el("audit-to").addEventListener("change", refreshAudit);
 
 el("face-enable-all").addEventListener("click", () => setFaceEnabledForAll(true));
 el("face-disable-all").addEventListener("click", () => setFaceEnabledForAll(false));

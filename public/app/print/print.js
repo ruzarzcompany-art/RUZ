@@ -2,8 +2,11 @@
  * صفحة طباعة المستندات.
  *
  * تدعم مسارين:
- *  1) حزمة النماذج الجديدة: `?doc=<key>&employeeId=&refId=&month=` — تُملأ
- *     تلقائياً من `GET /api/documents/data` وتُسجَّل في «النماذج المُصدرة».
+ *  1) حزمة النماذج الجديدة:
+ *     `?doc=<key>&employeeId=&refId=&month=&branchId=&date=&from=&to=&closingId=`
+ *     — تُملأ تلقائياً من `GET /api/documents/data` وتُسجَّل في «النماذج المُصدرة».
+ *     الكشوف غير المرتبطة بموظف (كشف التحضير والانصراف، تقفيلات الكاشير)
+ *     تستخدم `branchId` + `date` أو `from`/`to`.
  *  2) المسار القديم: `?doc=payroll|contract|voucher&id=<id>` — يبقى عاملاً
  *     لأن أزرار الطباعة في شاشات النماذج والرواتب تستخدمه.
  *
@@ -18,6 +21,8 @@ import {
   documentHeader,
   documentMeta,
   loadIdentity,
+  paperNote,
+  PAPER_CHOICES,
   watermark,
 } from "./identity.js";
 import { TEMPLATES, legalNotice, pairs, signatures } from "./templates.js";
@@ -27,6 +32,90 @@ const docKey = params.get("doc") ?? "payroll";
 const legacyId = Number(params.get("id"));
 
 const container = () => el("doc");
+
+/* ── مقاس الورق ─────────────────────────────────────────────────
+ * مقاس الورقة يأتي من إعدادات المؤسسة، لكن الطابعة قد تكون محمَّلة
+ * بمقاس آخر (Letter مقابل A4 مثلاً). عند اختلاف المقاسين يقصّ المتصفح
+ * المحتوى أو يُصغّره فيخرج نصف الكشف وتضيع بقية الصفحات، لذلك يوجد
+ * مُبدِّل أعلى الصفحة يُعيد كتابة قاعدة `@page` فوراً ويُحفظ الاختيار
+ * محلياً ليُطبَّق على المطبوعات التالية.
+ */
+
+const PAPER_PREF_KEY = "sijl:print:paper";
+
+let activeIdentity = null;
+
+function readPaperPreference() {
+  try {
+    const raw = window.localStorage.getItem(PAPER_PREF_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    if (!saved || typeof saved !== "object") return null;
+    const size = PAPER_CHOICES.some((choice) => choice.value === saved.size) ? saved.size : null;
+    const orientation =
+      saved.orientation === "landscape" || saved.orientation === "portrait"
+        ? saved.orientation
+        : null;
+    return size || orientation ? { size, orientation } : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePaperPreference(size, orientation) {
+  try {
+    window.localStorage.setItem(PAPER_PREF_KEY, JSON.stringify({ size, orientation }));
+  } catch {
+    // التخزين المحلي قد يكون معطَّلاً — الاختيار يبقى فعّالاً لهذه الصفحة فقط
+  }
+}
+
+/** يدمج اختيار المستخدم للورق فوق إعدادات المؤسسة. */
+function withPaper(identity, override) {
+  if (!override) return identity;
+  return {
+    ...identity,
+    paperSize: override.size ?? identity.paperSize,
+    paperOrientation: override.orientation ?? identity.paperOrientation,
+  };
+}
+
+/** يطبّق تصميم الورقة ويحدّث السطر الإرشادي معاً. */
+function applyDesign(identity) {
+  activeIdentity = identity;
+  applyPaperDesign(identity);
+  el("print-note").textContent = paperNote(identity);
+}
+
+function onPaperChange() {
+  const size = el("print-paper").value;
+  const orientation = el("print-orientation").value;
+  savePaperPreference(size, orientation);
+  applyDesign({ ...(activeIdentity ?? {}), paperSize: size, paperOrientation: orientation });
+}
+
+/** يهيّئ مُبدِّل مقاس الورق واتجاهه ويضبطه على تصميم المستند الحالي. */
+function setupPaperControls(identity) {
+  const paperSelect = el("print-paper");
+  const orientationSelect = el("print-orientation");
+  if (!paperSelect || !orientationSelect) return;
+
+  if (paperSelect.options.length === 0) {
+    for (const choice of PAPER_CHOICES) {
+      const option = document.createElement("option");
+      option.value = choice.value;
+      option.textContent = choice.label;
+      paperSelect.append(option);
+    }
+    paperSelect.addEventListener("change", onPaperChange);
+    orientationSelect.addEventListener("change", onPaperChange);
+  }
+
+  paperSelect.value = PAPER_CHOICES.some((choice) => choice.value === identity.paperSize)
+    ? identity.paperSize
+    : "A4";
+  orientationSelect.value = identity.paperOrientation === "landscape" ? "landscape" : "portrait";
+}
 
 function fail(message) {
   const node = container();
@@ -69,7 +158,18 @@ function compose(company, { title, subtitle, meta, body, signLabels, notice }) {
 
 async function renderPackaged(company) {
   const query = new URLSearchParams({ doc: docKey });
-  for (const key of ["employeeId", "refId", "month"]) {
+  for (const key of [
+    "employeeId",
+    "refId",
+    "month",
+    "branchId",
+    "date",
+    "from",
+    "to",
+    "closingId",
+    "itemId",
+    "movementType",
+  ]) {
     const value = params.get(key);
     if (value) query.set(key, value);
   }
@@ -86,13 +186,23 @@ async function renderPackaged(company) {
     return;
   }
 
-  // إعدادات المؤسسة القادمة مع البيانات أحدث من النسخة المخزَّنة محلياً
-  const identity = { ...company, ...(result.company ?? {}) };
-  applyPaperDesign(identity);
+  // إعدادات المؤسسة القادمة مع البيانات أحدث من النسخة المخزَّنة محلياً،
+  // ويبقى اختيار المستخدم للورق فوقها لأنه يطابق الطابعة الفعلية.
+  const identity = withPaper({ ...company, ...(result.company ?? {}) }, readPaperPreference());
+  applyDesign(identity);
+  setupPaperControls(identity);
 
   const subtitleParts = [
     result.employee ? `${result.employee.fullName} — ${result.employee.employeeCode}` : "",
     result.month ?? "",
+    result.rosterSheet ? `كشف يوم ${result.rosterSheet.date}` : "",
+    result.cashier && result.cashier.from !== result.cashier.to
+      ? `${result.cashier.from} — ${result.cashier.to}`
+      : "",
+    result.inventory?.kind === "movement"
+      ? `حركة رقم ${result.inventory.movement?.id ?? ""}`
+      : "",
+    result.inventory?.kind === "countSheet" ? `جرد يوم ${result.inventory.date}` : "",
   ].filter(Boolean);
 
   compose(identity, {
@@ -117,7 +227,12 @@ async function renderPackaged(company) {
       employeeId: result.employee?.id ?? null,
       branchId: result.branch?.id ?? null,
       refId: params.get("refId") ? Number(params.get("refId")) : null,
-      payload: { month: result.month ?? null },
+      payload: {
+        month: result.month ?? null,
+        date: result.rosterSheet?.date ?? null,
+        from: result.cashier?.from ?? null,
+        to: result.cashier?.to ?? null,
+      },
     },
   }).catch(() => {});
 }
@@ -300,10 +415,9 @@ async function boot() {
     return;
   }
 
-  const company = await loadIdentity();
-  applyPaperDesign(company);
-
-  el("print-note").textContent = "اختر «حفظ كـPDF» من نافذة الطباعة لتصدير المستند.";
+  const company = withPaper(await loadIdentity(), readPaperPreference());
+  applyDesign(company);
+  setupPaperControls(company);
 
   // `?id=` يعني الطباعة القديمة لسجل بعينه (مسير/عقد/سند)
   const useLegacy = Number.isInteger(legacyId) && legacyId > 0 && LEGACY[docKey];

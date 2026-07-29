@@ -19,7 +19,7 @@ import { issueResetCodeByAdmin, maskEmail } from "../reset.js";
 import { PERMISSIONS, requireAnyPermission, requirePermission } from "../rbac.js";
 import { reseedNow } from "../seed.js";
 import { CHECK_IN, CHECK_OUT, closeStaleShifts } from "../shifts.js";
-import { safeTimeZone } from "../time.js";
+import { isoDateInZone, safeTimeZone } from "../time.js";
 import {
   asDateTime,
   asEnum,
@@ -144,6 +144,8 @@ adminRouter.get(
         localTime: row.log.serverTime.toLocaleString("ar", {
           timeZone: safeTimeZone(row.timezone),
         }),
+        // تاريخ الحركة بتوقيت الفرع — الواجهة تجمّع السجلات بحسبه يوماً بيوم
+        localDate: isoDateInZone(row.log.serverTime, safeTimeZone(row.timezone)),
       })),
     });
   },
@@ -795,13 +797,25 @@ adminRouter.get(
     const db = getDb();
     const entityType = asString(req.query.entityType, 100);
     const entityId = asId(req.query.entityId);
+    const from = asDateTime(String(req.query.from ?? ""));
+    const to = asDateTime(String(req.query.to ?? ""));
     const limitRaw = Number.parseInt(String(req.query.limit ?? "100"), 10);
     const limit = Number.isInteger(limitRaw) ? Math.min(Math.max(limitRaw, 1), 500) : 100;
 
     const filters = [
       entityType ? eq(auditLogs.entityType, entityType) : undefined,
       entityId === null ? undefined : eq(auditLogs.entityId, entityId),
+      from === null ? undefined : gte(auditLogs.createdAt, from),
+      to === null ? undefined : lte(auditLogs.createdAt, to),
     ].filter((item) => item !== undefined);
+
+    // توقيت الفرع الأول مرجعٌ لتجميع القيود يوماً بيوم في الواجهة
+    const [anchorBranch] = await db
+      .select({ timezone: branches.timezone })
+      .from(branches)
+      .orderBy(asc(branches.id))
+      .limit(1);
+    const timezone = safeTimeZone(anchorBranch?.timezone ?? "Asia/Riyadh");
 
     const rows = await db
       .select({
@@ -817,10 +831,12 @@ adminRouter.get(
 
     res.json({
       ok: true,
+      timezone,
       entries: rows.map((row) => ({
         ...row.entry,
         actorName: row.actorName,
         actorCode: row.actorCode,
+        localDate: isoDateInZone(row.entry.createdAt, timezone),
       })),
     });
   },

@@ -24,6 +24,7 @@ const INPUT_TYPES = {
   string: "text",
   money: "number",
   number: "number",
+  int: "number",
   date: "date",
   month: "month",
 };
@@ -85,7 +86,11 @@ export function renderFormFields(container, resource, options = {}) {
       input.type = INPUT_TYPES[field.kind] ?? "text";
       if (field.kind === "money") input.step = "0.01";
       if (field.kind === "number") input.step = "0.25";
-      if (field.kind === "money" || field.kind === "number") input.min = "0";
+      if (field.kind === "int") input.step = "1";
+      if (field.kind === "money" || field.kind === "number" || field.kind === "int") {
+        input.min = field.min === undefined ? "0" : String(field.min);
+      }
+      if (field.kind === "int" && field.max !== undefined) input.max = String(field.max);
     }
 
     input.name = field.name;
@@ -114,9 +119,9 @@ export function collectFormValues(container) {
 
     if (raw === "" || raw === null) continue;
 
-    if (kind === "money" || kind === "number") {
+    if (kind === "money" || kind === "number" || kind === "int") {
       const num = Number(raw);
-      if (Number.isFinite(num)) payload[input.name] = num;
+      if (Number.isFinite(num)) payload[input.name] = kind === "int" ? Math.round(num) : num;
       continue;
     }
 
@@ -136,6 +141,8 @@ export const LIST_COLUMNS = {
   advances: [
     { key: "requestDate", label: "التاريخ" },
     { key: "amount", label: "المبلغ", money: true },
+    { key: "installmentMonths", label: "عدد الأقساط" },
+    { key: "deductionMonth", label: "أول شهر خصم" },
     { key: "reason", label: "السبب" },
     { key: "status", label: "الحالة", badge: true },
   ],

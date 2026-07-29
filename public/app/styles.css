@@ -758,6 +758,61 @@ select option {
   padding: 0.3rem 0.5rem;
 }
 
+/* ثلاث بصمات وجه، لكل واحدة زر التقاط مستقل */
+.face__slots {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* ── لقطة تأكيد الهوية عند التسجيل (لا تُرسل للخادم) ─────────── */
+
+.card--match {
+  display: grid;
+  gap: 0.7rem;
+  animation-delay: 0.08s;
+}
+
+.match {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.match__photo {
+  width: 84px;
+  height: 84px;
+  flex: 0 0 auto;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--ink-900);
+  /* الكاميرا الأمامية معكوسة — نقلب اللقطة ليتعرّف الموظف على نفسه */
+  transform: scaleX(-1);
+}
+
+.match__info {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.match__name {
+  margin: 0;
+  font-family: "Reem Kufi", sans-serif;
+  font-size: 1rem;
+  color: var(--bone);
+}
+
+.match__meta {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--bone-dim);
+}
+
 /* ── التبويبات ──────────────────────────────────────────────── */
 
 .tabs {
@@ -803,6 +858,11 @@ select option {
 
 .tabs--main .tab:not(.is-active) {
   border-color: var(--line);
+}
+
+/* قائمة الأقسام الإضافية في تطبيق الموظف */
+.tabs--extras {
+  margin-bottom: 1rem;
 }
 
 .panel {
@@ -903,8 +963,7 @@ select option {
   margin-bottom: 0.5rem;
 }
 
-.card--forms,
-.card--docs {
+.card--forms {
   display: grid;
   gap: 0.8rem;
   animation-delay: 0.26s;
@@ -930,6 +989,23 @@ select option {
 
 .print-toolbar .hint {
   color: var(--bone-dim);
+}
+
+/* مُبدِّل مقاس الورق واتجاهه: يُعيد كتابة قاعدة @page للمستند الحالي
+   حتى يطابق الورق المُحمَّل في الطابعة فلا تُقطع الصفحة أو يضيع باقيها. */
+.print-toolbar__field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--bone-dim);
+}
+
+.print-toolbar__field select {
+  width: auto;
+  min-width: 8.5rem;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.78rem;
 }
 
 .sheet {
@@ -1008,6 +1084,149 @@ select option {
   font-weight: 700;
   font-size: 1rem;
   border-top: 2px solid #1a180f;
+}
+
+/*
+ * كشف التحضير والانصراف: تسعة أعمدة تحتاج توزيعاً ثابتاً حتى تدخل في عرض
+ * الورقة، وخانات تُعبَّأ باليد فتحتاج ارتفاع سطر أوسع.
+ */
+.sheet__roster {
+  font-size: 0.78rem;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.sheet__roster th,
+.sheet__roster td {
+  height: 2.1rem;
+  padding: 0.3rem 0.35rem;
+  overflow-wrap: anywhere;
+}
+
+/* م / الرقم الوظيفي / الاسم / الإقامة ثم خانات التعبئة اليدوية */
+.sheet__roster th:nth-child(1) {
+  width: 5%;
+}
+
+.sheet__roster th:nth-child(2) {
+  width: 11%;
+}
+
+.sheet__roster th:nth-child(3) {
+  width: 20%;
+}
+
+.sheet__roster th:nth-child(4) {
+  width: 12%;
+}
+
+.sheet__roster th:nth-child(5),
+.sheet__roster th:nth-child(7) {
+  width: 9%;
+}
+
+.sheet__roster th:nth-child(6),
+.sheet__roster th:nth-child(8) {
+  width: 11%;
+}
+
+.sheet__roster th:nth-child(9) {
+  width: 12%;
+}
+
+/*
+ * كشوف المخزون: أعمدة كثيرة على ورقة واحدة، فالتوزيع ثابت والخط أصغر
+ * والالتفاف داخل الخانة حتى لا يتجاوز الجدول عرض الورقة عند الطباعة.
+ */
+.sheet__count,
+.sheet__movements {
+  font-size: 0.74rem;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.sheet__count th,
+.sheet__count td,
+.sheet__movements th,
+.sheet__movements td {
+  padding: 0.3rem 0.3rem;
+  overflow-wrap: anywhere;
+}
+
+/* م / الرمز / الصنف / الوحدة / الرصيد / وارد / صادر ثم خانات يدوية */
+.sheet__count th:nth-child(1) {
+  width: 5%;
+}
+
+.sheet__count th:nth-child(2) {
+  width: 10%;
+}
+
+.sheet__count th:nth-child(3) {
+  width: 21%;
+}
+
+.sheet__count th:nth-child(4) {
+  width: 8%;
+}
+
+.sheet__count th:nth-child(5),
+.sheet__count th:nth-child(6),
+.sheet__count th:nth-child(7),
+.sheet__count th:nth-child(8),
+.sheet__count th:nth-child(9) {
+  width: 9%;
+}
+
+.sheet__count th:nth-child(10) {
+  width: 11%;
+}
+
+.sheet__count tbody td:nth-child(8),
+.sheet__count tbody td:nth-child(9),
+.sheet__count tbody td:nth-child(10) {
+  height: 2rem;
+}
+
+/* صنف رصيده تحت الحد الأدنى: تظليل خفيف لتمييزه على الورقة */
+.sheet__count tr.is-low td {
+  background: #f6efe0;
+  font-weight: 600;
+}
+
+/* التاريخ / النوع / الرمز / الصنف / الكمية / السعر / التكلفة / السبب / المرجع / سجّلها */
+.sheet__movements th:nth-child(1) {
+  width: 10%;
+}
+
+.sheet__movements th:nth-child(2) {
+  width: 7%;
+}
+
+.sheet__movements th:nth-child(3) {
+  width: 9%;
+}
+
+.sheet__movements th:nth-child(4) {
+  width: 17%;
+}
+
+.sheet__movements th:nth-child(5),
+.sheet__movements th:nth-child(6),
+.sheet__movements th:nth-child(7) {
+  width: 10%;
+}
+
+.sheet__movements th:nth-child(8) {
+  width: 8%;
+}
+
+.sheet__movements th:nth-child(9) {
+  width: 10%;
+}
+
+.sheet__movements th:nth-child(10) {
+  width: 9%;
 }
 
 .sheet__terms {
@@ -1316,6 +1535,21 @@ select option {
   font-size: 0.78rem;
 }
 
+/* حقول داخل خلايا الجداول (بنود تقفيل الكاشير) */
+.input--cell {
+  width: 100%;
+  min-width: 5rem;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.82rem;
+}
+
+/* عنوان اليوم داخل سجلات الحضور والتدقيق */
+.row--day td {
+  background: #f3eee2;
+  font-weight: 700;
+  color: #4a442f;
+}
+
 /* فرق التقفيل وأرصدة المخزون: العجز أحمر والزيادة خضراء */
 .is-negative {
   color: #e2735f;
@@ -1502,44 +1736,104 @@ select option {
     display: none !important;
   }
 
+  /*
+   * الجذر لا يُقيَّد بارتفاع ولا يقصّ: أي ارتفاع مفروض أو `overflow` مخفي على
+   * html/body يجعل المتصفح يطبع الصفحة الأولى ويحجب الباقي.
+   */
+  html,
+  body {
+    width: auto;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
   .body--print {
     background: #fff;
   }
 
   .sheet {
     margin: 0;
-    max-width: none;
+    width: auto;
+    max-width: 100%;
     padding: 0;
     border-radius: 0;
     box-shadow: none;
+    overflow: visible;
   }
 
+  /*
+   * لا جدول يتجاوز عرض الورقة: التوزيع الثابت يجبر الأعمدة على الدخول في
+   * العرض المتاح، والالتفاف داخل الخانة يمنع دفع الجدول خارج الورقة. بدونه
+   * يخرج الجدول العريض عن حدود الصفحة فيُقصّ ما تجاوزها ويظهر نصف الكشف فقط.
+   *
+   * والجداول تُقسَّم على الصفحات ولا تُمنع من الانقسام: منع الانقسام على جدول
+   * أطول من صفحة يجعل المتصفح يدفعه لصفحة جديدة ثم يقصّ ما زاد عنها فيختفي
+   * باقي الكشف. المنع يبقى على الصف الواحد فقط، ورأس الجدول يتكرّر في كل صفحة.
+   */
   .sheet__pairs,
-  .sheet__table,
+  .sheet__table {
+    table-layout: fixed;
+    width: 100%;
+    max-width: 100%;
+    break-inside: auto;
+  }
+
+  .sheet__pairs th,
+  .sheet__pairs td,
+  .sheet__table th,
+  .sheet__table td {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .sheet__logo,
+  .sheet img {
+    max-width: 100%;
+  }
+
+  .sheet__pairs thead,
+  .sheet__table thead {
+    display: table-header-group;
+  }
+
+  .sheet__pairs tr,
+  .sheet__table tr {
+    break-inside: avoid;
+  }
+
+  /* خانات التوقيع قصيرة فتبقى مجتمعة */
   .sheet__signs {
     break-inside: avoid;
   }
 
   .sheet--custom {
     padding: 0;
-    max-width: none;
+    width: auto;
+    max-width: 100%;
   }
 
-  /* الجدول الطويل (كشف الحضور) يُسمح بتقسيمه مع تكرار رأسه */
-  .sheet__attend {
-    break-inside: auto;
-  }
-
-  .sheet__attend thead {
-    display: table-header-group;
-  }
-
-  .sheet__attend tr {
-    break-inside: avoid;
-  }
-
+  /*
+   * العلامة المائية مطبوعة على الصفحة الأولى فقط وبارتفاع صفحة واحدة:
+   * `position: fixed` أو صندوق يمتد بطول المستند يعبثان بتقسيم الصفحات في
+   * المتصفح فتُطبع صفحة واحدة ويضيع الباقي.
+   */
   .sheet__watermark {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 100vh;
+    max-height: 100vh;
+    overflow: hidden;
     opacity: 0.1;
+  }
+
+  /* الخلفيات الرمادية في رؤوس الجداول تُطبع كما تُعرض */
+  .sheet__pairs th,
+  .sheet__table thead th,
+  .sheet__count tr.is-low td,
+  .sheet__table tr.is-total td {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
   @page {

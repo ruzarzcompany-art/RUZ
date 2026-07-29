@@ -12,6 +12,13 @@ const PAPER_MM = {
   letter: { width: 216, height: 279, css: "letter" },
 };
 
+/** المقاسات المعروضة في مُبدِّل الورق أعلى صفحة الطباعة. */
+export const PAPER_CHOICES = [
+  { value: "A4", label: "A4 (210×297 مم)" },
+  { value: "letter", label: "Letter (216×279 مم)" },
+  { value: "A5", label: "A5 (148×210 مم)" },
+];
+
 const FONT_STACKS = {
   system: 'system-ui, -apple-system, "Segoe UI", sans-serif',
   naskh: '"IBM Plex Sans Arabic", "Noto Naskh Arabic", serif',
@@ -80,6 +87,24 @@ export function applyPaperDesign(company) {
     document.head.append(style);
   }
   style.textContent = `@page { size: ${paper.css} ${landscape ? "landscape" : "portrait"}; margin: ${margin}mm; }`;
+}
+
+/**
+ * سطر إرشادي بإعدادات نافذة الطباعة الصحيحة. أشهر سبب لخروج نصف الكشف
+ * أو ضياع بقية الصفحات هو اختيار ورق أو مقياس مختلف عن تصميم المستند،
+ * فيُذكر المقاس المطلوب صريحاً للمستخدم قبل الطباعة.
+ */
+export function paperNote(company) {
+  const paper = PAPER_MM[company.paperSize] ?? PAPER_MM.A4;
+  const landscape = company.paperOrientation === "landscape";
+  const width = landscape ? paper.height : paper.width;
+  const height = landscape ? paper.width : paper.height;
+  const name = company.paperSize === "letter" ? "Letter" : (company.paperSize ?? "A4");
+  return (
+    `الورق: ${name} ${landscape ? "أفقي" : "عمودي"} (${width}×${height} مم). ` +
+    "في نافذة الطباعة اختر هذا المقاس، واجعل المقياس 100٪ والهوامش «افتراضية»، " +
+    "ونطاق الصفحات «الكل» حتى تُطبع كل الصفحات كاملة. للتصدير اختر «حفظ كـPDF»."
+  );
 }
 
 /** ترويسة المستند: الشعار + اسم المؤسسة وبياناتها + عنوان المستند. */

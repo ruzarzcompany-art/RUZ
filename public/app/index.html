@@ -163,6 +163,13 @@
         </div>
       </header>
 
+      <!-- ── قائمة الإضافات ────────────────────────────────────── -->
+      <nav class="tabs tabs--extras" id="extras-nav" aria-label="أقسام إضافية">
+        <button class="tab is-active" type="button" data-panel="requests">الطلبات</button>
+        <button class="tab" type="button" data-panel="file">الملف الوظيفي</button>
+        <button class="tab" type="button" data-panel="password">تغيير كلمة المرور</button>
+      </nav>
+
       <section class="clock" aria-live="off">
         <p class="clock__label">توقيت الخادم</p>
         <p id="clock-time" class="clock__time" dir="ltr">--:--:--</p>
@@ -178,6 +185,25 @@
       </section>
 
       <p id="punch-result" class="alert" role="status" hidden></p>
+
+      <!-- ── صورة المطابقة عند التسجيل (على الجهاز فقط) ────────── -->
+      <section id="match-card" class="card card--match" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">تأكيد الهوية</h2>
+          <span id="match-badge" class="badge">—</span>
+        </div>
+        <div class="match">
+          <img id="match-photo" class="match__photo" alt="لقطة التحقق من الوجه" />
+          <div class="match__info">
+            <p id="match-name" class="match__name">—</p>
+            <p id="match-meta" class="match__meta">—</p>
+          </div>
+        </div>
+        <p class="hint">
+          هذه اللقطة تُعرض على جهازك للتأكيد البصري فقط، ولا تُرسل إلى الخادم ولا
+          تُخزَّن.
+        </p>
+      </section>
 
       <!-- ── مطابقة الوجه ──────────────────────────────────────── -->
       <section id="face-card" class="card card--face" hidden>
@@ -196,10 +222,27 @@
           <span>استخدام الوجه مع تسجيل الحضور</span>
         </label>
 
+        <!-- ثلاث بصمات، لكل واحدة زر التقاط مستقل -->
+        <div id="face-slots" class="face__slots" hidden>
+          <p class="hint">
+            سجّل ثلاث بصمات لوجهك من زوايا وإضاءات مختلفة (أمامية، يمين، يسار)
+            لترتفع دقة المطابقة عند الحضور.
+          </p>
+          <div class="row row--wrap">
+            <button class="btn btn--ghost btn--sm" type="button" data-face-slot="1">
+              التقاط البصمة الأولى
+            </button>
+            <button class="btn btn--ghost btn--sm" type="button" data-face-slot="2">
+              التقاط البصمة الثانية
+            </button>
+            <button class="btn btn--ghost btn--sm" type="button" data-face-slot="3">
+              التقاط البصمة الثالثة
+            </button>
+          </div>
+          <p id="face-slots-state" class="hint">—</p>
+        </div>
+
         <div class="row row--wrap">
-          <button id="face-enroll" class="btn btn--ghost btn--sm" type="button" hidden>
-            تسجيل بصمة وجهي الآن
-          </button>
           <button id="face-warm" class="btn btn--ghost btn--sm" type="button">
             تحميل محرّك الوجه مسبقاً
           </button>
@@ -234,7 +277,7 @@
       </section>
 
       <!-- ── طلباتي ────────────────────────────────────────────── -->
-      <section class="card card--forms">
+      <section id="panel-requests" class="card card--forms">
         <div class="card__head">
           <h2 class="card__title card__title--sm">طلباتي ونماذجي</h2>
         </div>
@@ -244,6 +287,11 @@
           <button class="tab" type="button" data-resource="overtime">أوفرتايم</button>
           <button class="tab" type="button" data-resource="leaves">إجازة</button>
         </div>
+
+        <p class="hint">
+          الأوفرتايم لا يُحتسب تلقائياً عند تجاوز وقت الانصراف؛ قدّم طلباً هنا
+          ليعتمده مدير فرعك، وكذلك الإجازات والمكافآت.
+        </p>
 
         <form id="my-form" class="form-grid" novalidate>
           <div id="my-fields" class="form-grid__fields"></div>
@@ -262,7 +310,7 @@
       </section>
 
       <!-- ── ملفي ──────────────────────────────────────────────── -->
-      <section id="file-card" class="card card--geo">
+      <section id="file-card" class="card card--geo" hidden>
         <div class="card__head">
           <h2 class="card__title card__title--sm">ملفي الوظيفي</h2>
           <button id="file-refresh" class="btn btn--ghost btn--xs" type="button">تحديث</button>
@@ -301,32 +349,8 @@
         </div>
       </section>
 
-      <!-- ── مستنداتي ──────────────────────────────────────────── -->
-      <section id="slips-card" class="card card--docs">
-        <div class="card__head">
-          <h2 class="card__title card__title--sm">مسيّرات رواتبي</h2>
-        </div>
-        <div class="table-wrap">
-          <table class="table" id="slips-table">
-            <thead>
-              <tr>
-                <th>الشهر</th>
-                <th>الأساسي</th>
-                <th>البدلات</th>
-                <th>الأوفرتايم</th>
-                <th>الخصومات</th>
-                <th>الصافي</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <p id="slips-empty" class="empty" hidden>لا توجد مسيّرات رواتب منشورة بعد.</p>
-      </section>
-
       <!-- ── كلمة المرور ───────────────────────────────────────── -->
-      <section class="card card--form">
+      <section id="panel-password" class="card card--form" hidden>
         <div class="card__head">
           <h2 class="card__title card__title--sm">تغيير كلمة المرور</h2>
         </div>
