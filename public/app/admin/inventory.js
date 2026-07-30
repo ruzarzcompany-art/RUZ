@@ -17,6 +17,7 @@ import {
   setBusy,
   todayIso,
 } from "../api.js";
+import { createPager } from "../pagination.js";
 
 const MOVEMENT_LABELS = { in: "إدخال", out: "إخراج", count: "جرد" };
 const REASON_LABELS = {
@@ -28,6 +29,9 @@ const REASON_LABELS = {
   other: "أخرى",
 };
 
+/** قيمة خيار «بدون تصنيف» في قائمة التصنيفات (الحقل نصّي وقد يكون فارغاً). */
+const NO_CATEGORY = "__none__";
+
 const state = {
   can: () => false,
   access: { canRead: false, canWrite: false, canManageItems: false },
@@ -36,6 +40,11 @@ const state = {
   /** رقم آخر حركة سُجّلت في هذه الجلسة، لطباعة سندها فوراً بعد التسجيل */
   lastMovementId: null,
 };
+
+/** تقسيم صفحات كل جدول في الشاشة (العدد الافتراضي موحَّد في `pagination.js`). */
+const itemsPager = createPager("inventory-items-table", { unit: "صنف" });
+const dailyPager = createPager("inventory-daily-table", { unit: "صنف" });
+const movementsPager = createPager("inventory-movements-table", { unit: "حركة" });
 
 /* ── الطباعة ───────────────────────────────────────────────────── */
 
@@ -87,65 +96,140 @@ function currentBranch() {
   return el("inventory-branch").value;
 }
 
-function fillItemPickers() {
-  for (const id of ["inventory-item", "inventory-filter-item"]) {
-    const picker = el(id);
-    const previous = picker.value;
-    picker.textContent = "";
+/** تصنيف الصنف كما يُعرض في القوائم (الفراغ يُعرض كـ«بدون تصنيف»). */
+function categoryKey(item) {
+  return item.category ? item.category : NO_CATEGORY;
+}
 
-    if (id === "inventory-filter-item") {
-      const all = document.createElement("option");
-      all.value = "";
-      all.textContent = "كل الأصناف";
-      picker.append(all);
-    }
+/** التصنيفات الموجودة فعلاً في الأصناف، مرتّبة عربياً. */
+function categoryList() {
+  const keys = [...new Set(state.items.map(categoryKey))];
+  return keys.sort((a, b) => {
+    if (a === NO_CATEGORY) return 1;
+    if (b === NO_CATEGORY) return -1;
+    return a.localeCompare(b, "ar");
+  });
+}
 
-    for (const item of state.items) {
-      const option = document.createElement("option");
-      option.value = String(item.id);
-      option.textContent = `${item.code} — ${item.name} (${item.unit})`;
-      picker.append(option);
-    }
+/** أصناف التصنيف المختار في نموذج تسجيل الحركة («» تعني كل الأصناف). */
+function itemsOfSelectedCategory() {
+  const chosen = el("inventory-category").value;
+  if (!chosen) return state.items;
+  return state.items.filter((item) => categoryKey(item) === chosen);
+}
 
-    picker.value = previous;
+function optionNode(value, text) {
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = text;
+  return option;
+}
+
+/**
+ * قائمة التصنيفات في نموذج الحركة: تُبنى من الأصناف المحمَّلة، ويبقى اختيار
+ * المستخدم إن كان تصنيفه ما زال موجوداً.
+ */
+function fillCategoryPicker() {
+  const picker = el("inventory-category");
+  const previous = picker.value;
+  picker.textContent = "";
+  picker.append(optionNode("", "كل التصنيفات"));
+
+  for (const key of categoryList()) {
+    picker.append(optionNode(key, key === NO_CATEGORY ? "بدون تصنيف" : key));
   }
+
+  picker.value = [...picker.options].some((option) => option.value === previous)
+    ? previous
+    : "";
+}
+
+/**
+ * قائمة أصناف النموذج — مفلترة حسب التصنيف المختار. يبقى الصنف المختار إن
+ * كان داخل التصنيف، وإلا يُختار أول صنف فيه حتى لا يبقى الحقل بلا قيمة.
+ */
+function fillFormItemPicker() {
+  const picker = el("inventory-item");
+  const previous = picker.value;
+  picker.textContent = "";
+
+  for (const item of itemsOfSelectedCategory()) {
+    picker.append(optionNode(String(item.id), `${item.code} — ${item.name} (${item.unit})`));
+  }
+
+  const stillThere = [...picker.options].some((option) => option.value === previous);
+  picker.value = stillThere ? previous : (picker.options[0]?.value ?? "");
+}
+
+/** قائمة أصناف فلتر الحركات — كل الأصناف كما كانت. */
+function fillFilterItemPicker() {
+  const picker = el("inventory-filter-item");
+  const previous = picker.value;
+  picker.textContent = "";
+  picker.append(optionNode("", "كل الأصناف"));
+
+  for (const item of state.items) {
+    picker.append(optionNode(String(item.id), `${item.code} — ${item.name} (${item.unit})`));
+  }
+
+  picker.value = previous;
+}
+
+function fillItemPickers() {
+  fillCategoryPicker();
+  fillFormItemPicker();
+  fillFilterItemPicker();
+}
+
+/** تكلفة الوحدة الافتراضية تتبع الصنف المختار في النموذج. */
+function syncFormUnitCost() {
+  const item = state.items.find((entry) => entry.id === Number(el("inventory-item").value));
+  if (item) el("inventory-unitcost").value = item.unitCost;
+  applyItemPriceMode();
+}
+
+/**
+ * ينقل صنفاً من جدول الأرصدة إلى نموذج الحركة: التصنيف أولاً حتى تُبنى قائمة
+ * الأصناف المفلترة، ثم الصنف نفسه.
+ */
+function selectItemInForm(item) {
+  el("inventory-category").value = categoryKey(item);
+  fillFormItemPicker();
+  el("inventory-item").value = String(item.id);
+  el("inventory-unitcost").value = item.unitCost;
+  applyItemPriceMode();
+}
+
+function itemRow(item) {
+  const balance = document.createElement("span");
+  balance.textContent = `${item.balance} ${item.unit}`;
+  if (item.belowMinimum) balance.classList.add("is-negative");
+
+  const actions = state.access.canWrite
+    ? button("حركة", {
+        onClick: () => {
+          selectItemInForm(item);
+          el("inventory-form").scrollIntoView({ behavior: "smooth", block: "center" });
+        },
+      })
+    : "—";
+
+  return row([
+    item.code,
+    item.name,
+    item.category || "—",
+    balance,
+    `${item.minQuantity} ${item.unit}`,
+    formatMoney(item.unitCost),
+    item.priceMode === "variable" ? "متغيّر" : "ثابت",
+    formatMoney(item.stockValue),
+    item.lastCountDate ?? "—",
+    actions,
+  ]);
 }
 
 function renderItems() {
-  const body = el("inventory-items-table").querySelector("tbody");
-  body.textContent = "";
-
-  for (const item of state.items) {
-    const balance = document.createElement("span");
-    balance.textContent = `${item.balance} ${item.unit}`;
-    if (item.belowMinimum) balance.classList.add("is-negative");
-
-    const actions = state.access.canWrite
-      ? button("حركة", {
-          onClick: () => {
-            el("inventory-item").value = String(item.id);
-            el("inventory-unitcost").value = item.unitCost;
-            applyItemPriceMode();
-            el("inventory-form").scrollIntoView({ behavior: "smooth", block: "center" });
-          },
-        })
-      : "—";
-
-    body.append(
-      row([
-        item.code,
-        item.name,
-        item.category || "—",
-        balance,
-        `${item.minQuantity} ${item.unit}`,
-        formatMoney(item.unitCost),
-        item.priceMode === "variable" ? "متغيّر" : "ثابت",
-        formatMoney(item.stockValue),
-        item.lastCountDate ?? "—",
-        actions,
-      ]),
-    );
-  }
+  itemsPager.render(state.items, itemRow);
 
   el("inventory-items-empty").hidden = state.items.length > 0;
 
@@ -219,46 +303,43 @@ async function submitCount(itemId, input) {
   }
 }
 
-function renderDaily(payload) {
-  const body = el("inventory-daily-table").querySelector("tbody");
-  body.textContent = "";
+function dailyRow(line) {
+  const balance = document.createElement("span");
+  balance.textContent = String(line.balance);
+  if (line.belowMinimum) balance.classList.add("is-negative");
 
-  for (const line of payload.rows ?? []) {
-    const balance = document.createElement("span");
-    balance.textContent = String(line.balance);
-    if (line.belowMinimum) balance.classList.add("is-negative");
+  let action = "—";
+  if (state.access.canWrite) {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "any";
+    input.min = "0";
+    input.className = "input input--xs";
+    input.value = line.countedToday === null ? "" : String(line.countedToday);
+    input.setAttribute("aria-label", `الكمية المعدودة لـ${line.name}`);
 
-    let action = "—";
-    if (state.access.canWrite) {
-      const input = document.createElement("input");
-      input.type = "number";
-      input.step = "any";
-      input.min = "0";
-      input.className = "input input--xs";
-      input.value = line.countedToday === null ? "" : String(line.countedToday);
-      input.setAttribute("aria-label", `الكمية المعدودة لـ${line.name}`);
-
-      const save = button("حفظ الجرد", { onClick: () => submitCount(line.itemId, input) });
-      action = document.createElement("span");
-      action.className = "row-actions";
-      action.append(input, save);
-    }
-
-    body.append(
-      row([
-        line.code,
-        line.name,
-        line.unit,
-        balance,
-        line.todayIn,
-        line.todayOut,
-        line.countedToday === null ? "—" : line.countedToday,
-        action,
-      ]),
-    );
+    const save = button("حفظ الجرد", { onClick: () => submitCount(line.itemId, input) });
+    action = document.createElement("span");
+    action.className = "row-actions";
+    action.append(input, save);
   }
 
-  el("inventory-daily-empty").hidden = (payload.rows ?? []).length > 0;
+  return row([
+    line.code,
+    line.name,
+    line.unit,
+    balance,
+    line.todayIn,
+    line.todayOut,
+    line.countedToday === null ? "—" : line.countedToday,
+    action,
+  ]);
+}
+
+function renderDaily(payload) {
+  const rows = payload.rows ?? [];
+  dailyPager.render(rows, dailyRow);
+  el("inventory-daily-empty").hidden = rows.length > 0;
 }
 
 async function loadDaily() {
@@ -363,45 +444,41 @@ async function removeMovement(movement) {
   if (result.ok) await Promise.all([loadItems(), loadMovements(), loadDaily()]);
 }
 
-function renderMovements() {
-  const body = el("inventory-movements-table").querySelector("tbody");
-  body.textContent = "";
+function movementRow(movement) {
+  const variance = document.createElement("span");
+  variance.textContent = movement.movementType === "count" ? String(movement.variance) : "—";
+  if (movement.variance < 0) variance.classList.add("is-negative");
+  if (movement.variance > 0) variance.classList.add("is-positive");
 
-  for (const movement of state.movements) {
-    const variance = document.createElement("span");
-    variance.textContent = movement.movementType === "count" ? String(movement.variance) : "—";
-    if (movement.variance < 0) variance.classList.add("is-negative");
-    if (movement.variance > 0) variance.classList.add("is-positive");
-
-    const actions = document.createElement("span");
-    actions.className = "row-actions";
-    actions.append(button("طباعة", { onClick: () => printMovement(movement.id) }));
-    if (state.access.canManageItems) {
-      actions.append(
-        button("حذف", {
-          className: "btn btn--danger btn--xs",
-          onClick: () => removeMovement(movement),
-        }),
-      );
-    }
-
-    body.append(
-      row([
-        movement.businessDate,
-        movement.branchName ?? "—",
-        `${movement.itemCode ?? ""} — ${movement.itemName ?? ""}`,
-        MOVEMENT_LABELS[movement.movementType] ?? movement.movementType,
-        `${movement.quantity} ${movement.unit ?? ""}`,
-        formatMoney(movement.unitCost),
-        formatMoney(movement.totalCost),
-        REASON_LABELS[movement.reason] ?? movement.reason,
-        variance,
-        movement.createdByName ?? "—",
-        actions,
-      ]),
+  const actions = document.createElement("span");
+  actions.className = "row-actions";
+  actions.append(button("طباعة", { onClick: () => printMovement(movement.id) }));
+  if (state.access.canManageItems) {
+    actions.append(
+      button("حذف", {
+        className: "btn btn--danger btn--xs",
+        onClick: () => removeMovement(movement),
+      }),
     );
   }
 
+  return row([
+    movement.businessDate,
+    movement.branchName ?? "—",
+    `${movement.itemCode ?? ""} — ${movement.itemName ?? ""}`,
+    MOVEMENT_LABELS[movement.movementType] ?? movement.movementType,
+    `${movement.quantity} ${movement.unit ?? ""}`,
+    formatMoney(movement.unitCost),
+    formatMoney(movement.totalCost),
+    REASON_LABELS[movement.reason] ?? movement.reason,
+    variance,
+    movement.createdByName ?? "—",
+    actions,
+  ]);
+}
+
+function renderMovements() {
+  movementsPager.render(state.movements, movementRow);
   el("inventory-movements-empty").hidden = state.movements.length > 0;
 }
 
@@ -454,12 +531,14 @@ export function initInventoryModule({ can }) {
   el("inventory-date").value = todayIso();
   el("inventory-daily-date").value = todayIso();
 
-  // تكلفة الوحدة الافتراضية تتبع الصنف المختار
-  el("inventory-item").addEventListener("change", () => {
-    const item = state.items.find((entry) => entry.id === Number(el("inventory-item").value));
-    if (item) el("inventory-unitcost").value = item.unitCost;
-    applyItemPriceMode();
+  // التصنيف يُختار أولاً فتُفلتر قائمة الأصناف عليه، ثم يُختار الصنف
+  el("inventory-category").addEventListener("change", () => {
+    fillFormItemPicker();
+    syncFormUnitCost();
   });
+
+  // تكلفة الوحدة الافتراضية تتبع الصنف المختار
+  el("inventory-item").addEventListener("change", syncFormUnitCost);
 
   // الجرد يُثبّت الرصيد، فالسبب يُضبط تلقائياً ويُخفى حقل التكلفة
   el("inventory-type").addEventListener("change", () => {

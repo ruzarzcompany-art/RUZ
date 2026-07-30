@@ -18,6 +18,11 @@ import {
   setBusy,
   todayIso,
 } from "../api.js";
+import { createPager } from "../pagination.js";
+
+/** تقسيم صفحات جدولي الإنذارات وسجل النماذج المُصدرة. */
+const actionsPager = createPager("disc-table", { unit: "إنذار" });
+const issuesPager = createPager("doc-issues-table", { unit: "مستند" });
 
 const LEVEL_LABELS = {
   notice: "تنبيه",
@@ -214,11 +219,9 @@ async function removeAction(action) {
 }
 
 function renderActions() {
-  const body = el("disc-table").querySelector("tbody");
-  body.textContent = "";
   const canManage = state.can("disciplinary.manage");
 
-  for (const action of state.actions) {
+  actionsPager.render(state.actions, (action) => {
     const actions = document.createElement("span");
     actions.className = "row-actions";
 
@@ -244,19 +247,17 @@ function renderActions() {
       );
     }
 
-    body.append(
-      row([
-        action.incidentDate,
-        `${action.employeeCode ?? ""} — ${action.employeeName ?? ""}`,
-        LEVEL_LABELS[action.level] ?? action.level,
-        action.violationType || "—",
-        action.incidentDescription,
-        formatMoney(action.deductionAmount),
-        DISCIPLINARY_STATUS[action.status] ?? action.status,
-        actions,
-      ]),
-    );
-  }
+    return row([
+      action.incidentDate,
+      `${action.employeeCode ?? ""} — ${action.employeeName ?? ""}`,
+      LEVEL_LABELS[action.level] ?? action.level,
+      action.violationType || "—",
+      action.incidentDescription,
+      formatMoney(action.deductionAmount),
+      DISCIPLINARY_STATUS[action.status] ?? action.status,
+      actions,
+    ]);
+  });
 
   el("disc-empty").hidden = state.actions.length > 0;
   el("disc-form").hidden = !canManage;
@@ -280,27 +281,23 @@ export async function loadActions() {
 /* ── سجل النماذج المُصدرة ──────────────────────────────────────── */
 
 function renderIssues() {
-  const body = el("doc-issues-table").querySelector("tbody");
-  body.textContent = "";
   const canClean = state.can("documents.read_all");
 
-  for (const issue of state.issues) {
-    body.append(
-      row([
-        formatDateTime(issue.issuedAt),
-        issue.docTitle,
-        issue.employeeName ? `${issue.employeeCode ?? ""} — ${issue.employeeName}` : "—",
-        issue.branchName ?? "—",
-        issue.issuedByName ?? "—",
-        canClean
-          ? button("حذف", {
-              className: "btn btn--danger btn--xs",
-              onClick: () => removeIssue(issue),
-            })
-          : "",
-      ]),
-    );
-  }
+  issuesPager.render(state.issues, (issue) =>
+    row([
+      formatDateTime(issue.issuedAt),
+      issue.docTitle,
+      issue.employeeName ? `${issue.employeeCode ?? ""} — ${issue.employeeName}` : "—",
+      issue.branchName ?? "—",
+      issue.issuedByName ?? "—",
+      canClean
+        ? button("حذف", {
+            className: "btn btn--danger btn--xs",
+            onClick: () => removeIssue(issue),
+          })
+        : "",
+    ]),
+  );
 
   el("doc-issues-empty").hidden = state.issues.length > 0;
   el("doc-issues-purge").hidden = !canClean;

@@ -953,6 +953,85 @@ select option {
   background: rgba(217, 161, 59, 0.08);
 }
 
+/* ── تقسيم الصفحات أسفل الجداول ─────────────────────────────── */
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.6rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+}
+
+.pager__range {
+  color: var(--bone-dim);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.pager__pages {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.pager__numbers {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.pager__page {
+  min-width: 2rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.pager__page.is-active {
+  color: var(--ink-900);
+  background: var(--saffron);
+  border-color: var(--saffron-deep);
+  font-weight: 600;
+}
+
+.pager__page.is-active:hover:not(:disabled) {
+  background: var(--saffron);
+  color: var(--ink-900);
+}
+
+.pager__gap {
+  color: var(--bone-dim);
+  padding: 0 0.15rem;
+}
+
+.pager__size {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--bone-dim);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.pager__select {
+  width: auto;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8rem;
+  border-radius: 8px;
+}
+
+/* المطبوعات تُظهر كل الصفوف، فشريط التنقّل لا معنى له على الورق */
+@media print {
+  .pager {
+    display: none !important;
+  }
+}
+
 /* ── لوحة الإدارة ───────────────────────────────────────────── */
 
 .body--admin .screen {
