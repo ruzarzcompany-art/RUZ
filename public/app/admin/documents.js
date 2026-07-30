@@ -128,8 +128,7 @@ function printSelected() {
     return;
   }
 
-  setAlert(el("doc-result"), "فُتحت صفحة الطباعة في تبويب جديد.", "ok");
-  openDocument(doc.key, {
+  const opened = openDocument(doc.key, {
     employeeId: doc.needsEmployee ? employeeId : "",
     refId: doc.refType ? el("doc-ref").value : "",
     month: doc.needsMonth ? el("doc-month").value : "",
@@ -138,6 +137,14 @@ function printSelected() {
     from: doc.needsRange ? el("doc-from").value : "",
     to: doc.needsRange ? el("doc-to").value : "",
   });
+
+  setAlert(
+    el("doc-result"),
+    opened === "tab"
+      ? "فُتحت صفحة الطباعة في تبويب جديد."
+      : "جارٍ فتح صفحة الطباعة… استخدم زر «رجوع» فيها للعودة إلى هذه الشاشة.",
+    "ok",
+  );
 
   // سجل الإصدار يُكتب من صفحة الطباعة نفسها؛ نُحدّث القائمة بعد لحظة
   window.setTimeout(loadIssues, 2500);

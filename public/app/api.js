@@ -2,6 +2,9 @@
  * طبقة مشتركة بين شاشات التطبيق: التوكن، نداء الـAPI، وأدوات عرض صغيرة.
  */
 
+/** إصدار الواجهة المنشور — يُطابق `VERSION` في `sw.js` ويظهر في صفحة الطباعة. */
+export const APP_VERSION = "v7";
+
 export const TOKEN_KEY = "restaurant-hr.token";
 
 export function getToken() {
@@ -347,9 +350,52 @@ export function button(text, { className = "btn btn--ghost btn--xs", onClick } =
   return node;
 }
 
+/** هل يعمل التطبيق كتطبيق مُثبَّت (من الشاشة الرئيسية) لا كتبويب متصفح؟ */
+export function isInstalledApp() {
+  // iOS يعرّف `navigator.standalone` فقط داخل التطبيق المُثبَّت
+  if (window.navigator.standalone === true) return true;
+  try {
+    return (
+      window.matchMedia("(display-mode: standalone)").matches ||
+      window.matchMedia("(display-mode: fullscreen)").matches ||
+      window.matchMedia("(display-mode: minimal-ui)").matches
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * يفتح صفحة داخلية (صفحة الطباعة عملياً).
+ *
+ * التبويب الجديد ليس متاحاً دائماً: في التطبيق المُثبَّت على iOS يفتح
+ * `window.open` متصفح النظام بمخزَّن محلي منفصل — فلا يجد التوكن ويُعيد
+ * المستخدم إلى شاشة الدخول بدل المستند، وهو ما يظهر للمستخدم كأن «الطباعة
+ * لا تعمل». وبعض المتصفحات تحجب النوافذ المنبثقة أصلاً. لذلك نفتح في نفس
+ * التبويب في هذه الحالات — الجلسة محفوظة وزر «رجوع» يعيد الشاشة السابقة.
+ */
+export function openAppPage(url) {
+  if (!isInstalledApp()) {
+    try {
+      const tab = window.open(url, "_blank");
+      if (tab) {
+        tab.focus?.();
+        return "tab";
+      }
+    } catch {
+      /* النوافذ المنبثقة محجوبة — نُكمل في نفس التبويب */
+    }
+  }
+
+  window.location.assign(url);
+  return "same-tab";
+}
+
 /** يفتح صفحة الطباعة لمستند محدّد. */
 export function openPrint(kind, id) {
-  window.open(`/app/print/?doc=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`, "_blank");
+  return openAppPage(
+    `/app/print/?doc=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`,
+  );
 }
 
 /**
@@ -362,7 +408,7 @@ export function openDocument(docKey, options = {}) {
     if (value === null || value === undefined || value === "") continue;
     query.set(key, String(value));
   }
-  window.open(`/app/print/?${query.toString()}`, "_blank");
+  return openAppPage(`/app/print/?${query.toString()}`);
 }
 
 /**
