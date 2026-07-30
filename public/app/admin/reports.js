@@ -194,6 +194,17 @@ async function printReport() {
 
   // التقارير جداول عريضة، فنُبقيها عرضية دائماً ونأخذ من الإعدادات ما يناسبها
   const margin = Number.isFinite(company.marginMm) ? company.marginMm : 12;
+  /*
+   * هامش أمان أفقي داخل الورقة نفسها: نافذة الطباعة قد تُلغي هوامش `@page`
+   * («بلا هوامش»)، وطباعة أندرويد تتجاهلها، ومنطقة الطابعة غير القابلة للطبع
+   * تقتطع من الحرف — فيُقصّ أول العمود أو آخره بينما تبدو المعاينة سليمة.
+   * الحشو جزء من المحتوى فلا يُلغى، ويُخصم من هامش `@page` الأفقي ليبقى
+   * مجموع الهامش كما ضُبط في الإعدادات، مع 5مم لا ينزل عنها حتى لو ضُبط
+   * الهامش على صفر لأن الطابعة لا تطبع حرف الورقة أصلاً.
+   */
+  const safePad = Math.max(Math.min(Math.max(margin, 0), 8), 5);
+  const sideMargin = Math.max(0, margin - safePad);
+  const blockMargin = Math.max(margin, 5);
   const paper = company.paperSize === "letter" ? "letter" : company.paperSize === "A5" ? "A5" : "A4";
   const accent = /^#[0-9a-fA-F]{6}$/.test(company.accentColor ?? "") ? company.accentColor : "#4a442f";
 
@@ -223,21 +234,22 @@ async function printReport() {
 <html lang="ar" dir="rtl"><head><meta charset="utf-8" />
 <title>${escape(current.title ?? REPORT_TITLES[current.report] ?? "تقرير")}</title>
 <style>
-  body { font-family: "IBM Plex Sans Arabic", system-ui, sans-serif; padding: 16px; color: #1a180f; }
+  body { font-family: "IBM Plex Sans Arabic", system-ui, sans-serif; margin: 0; padding: 10px ${safePad}mm; color: #1a180f; }
   header.brand { display: flex; align-items: center; gap: 10px; border-bottom: 2px solid ${accent}; padding-bottom: 6px; margin-bottom: 10px; }
   header.brand .logo { max-height: 48px; max-width: 120px; object-fit: contain; }
   header.brand h2 { font-size: 15px; margin: 0; color: ${accent}; }
   header.brand .ident { font-size: 10px; margin: 1px 0; color: #4a442f; }
   h1 { font-size: 18px; margin: 0 0 4px; }
-  p.meta { font-size: 12px; color: #4a442f; margin: 0 0 12px; }
-  table { width: 100%; border-collapse: collapse; font-size: 11px; }
-  th, td { border: 1px solid #cfc9b4; padding: 4px 6px; text-align: right; }
+  p.meta { font-size: 12px; color: #4a442f; margin: 0 0 12px; overflow-wrap: break-word; }
+  table { width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 11px; }
+  th, td { border: 1px solid #cfc9b4; padding: 4px 6px; text-align: right; overflow-wrap: anywhere; }
   th { background: #f2eee0; }
   thead { display: table-header-group; }
+  tr { break-inside: avoid; }
   ul { font-size: 12px; padding-inline-start: 18px; }
   footer.brand { margin-top: 14px; border-top: 1px solid #cfc9b4; padding-top: 6px; font-size: 10px; color: #4a442f; text-align: center; }
   footer.brand p { margin: 1px 0; }
-  @page { size: ${paper} landscape; margin: ${margin}mm; }
+  @page { size: ${paper} landscape; margin: ${blockMargin}mm ${sideMargin}mm; }
 </style></head>
 <body>
   <header class="brand">
