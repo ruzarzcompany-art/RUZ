@@ -50,6 +50,20 @@ import { initSettingsModule, refreshSettingsPanel } from "./settings.js";
 import { initCashierModule, refreshCashierPanel } from "./cashier.js";
 import { initInventoryModule, refreshInventoryPanel } from "./inventory.js";
 import { initDocumentsModule, refreshDocumentsPanel } from "./documents.js";
+import { createPager } from "../pagination.js";
+
+/** تقسيم صفحات جداول لوحة الموارد البشرية (العدد الافتراضي موحَّد في `pagination.js`). */
+const pagers = {
+  open: createPager("open-table", { unit: "وردية" }),
+  logs: createPager("logs-table", { unit: "يوم" }),
+  forms: createPager("forms-table", { unit: "طلب" }),
+  salaries: createPager("salary-table", { unit: "موظف" }),
+  payroll: createPager("payroll-table", { unit: "موظف" }),
+  slips: createPager("saved-slips", { unit: "مسير" }),
+  people: createPager("people-table", { unit: "موظف" }),
+  resets: createPager("reset-table", { unit: "طلب" }),
+  audit: createPager("audit-table", { unit: "يوم" }),
+};
 
 const state = {
   permissions: [],
@@ -108,14 +122,15 @@ function fillBranches(select, { placeholder } = {}) {
 
 async function refreshOpenShifts() {
   const result = await api("/attendance/open-shifts");
-  const body = el("open-table").querySelector("tbody");
-  body.textContent = "";
 
-  if (!result.ok) return;
+  if (!result.ok) {
+    pagers.open.clear();
+    return;
+  }
   const shifts = result.openShifts ?? [];
   el("open-empty").hidden = shifts.length > 0;
 
-  for (const shift of shifts) {
+  pagers.open.render(shifts, (shift) => {
     const employee = state.employees.find((item) => item.id === shift.employeeId);
     const jump = button("عرض سجلاته", {
       onClick: async () => {
@@ -124,14 +139,12 @@ async function refreshOpenShifts() {
       },
     });
 
-    body.append(
-      row([
-        employee ? `${employee.employeeCode} — ${employee.fullName}` : `#${shift.employeeId}`,
-        formatDateTime(shift.serverTime),
-        jump,
-      ]),
-    );
-  }
+    return row([
+      employee ? `${employee.employeeCode} — ${employee.fullName}` : `#${shift.employeeId}`,
+      formatDateTime(shift.serverTime),
+      jump,
+    ]);
+  });
 }
 
 function logActions(log) {
@@ -264,10 +277,9 @@ async function refreshLogs() {
   params.set("limit", "500");
 
   const result = await api(`/admin/attendance?${params.toString()}`);
-  const body = el("logs-table").querySelector("tbody");
-  body.textContent = "";
 
   if (!result.ok) {
+    pagers.logs.clear();
     setAlert(el("admin-alert"), result.error ?? "تعذّر قراءة السجلات", "error");
     return;
   }
@@ -279,14 +291,15 @@ async function refreshLogs() {
   const byDay = groupByDay(logs);
   const days = calendarDays(from, to) ?? [...byDay.keys()];
 
-  for (const day of days) {
+  // التقسيم على الأيام لا على الحركات، حتى لا ينفصل عنوان اليوم عن حركاته
+  pagers.logs.render(days, (day) => {
     const dayLogs = byDay.get(day) ?? [];
-    body.append(
+    const rows = [
       dayHeaderRow(day, 10, dayLogs.length > 0 ? `${dayLogs.length} حركة` : "لا توجد حركات"),
-    );
+    ];
 
     for (const log of dayLogs) {
-      body.append(
+      rows.push(
         row(
           [
             `${log.employeeCode} — ${log.fullName}`,
@@ -311,7 +324,9 @@ async function refreshLogs() {
         ),
       );
     }
-  }
+
+    return rows;
+  });
 }
 
 function startEdit(log) {
@@ -435,12 +450,11 @@ async function refreshFormsList() {
   const result = await api(`/forms/${state.formsResource}`);
   const table = el("forms-table");
   const head = table.querySelector("thead");
-  const body = table.querySelector("tbody");
 
   head.textContent = "";
-  body.textContent = "";
 
   if (!result.ok) {
+    pagers.forms.clear();
     setAlert(el("forms-result"), result.error ?? "تعذّر قراءة النماذج", "error");
     el("forms-empty").hidden = false;
     return;
@@ -458,7 +472,7 @@ async function refreshFormsList() {
   const items = result.items ?? [];
   el("forms-empty").hidden = items.length > 0;
 
-  for (const item of items) {
+  pagers.forms.render(items, (item) => {
     const cells = columns.map((column) => {
       const value = item[column.key];
       if (column.money) return formatMoney(value);
@@ -466,14 +480,12 @@ async function refreshFormsList() {
       return value ?? "—";
     });
 
-    body.append(
-      row([
-        item.fullName ? `${item.employeeCode ?? ""} ${item.fullName}`.trim() : "—",
-        ...cells,
-        formActions(resource, item),
-      ]),
-    );
-  }
+    return row([
+      item.fullName ? `${item.employeeCode ?? ""} ${item.fullName}`.trim() : "—",
+      ...cells,
+      formActions(resource, item),
+    ]);
+  });
 }
 
 async function renderFormsCreate() {
@@ -575,36 +587,34 @@ async function runPurge() {
 
 async function refreshSalaries() {
   const result = await api("/forms/salary");
-  const body = el("salary-table").querySelector("tbody");
-  body.textContent = "";
-  if (!result.ok) return;
-
-  for (const item of result.items ?? []) {
-    body.append(
-      row([
-        `${item.employeeCode ?? ""} ${item.fullName ?? ""}`.trim() || `#${item.employeeId}`,
-        formatMoney(item.basicSalary, item.currency),
-        formatMoney(item.housingAllowance, item.currency),
-        formatMoney(item.transportAllowance, item.currency),
-        formatMoney(item.otherAllowances, item.currency),
-        item.hourlyRate
-          ? formatMoney(item.hourlyRate, item.currency)
-          : formatMoney(
-              (item.basicSalary ?? 0) / (item.contractHoursPerMonth || 240),
-              item.currency,
-            ),
-      ]),
-    );
+  if (!result.ok) {
+    pagers.salaries.clear();
+    return;
   }
+
+  pagers.salaries.render(result.items ?? [], (item) =>
+    row([
+      `${item.employeeCode ?? ""} ${item.fullName ?? ""}`.trim() || `#${item.employeeId}`,
+      formatMoney(item.basicSalary, item.currency),
+      formatMoney(item.housingAllowance, item.currency),
+      formatMoney(item.transportAllowance, item.currency),
+      formatMoney(item.otherAllowances, item.currency),
+      item.hourlyRate
+        ? formatMoney(item.hourlyRate, item.currency)
+        : formatMoney(
+            (item.basicSalary ?? 0) / (item.contractHoursPerMonth || 240),
+            item.currency,
+          ),
+    ]),
+  );
 }
 
 async function previewPayroll() {
   const period = el("payroll-period").value || currentMonthKey();
   const result = await api(`/payroll/preview?period=${encodeURIComponent(period)}`);
-  const body = el("payroll-table").querySelector("tbody");
-  body.textContent = "";
 
   if (!result.ok) {
+    pagers.payroll.clear();
     setAlert(el("payroll-result"), result.error ?? "تعذّرت المعاينة", "error");
     return;
   }
@@ -617,7 +627,7 @@ async function previewPayroll() {
     "ok",
   );
 
-  for (const item of items) {
+  pagers.payroll.render(items, (item) => {
     const save = button("حفظ المسير", {
       className: "btn btn--primary btn--xs",
       onClick: async (node) => {
@@ -636,32 +646,31 @@ async function previewPayroll() {
       },
     });
 
-    body.append(
-      row([
-        `${item.employeeCode} — ${item.fullName}`,
-        formatMoney(item.basicSalary, item.currency),
-        formatMoney(item.allowancesTotal, item.currency),
-        `${item.workedHours} س`,
-        formatMoney(item.overtimeAmount, item.currency),
-        formatMoney(item.bonusesAmount, item.currency),
-        formatMoney(item.advancesAmount, item.currency),
-        formatMoney(item.hoursDeductionAmount, item.currency),
-        formatMoney(item.netPay, item.currency),
-        save,
-      ]),
-    );
-  }
+    return row([
+      `${item.employeeCode} — ${item.fullName}`,
+      formatMoney(item.basicSalary, item.currency),
+      formatMoney(item.allowancesTotal, item.currency),
+      `${item.workedHours} س`,
+      formatMoney(item.overtimeAmount, item.currency),
+      formatMoney(item.bonusesAmount, item.currency),
+      formatMoney(item.advancesAmount, item.currency),
+      formatMoney(item.hoursDeductionAmount, item.currency),
+      formatMoney(item.netPay, item.currency),
+      save,
+    ]);
+  });
 }
 
 async function refreshSavedSlips() {
   const result = await api("/payroll/slips");
-  const body = el("saved-slips").querySelector("tbody");
-  body.textContent = "";
-  if (!result.ok) return;
+  if (!result.ok) {
+    pagers.slips.clear();
+    return;
+  }
 
   const canManage = can("payroll.manage");
 
-  for (const slip of result.items ?? []) {
+  pagers.slips.render(result.items ?? [], (slip) => {
     const actions = document.createElement("div");
     actions.className = "row-actions";
     actions.append(button("طباعة", { onClick: () => openPrint("payroll", slip.id) }));
@@ -675,16 +684,14 @@ async function refreshSavedSlips() {
       );
     }
 
-    body.append(
-      row([
-        slip.period,
-        `${slip.employeeCode ?? ""} ${slip.fullName ?? ""}`.trim(),
-        formatMoney(slip.netPay, slip.currency),
-        label(slip.status),
-        actions,
-      ]),
-    );
-  }
+    return row([
+      slip.period,
+      `${slip.employeeCode ?? ""} ${slip.fullName ?? ""}`.trim(),
+      formatMoney(slip.netPay, slip.currency),
+      label(slip.status),
+      actions,
+    ]);
+  });
 }
 
 /**
@@ -794,10 +801,7 @@ async function refreshPeople() {
     (faceResult.enrollments ?? []).map((item) => [item.employeeId, item]),
   );
 
-  const body = el("people-table").querySelector("tbody");
-  body.textContent = "";
-
-  for (const employee of state.employees) {
+  pagers.people.render(state.employees, (employee) => {
     const face = enrolled.get(employee.id);
     const actions = employeeRowActions(employee);
 
@@ -830,26 +834,24 @@ async function refreshPeople() {
       );
     }
 
-    body.append(
-      row([
-        employee.employeeCode,
-        employee.fullName,
-        employee.jobTitle,
-        employee.department || "—",
-        employee.phone || "—",
-        employee.nationalId || "—",
-        employee.joinDate ?? "—",
-        employee.branchName ?? "—",
-        employee.branchManagerName ?? "—",
-        employee.roleNameAr ?? employee.roleName ?? "—",
-        faceEnabledCell(employee),
-        face
-          ? `مسجّلة (${face.slots ?? 1}/${face.requiredSlots ?? 3} · ${formatDateTime(face.enrolledAt)})`
-          : "غير مسجّلة",
-        actions,
-      ]),
-    );
-  }
+    return row([
+      employee.employeeCode,
+      employee.fullName,
+      employee.jobTitle,
+      employee.department || "—",
+      employee.phone || "—",
+      employee.nationalId || "—",
+      employee.joinDate ?? "—",
+      employee.branchName ?? "—",
+      employee.branchManagerName ?? "—",
+      employee.roleNameAr ?? employee.roleName ?? "—",
+      faceEnabledCell(employee),
+      face
+        ? `مسجّلة (${face.slots ?? 1}/${face.requiredSlots ?? 3} · ${formatDateTime(face.enrolledAt)})`
+        : "غير مسجّلة",
+      actions,
+    ]);
+  });
 
   fillEmployees(el("manual-employee"));
   fillEmployees(el("filter-employee"), { includeAll: true });
@@ -909,10 +911,9 @@ async function refreshResetRequests() {
 
   const all = el("reset-show-all").checked ? "?all=1" : "";
   const result = await api(`/admin/password-resets${all}`);
-  const body = el("reset-table").querySelector("tbody");
-  body.textContent = "";
 
   if (!result.ok) {
+    pagers.resets.clear();
     setAlert(el("people-result"), result.error ?? "تعذّر قراءة طلبات الاستعادة", "error");
     return;
   }
@@ -924,7 +925,7 @@ async function refreshResetRequests() {
   const requests = result.requests ?? [];
   el("reset-empty").hidden = requests.length > 0;
 
-  for (const request of requests) {
+  pagers.resets.render(requests, (request) => {
     const cancel = button("إلغاء", {
       className: "btn btn--danger btn--xs",
       onClick: async () => {
@@ -950,19 +951,17 @@ async function refreshResetRequests() {
       actions.append(issue, cancel);
     }
 
-    body.append(
-      row([
-        formatDateTime(request.createdAt),
-        `${request.employeeCode ?? "—"} ${request.fullName ?? ""}`.trim(),
-        request.maskedEmail || "بلا بريد",
-        RESET_CHANNEL_LABELS[request.deliveryChannel] ?? "—",
-        RESET_STATUS_LABELS[request.status] ?? request.status,
-        String(request.attempts ?? 0),
-        formatDateTime(request.expiresAt),
-        actions,
-      ]),
-    );
-  }
+    return row([
+      formatDateTime(request.createdAt),
+      `${request.employeeCode ?? "—"} ${request.fullName ?? ""}`.trim(),
+      request.maskedEmail || "بلا بريد",
+      RESET_CHANNEL_LABELS[request.deliveryChannel] ?? "—",
+      RESET_STATUS_LABELS[request.status] ?? request.status,
+      String(request.attempts ?? 0),
+      formatDateTime(request.expiresAt),
+      actions,
+    ]);
+  });
 }
 
 /** قوائم الموظفين والفروع في شاشات النماذج والكاشير والمخزون. */
@@ -991,10 +990,9 @@ async function refreshAudit() {
   if (to) params.set("to", `${to}T23:59:59`);
 
   const result = await api(`/admin/audit?${params.toString()}`);
-  const body = el("audit-table").querySelector("tbody");
-  body.textContent = "";
 
   if (!result.ok) {
+    pagers.audit.clear();
     setAlert(el("admin-alert"), result.error ?? "لا تملك صلاحية سجل التدقيق", "error");
     return;
   }
@@ -1006,14 +1004,15 @@ async function refreshAudit() {
   const byDay = groupByDay(entries);
   const days = calendarDays(from, to) ?? [...byDay.keys()];
 
-  for (const day of days) {
+  // التقسيم على الأيام حتى يبقى كل عنوان يوم مع قيوده في صفحة واحدة
+  pagers.audit.render(days, (day) => {
     const dayEntries = byDay.get(day) ?? [];
-    body.append(
+    const rows = [
       dayHeaderRow(day, 5, dayEntries.length > 0 ? `${dayEntries.length} قيد` : "لا توجد قيود"),
-    );
+    ];
 
     for (const entry of dayEntries) {
-      body.append(
+      rows.push(
         row([
           formatDateTime(entry.createdAt),
           entry.actorName ? `${entry.actorCode ?? ""} ${entry.actorName}`.trim() : "النظام",
@@ -1023,7 +1022,9 @@ async function refreshAudit() {
         ]),
       );
     }
-  }
+
+    return rows;
+  });
 }
 
 /* ── التنقّل ───────────────────────────────────────────────── */

@@ -7,6 +7,11 @@
  */
 
 import { api, button, el, formatDate, formatDateTime, row, setAlert, setBusy } from "../api.js";
+import { createPager } from "../pagination.js";
+
+/** تقسيم صفحات جدولي جداول الدوام والفروع. */
+const schedulesPager = createPager("schedules-table", { unit: "جدول" });
+const branchesPager = createPager("branches-table", { unit: "فرع" });
 
 let ctx = null;
 
@@ -509,29 +514,24 @@ export async function refreshSchedules() {
   const table = el("schedules-table");
   if (!table || !result.ok) return;
 
-  const body = table.querySelector("tbody");
-  body.textContent = "";
-
-  for (const item of result.items ?? []) {
-    body.append(
-      row([
-        item.employeeCode ?? "—",
-        item.fullName ?? "—",
-        item.shiftStart,
-        item.shiftEnd,
-        item.dailyHours,
-        `${item.graceMinutes} د`,
-        item.daysOffPerMonth,
-        item.offMode === "dates"
-          ? `تواريخ محدّدة (${(item.offDates ?? []).length})`
-          : item.offDaysLabel,
-        button("تعديل", {
-          className: "btn btn--ghost btn--xs",
-          onClick: () => loadScheduleInto(item.employeeId),
-        }),
-      ]),
-    );
-  }
+  schedulesPager.render(result.items ?? [], (item) =>
+    row([
+      item.employeeCode ?? "—",
+      item.fullName ?? "—",
+      item.shiftStart,
+      item.shiftEnd,
+      item.dailyHours,
+      `${item.graceMinutes} د`,
+      item.daysOffPerMonth,
+      item.offMode === "dates"
+        ? `تواريخ محدّدة (${(item.offDates ?? []).length})`
+        : item.offDaysLabel,
+      button("تعديل", {
+        className: "btn btn--ghost btn--xs",
+        onClick: () => loadScheduleInto(item.employeeId),
+      }),
+    ]),
+  );
 }
 
 /* ── تخصيص الصلاحيات ──────────────────────────────────────── */
@@ -621,10 +621,8 @@ export async function refreshBranchesPanel() {
   }
 
   const candidates = candidatesResult.ok ? (candidatesResult.candidates ?? []) : [];
-  const body = el("branches-table").querySelector("tbody");
-  body.textContent = "";
 
-  for (const branch of ctx.state.branches) {
+  branchesPager.render(ctx.state.branches, (branch) => {
     const select = document.createElement("select");
     fillSelect(
       select,
@@ -662,25 +660,24 @@ export async function refreshBranchesPanel() {
     });
     save.hidden = !can("branches.write");
 
-    body.append(
-      row([
-        branch.code,
-        branch.name,
-        `${branch.radiusMeters} م`,
-        branch.timezone,
-        branch.managerName ?? "غير محدّد",
-        save,
-      ]),
-    );
+    const line = row([
+      branch.code,
+      branch.name,
+      `${branch.radiusMeters} م`,
+      branch.timezone,
+      branch.managerName ?? "غير محدّد",
+      save,
+    ]);
 
     // نضع القائمة المنسدلة مكان اسم المدير في نفس الصف
-    const lastRow = body.lastElementChild;
-    const managerCell = lastRow.children[4];
     if (can("branches.write")) {
+      const managerCell = line.children[4];
       managerCell.textContent = "";
       managerCell.append(select);
     }
-  }
+
+    return line;
+  });
 
   if (candidates.length === 0 && can("branches.write")) {
     setAlert(

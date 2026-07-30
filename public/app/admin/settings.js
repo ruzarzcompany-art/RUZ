@@ -10,6 +10,10 @@
 
 import { api, button, el, formatMoney, row, setAlert, setBusy } from "../api.js";
 import { pickLocation } from "../map-picker.js";
+import { createPager } from "../pagination.js";
+
+/** تقسيم صفحات جدول سجلات الكيان المعروض (فروع، أقسام، أصناف...). */
+const entityPager = createPager("entity-table", { unit: "سجل" });
 
 const TEXT_FIELDS = [
   ["companyName", "اسم المؤسسة"],
@@ -512,11 +516,12 @@ function renderEntityTable() {
   const entity = state.currentEntity;
   const table = el("entity-table");
   const head = table.querySelector("thead tr");
-  const body = table.querySelector("tbody");
   head.textContent = "";
-  body.textContent = "";
 
-  if (!entity) return;
+  if (!entity) {
+    entityPager.clear();
+    return;
+  }
 
   // نعرض أول سبعة حقول فقط حتى يبقى الجدول مقروءاً على الجوال
   const shown = entity.fields.slice(0, 7);
@@ -529,7 +534,7 @@ function renderEntityTable() {
 
   const canManage = state.can(entity.managePermission) || state.can("settings.manage");
 
-  for (const record of state.rows) {
+  entityPager.render(state.rows, (record) => {
     const cells = shown.map((spec) => cellText(spec, record[spec.key]));
     const actions = document.createElement("span");
     actions.className = "row-actions";
@@ -549,8 +554,8 @@ function renderEntityTable() {
       );
     }
 
-    body.append(row([...cells, actions]));
-  }
+    return row([...cells, actions]);
+  });
 
   el("entity-empty").hidden = state.rows.length > 0;
   el("entity-form").hidden = !canManage;

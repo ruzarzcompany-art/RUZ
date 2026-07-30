@@ -16,6 +16,10 @@ import {
   setAlert,
   setBusy,
 } from "../api.js";
+import { createPager } from "../pagination.js";
+
+/** تقسيم صفحات جدول نتيجة التقرير (الطباعة والتصدير يشملان كل الصفوف). */
+const reportPager = createPager("report-table", { unit: "صف" });
 
 const REPORT_TITLES = {
   attendance: "تقرير الحضور والانصراف",
@@ -64,9 +68,7 @@ function renderReport(payload) {
 
   const table = el("report-table");
   const head = table.querySelector("thead tr");
-  const body = table.querySelector("tbody");
   head.textContent = "";
-  body.textContent = "";
 
   for (const column of payload.columns) {
     const cell = document.createElement("th");
@@ -74,15 +76,15 @@ function renderReport(payload) {
     head.append(cell);
   }
 
-  for (const item of payload.rows) {
+  reportPager.render(payload.rows, (item) => {
     const line = document.createElement("tr");
     for (const column of payload.columns) {
       const cell = document.createElement("td");
       cell.textContent = formatCell(item[column.key], column.type);
       line.append(cell);
     }
-    body.append(line);
-  }
+    return line;
+  });
 
   const summary = el("report-summary");
   summary.textContent = "";

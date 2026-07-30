@@ -17,6 +17,7 @@ import {
   setBusy,
   todayIso,
 } from "../api.js";
+import { createPager } from "../pagination.js";
 
 const SHIFT_LABELS = { morning: "صباحية", evening: "مسائية", full: "يوم كامل" };
 const CLOSING_STATUS = {
@@ -56,6 +57,13 @@ const LINE_TABLES = {
     empty: "cashier-lines-delivery-empty",
     namePlaceholder: "اسم التطبيق",
   },
+};
+
+/** تقسيم صفحات جداول الشاشة: التقفيلات وبنود كل تصنيف. */
+const closingsPager = createPager("cashier-table", { unit: "تقفيل" });
+const linePagers = {
+  network: createPager(LINE_TABLES.network.table, { unit: "بند" }),
+  delivery_app: createPager(LINE_TABLES.delivery_app.table, { unit: "تطبيق" }),
 };
 
 const state = {
@@ -121,15 +129,17 @@ function lineField(value, { type = "text", placeholder = "", onInput }) {
   return input;
 }
 
-function renderLines(category) {
+/**
+ * بنود تصنيف واحد. `page` يمرّ إلى المُقسِّم: البند المضاف حديثاً يُعرض في آخر
+ * صفحة حتى لا يختفي عن الكاشير، والحذف يُبقيه في مكانه.
+ */
+function renderLines(category, { page = "keep" } = {}) {
   const meta = LINE_TABLES[category];
-  const body = el(meta.table).querySelector("tbody");
-  body.textContent = "";
-
   const own = state.lines.filter((line) => line.category === category);
 
-  for (const line of own) {
-    body.append(
+  linePagers[category].render(
+    own,
+    (line) =>
       row([
         lineField(line.label, {
           placeholder: meta.namePlaceholder,
@@ -159,20 +169,20 @@ function renderLines(category) {
           },
         }),
       ]),
-    );
-  }
+    { page },
+  );
 
   el(meta.empty).hidden = own.length > 0;
 }
 
 function renderAllLines() {
-  renderLines("network");
-  renderLines("delivery_app");
+  renderLines("network", { page: "first" });
+  renderLines("delivery_app", { page: "first" });
 }
 
 function addLine(category) {
   state.lines.push({ category, label: "", amount: 0, reference: "" });
-  renderLines(category);
+  renderLines(category, { page: "last" });
   recomputeDerived();
 }
 
@@ -349,10 +359,7 @@ async function removeClosing(closing) {
 }
 
 function renderClosings() {
-  const body = el("cashier-table").querySelector("tbody");
-  body.textContent = "";
-
-  for (const closing of state.closings) {
+  closingsPager.render(state.closings, (closing) => {
     const actions = document.createElement("span");
     actions.className = "row-actions";
 
@@ -379,23 +386,21 @@ function renderClosings() {
       );
     }
 
-    body.append(
-      row([
-        closing.businessDate,
-        closing.branchName ?? "—",
-        closing.employeeName ?? "—",
-        SHIFT_LABELS[closing.shift] ?? closing.shift,
-        formatMoney(closing.totalSales),
-        formatMoney(closing.cashSales),
-        formatMoney(closing.cardSales),
-        formatMoney(closing.expectedCash),
-        formatMoney(closing.countedCash),
-        differenceCell(closing.difference),
-        statusChip(closing.status),
-        actions,
-      ]),
-    );
-  }
+    return row([
+      closing.businessDate,
+      closing.branchName ?? "—",
+      closing.employeeName ?? "—",
+      SHIFT_LABELS[closing.shift] ?? closing.shift,
+      formatMoney(closing.totalSales),
+      formatMoney(closing.cashSales),
+      formatMoney(closing.cardSales),
+      formatMoney(closing.expectedCash),
+      formatMoney(closing.countedCash),
+      differenceCell(closing.difference),
+      statusChip(closing.status),
+      actions,
+    ]);
+  });
 
   el("cashier-empty").hidden = state.closings.length > 0;
 }

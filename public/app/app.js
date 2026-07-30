@@ -33,6 +33,10 @@ import {
 } from "./api.js";
 import { captureFaceDescriptor, isFaceCaptureSupported, warmUpFaceEngine } from "./face.js";
 import { collectFormValues, LIST_COLUMNS, loadFormsSchema, renderFormFields } from "./forms-ui.js";
+import { createPager } from "./pagination.js";
+
+/** تقسيم صفحات جدول «طلباتي». */
+const myPager = createPager("my-table", { unit: "طلب" });
 
 const state = {
   serverOffsetMs: 0,
@@ -377,7 +381,6 @@ function paintMyTable(items) {
   const table = el("my-table");
   const columns = LIST_COLUMNS[state.myResource] ?? [];
   const head = table.querySelector("thead");
-  const body = table.querySelector("tbody");
 
   head.textContent = "";
   const headRow = document.createElement("tr");
@@ -388,18 +391,18 @@ function paintMyTable(items) {
   }
   head.append(headRow);
 
-  body.textContent = "";
   el("my-empty").hidden = items.length > 0;
 
-  for (const item of items) {
-    const cells = columns.map((column) => {
-      const value = item[column.key];
-      if (column.money) return formatMoney(value);
-      if (column.badge || column.translate) return label(value);
-      return value ?? "—";
-    });
-    body.append(row(cells));
-  }
+  myPager.render(items, (item) =>
+    row(
+      columns.map((column) => {
+        const value = item[column.key];
+        if (column.money) return formatMoney(value);
+        if (column.badge || column.translate) return label(value);
+        return value ?? "—";
+      }),
+    ),
+  );
 }
 
 async function refreshMyForms() {
