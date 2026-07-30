@@ -14,7 +14,17 @@
  * والتصدير إلى PDF يتم عبر طباعة المتصفح بدل مكتبة PDF على الخادم.
  */
 
-import { api, el, formatDateTime, formatMoney, getToken, label, requireLogin } from "../api.js";
+import {
+  api,
+  APP_VERSION,
+  el,
+  formatDateTime,
+  formatMoney,
+  getToken,
+  isInstalledApp,
+  label,
+  requireLogin,
+} from "../api.js?v=v7";
 import {
   applyPaperDesign,
   documentFooter,
@@ -24,8 +34,8 @@ import {
   paperNote,
   PAPER_CHOICES,
   watermark,
-} from "./identity.js";
-import { TEMPLATES, legalNotice, pairs, signatures } from "./templates.js";
+} from "./identity.js?v=v7";
+import { TEMPLATES, legalNotice, pairs, signatures } from "./templates.js?v=v7";
 
 const params = new URLSearchParams(window.location.search);
 const docKey = params.get("doc") ?? "payroll";
@@ -84,7 +94,8 @@ function withPaper(identity, override) {
 function applyDesign(identity) {
   activeIdentity = identity;
   applyPaperDesign(identity);
-  el("print-note").textContent = paperNote(identity);
+  // إصدار الواجهة يظهر مع السطر الإرشادي ليُعرف أن التحديث المنشور وصل للجهاز
+  el("print-note").textContent = `${paperNote(identity)} (إصدار الواجهة ${APP_VERSION})`;
 }
 
 function onPaperChange() {
@@ -124,6 +135,35 @@ function fail(message) {
   alert.className = "alert alert--error";
   alert.textContent = message;
   node.append(alert);
+}
+
+/**
+ * خطأ يمنع بناء المستند: تُعرض رسالته مع زر عودة إلى التطبيق. بدون هذا
+ * كانت الصفحة تبقى على «جارٍ تحميل المستند…» إلى الأبد عند أي خطأ غير
+ * متوقّع، فيظهر الأمر للمستخدم كأن الطباعة «لا تعمل» دون أي تفسير.
+ */
+function failWithReturn(message, detail) {
+  const node = container();
+  node.textContent = "";
+
+  const alert = document.createElement("p");
+  alert.className = "alert alert--error";
+  alert.textContent = message;
+  node.append(alert);
+
+  if (detail) {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = `تفصيل الخطأ: ${detail}`;
+    node.append(hint);
+  }
+
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "btn btn--primary btn--sm no-print";
+  back.textContent = "الرجوع إلى التطبيق";
+  back.addEventListener("click", goBack);
+  node.append(back);
 }
 
 /** يبني الورقة كاملة: علامة مائية + ترويسة + محتوى + توقيعات + تذييل. */
@@ -402,16 +442,57 @@ const LEGACY = {
   voucher: renderLegacyVoucher,
 };
 
-el("print-now").addEventListener("click", () => window.print());
-el("print-back").addEventListener("click", () => {
-  // الصفحة تُفتح عادةً في تبويب جديد؛ وإن لم تكن كذلك نرجع للخلف.
+/**
+ * العودة إلى الشاشة السابقة. الصفحة قد تُفتح في تبويب جديد (فتُغلق) أو في
+ * نفس التبويب داخل التطبيق المُثبَّت (فنرجع في السجل)، وإن لم يوجد سجل
+ * نعود إلى شاشة الإدارة مباشرة.
+ */
+function goBack() {
   window.close();
-  if (!window.closed) history.back();
-});
+  if (window.closed) return;
+  if (window.history.length > 1) {
+    window.history.back();
+    return;
+  }
+  window.location.assign("/app/admin/");
+}
+
+el("print-now").addEventListener("click", () => window.print());
+el("print-back").addEventListener("click", goBack);
+
+/*
+ * بعض الأجهزة لا تفتح نافذة الطباعة داخل التطبيق المُثبَّت على الشاشة
+ * الرئيسية، فيُعرض بديل واضح بدل ترك المستخدم أمام زر لا يستجيب.
+ */
+if (isInstalledApp()) {
+  const hint = el("print-app-hint");
+  if (hint) hint.hidden = false;
+}
 
 async function boot() {
   if (!getToken()) {
-    requireLogin();
+    /*
+     * لا جلسة في هذا المتصفح. الأغلب أن الجلسة انتهت، أو أن الرابط فُتح في
+     * متصفح آخر لا يشارك المخزَّن المحلي مع التطبيق المُثبَّت. نوضّح السبب
+     * بدل إعادة التوجيه الصامتة إلى شاشة الدخول.
+     */
+    const node = container();
+    node.textContent = "";
+
+    const alert = document.createElement("p");
+    alert.className = "alert alert--warn";
+    alert.textContent =
+      "لا توجد جلسة مفتوحة في هذا المتصفح، فلا يمكن تحميل المستند. " +
+      "سجّل الدخول ثم أعد الطباعة من داخل التطبيق.";
+
+    const login = document.createElement("button");
+    login.type = "button";
+    login.className = "btn btn--primary btn--sm no-print";
+    login.textContent = "الذهاب إلى شاشة الدخول";
+    login.addEventListener("click", () => requireLogin());
+
+    node.append(alert, login);
+    el("print-note").textContent = `إصدار الواجهة ${APP_VERSION}`;
     return;
   }
 
@@ -434,4 +515,14 @@ async function boot() {
   fail("نوع المستند غير مدعوم.");
 }
 
-boot();
+/*
+ * أي خطأ غير متوقّع (بيانات ناقصة، قالب فشل في البناء، انقطاع شبكة) يُعرض
+ * على الصفحة نفسها. الصفحة لا تُترك على رسالة التحميل أبداً.
+ */
+boot().catch((error) => {
+  console.error("[sijl] فشل بناء المستند:", error);
+  failWithReturn(
+    "تعذّر بناء المستند للطباعة. حدّث الصفحة، وإن تكرّر الخطأ أبلغ الإدارة بالتفصيل التالي.",
+    error instanceof Error ? error.message : String(error),
+  );
+});

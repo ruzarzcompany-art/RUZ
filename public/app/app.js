@@ -963,10 +963,35 @@ async function boot() {
 
 boot();
 
+/*
+ * تسجيل عامل الخدمة. `updateViaCache: "none"` يمنع المتصفح من قراءة ملف
+ * العامل نفسه من ذاكرته، و`update()` يفحص وجود نسخة أحدث عند كل إقلاع،
+ * فيصل التحديث المنشور إلى الجهاز بدل بقاء الواجهة على نسخة قديمة.
+ */
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/app/sw.js").catch(() => {
-      /* العمل دون اتصال ميزة إضافية — تجاهل الفشل بهدوء */
+  window.addEventListener("load", async () => {
+    // هل كانت الصفحة تحت سيطرة عامل خدمة قديم قبل التسجيل؟
+    const wasControlled = Boolean(navigator.serviceWorker.controller);
+    let reloading = false;
+
+    /*
+     * عند سيطرة نسخة أحدث نُحدّث الصفحة مرة واحدة: الوحدات المُحمَّلة في
+     * الصفحة الحالية تكون من النسخة القديمة، وخلطها مع ملفات النسخة الجديدة
+     * يُنتج أخطاء يصعب تفسيرها على المستخدم.
+     */
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!wasControlled || reloading) return;
+      reloading = true;
+      window.location.reload();
     });
+
+    try {
+      const registration = await navigator.serviceWorker.register("/app/sw.js", {
+        updateViaCache: "none",
+      });
+      await registration.update();
+    } catch {
+      /* العمل دون اتصال ميزة إضافية — تجاهل الفشل بهدوء */
+    }
   });
 }
