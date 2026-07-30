@@ -1351,11 +1351,23 @@ select option {
 .sheet__meta {
   display: flex;
   justify-content: space-between;
-  gap: 0.8rem;
+  gap: 0.35rem 1.2rem;
   flex-wrap: wrap;
   font-size: 0.76em;
   color: #5b5340;
   margin-bottom: 1rem;
+}
+
+/*
+ * كل بيان في سطر البيانات (التاريخ / الفرع / أصدره) يلتف داخل نفسه ولا
+ * يتجاوز عرض السطر. بدون ذلك يبقى الطرف الأخير — وهو الملتصق بحرف الورقة
+ * بسبب `space-between` — أوسع من المساحة المتاحة فيخرج عن الصفحة ويُقصّ
+ * نصفه عند الطباعة الفعلية بينما تبدو المعاينة سليمة.
+ */
+.sheet__meta > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .sheet__clauses {
@@ -1398,6 +1410,11 @@ select option {
   margin: 0;
 }
 
+/*
+ * العلامة المائية: الدوران على النص الداخلي فقط. لو دار الصندوق نفسه (وهو
+ * بعرض الورقة كاملاً) لتجاوز صندوقه المائل حدود الصفحة يميناً ويساراً،
+ * فيتمدّد المحتوى أفقياً خارج الورقة ويُقصّ ما تجاوزها عند الطباعة.
+ */
 .sheet__watermark {
   position: absolute;
   inset: 0;
@@ -1405,13 +1422,18 @@ select option {
   align-items: center;
   justify-content: center;
   pointer-events: none;
+  overflow: hidden;
+  z-index: 0;
+}
+
+.sheet__watermark span {
   font-size: 4.4em;
   font-weight: 700;
   color: var(--sheet-accent);
   opacity: 0.07;
   transform: rotate(-28deg);
   letter-spacing: 0.1em;
-  z-index: 0;
+  white-space: nowrap;
 }
 
 .sheet--custom > *:not(.sheet__watermark) {
@@ -1752,11 +1774,24 @@ select option {
     background: #fff;
   }
 
+  /*
+   * هامش أمان أفقي داخل الورقة نفسها. نافذة الطباعة قد تُلغي هوامش `@page`
+   * (خيار «بلا هوامش»)، وطباعة أندرويد/الويب-فيو تتجاهلها أصلاً، والطابعة
+   * لها منطقة غير قابلة للطبع عند الحرف. في كل هذه الحالات كان المحتوى
+   * الملتصق بحرف الورقة — وأولها سطر البيانات (التاريخ / الفرع / أصدره) —
+   * يُقصّ عند الطباعة الفعلية أو حفظ PDF مع بقاء المعاينة سليمة.
+   *
+   * هذا الحشو جزء من المحتوى فلا يستطيع أي إعداد طباعة إلغاءه، ويتكرّر على
+   * كل صفحة لأن الحشو الأفقي يُطبَّق على كل جزء من الصندوق المُقسَّم.
+   * و`applyPaperDesign` يخصم قيمته من هامش `@page` الأفقي حتى يبقى مجموع
+   * الهامش مساوياً لما ضُبط في إعدادات المؤسسة، فتتطابق المعاينة والطباعة.
+   */
   .sheet {
     margin: 0;
     width: auto;
     max-width: 100%;
-    padding: 0;
+    padding-block: 0;
+    padding-inline: var(--sheet-safe-pad, 8mm);
     border-radius: 0;
     box-shadow: none;
     overflow: visible;
@@ -1808,9 +1843,30 @@ select option {
   }
 
   .sheet--custom {
-    padding: 0;
+    padding-block: 0;
+    padding-inline: var(--sheet-safe-pad, 8mm);
     width: auto;
     max-width: 100%;
+  }
+
+  /*
+   * لا عنصر أوسع من الورقة: أي صندوق يتجاوز عرض الصفحة يُقصّ طرفه عند
+   * الطباعة، والكلمات الطويلة (روابط، أرقام مرجعية) تلتف بدل أن تخرج.
+   */
+  .sheet > *,
+  .sheet--custom > * {
+    max-width: 100%;
+  }
+
+  .sheet__brand,
+  .sheet__head,
+  .sheet__meta,
+  .sheet__footer,
+  .sheet__legal,
+  .sheet__note,
+  .sheet__terms p,
+  .sheet__clauses li {
+    overflow-wrap: break-word;
   }
 
   /*
@@ -1820,10 +1876,16 @@ select option {
    */
   .sheet__watermark {
     position: absolute;
-    inset: 0 0 auto 0;
+    /* الجانبان بمقدار هامش الأمان: العنصر المطلق يقيس صندوق الحشو فلولا ذلك
+       امتدّ إلى المنطقة التي قد تقتطعها الطابعة */
+    inset-block: 0 auto;
+    inset-inline: var(--sheet-safe-pad, 8mm);
     height: 100vh;
     max-height: 100vh;
     overflow: hidden;
+  }
+
+  .sheet__watermark span {
     opacity: 0.1;
   }
 
@@ -1836,7 +1898,12 @@ select option {
     print-color-adjust: exact;
   }
 
+  /*
+   * احتياط إن لم يعمل السكربت: هامش رأسي كامل وهامش أفقي أصغر يُكمله حشو
+   * `--sheet-safe-pad` داخل الورقة. `applyPaperDesign` يستبدل هذه القاعدة
+   * بقيم إعدادات المؤسسة الفعلية.
+   */
   @page {
-    margin: 16mm;
+    margin: 16mm 8mm;
   }
 }

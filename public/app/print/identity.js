@@ -4,7 +4,7 @@
  * `company_settings` وتُطبَّق تلقائياً على كل مستند يُطبع.
  */
 
-import { api } from "../api.js?v=v7";
+import { api } from "../api.js?v=v8";
 
 const PAPER_MM = {
   A4: { width: 210, height: 297, css: "A4" },
@@ -59,6 +59,23 @@ export async function loadIdentity() {
 }
 
 /**
+ * هامش أمان أفقي (مم) يُقتطع من هامش `@page` ويُضاف حشواً داخل الورقة.
+ * السبب: كثير من مسارات الطباعة لا تحترم هوامش `@page` — خيار «بلا هوامش»
+ * في نافذة الطباعة، وطباعة أندرويد/الويب-فيو، ومنطقة الطابعة غير القابلة
+ * للطبع — فيلتصق المحتوى بحرف الورقة ويُقصّ طرفه (سطر «التاريخ / الفرع /
+ * أصدره» أول المتأثرين) مع بقاء المعاينة داخل المتصفح سليمة. الحشو جزء من
+ * المحتوى فلا يُلغيه أي إعداد، وخصمه من `@page` يُبقي مجموع الهامش كما
+ * ضُبط في إعدادات المؤسسة فتتطابق المعاينة مع الورقة المطبوعة.
+ */
+const SAFE_PAD_MM = 8;
+
+/**
+ * أدنى حشو يبقى مهما صغُر الهامش المضبوط: الطابعات لا تطبع الشريط الأخير من
+ * حرف الورقة، فهامش صفر يعني قصّ النص حتماً ولو كانت المعاينة سليمة.
+ */
+const MIN_PAD_MM = 5;
+
+/**
  * يطبّق تصميم الورقة على الصفحة: متغيّرات CSS + قاعدة `@page`
  * (حجم الورق والاتجاه والهوامش) حتى تخرج الطباعة بالمقاس المطلوب.
  */
@@ -69,9 +86,17 @@ export function applyPaperDesign(company) {
   const margin = Number.isFinite(company.marginMm) ? company.marginMm : 16;
   const font = Number.isFinite(company.baseFontPt) ? company.baseFontPt : 11;
 
+  // الهامش الأفقي يتوزّع بين `@page` وحشو الورقة، ومجموعهما = الهامش المضبوط
+  const safePad = Math.max(Math.min(Math.max(margin, 0), SAFE_PAD_MM), MIN_PAD_MM);
+  const sideMargin = Math.max(0, margin - safePad);
+  // رأسياً لا يمكن حشو كل صفحة (الحشو الرأسي يقع على أول الصندوق وآخره فقط)
+  // فيبقى الحدّ الأدنى على هامش `@page` نفسه حتى لا يلتصق أول سطر بحرف الورقة
+  const blockMargin = Math.max(margin, MIN_PAD_MM);
+
   const root = document.body;
   root.style.setProperty("--sheet-paper-w", `${width}mm`);
   root.style.setProperty("--sheet-margin", `${margin}mm`);
+  root.style.setProperty("--sheet-safe-pad", `${safePad}mm`);
   root.style.setProperty("--sheet-font", `${font}pt`);
   root.style.setProperty("--sheet-accent", company.accentColor || FALLBACK.accentColor);
   root.style.setProperty("--sheet-text", company.textColor || FALLBACK.textColor);
@@ -86,7 +111,9 @@ export function applyPaperDesign(company) {
     style.id = "paper-rule";
     document.head.append(style);
   }
-  style.textContent = `@page { size: ${paper.css} ${landscape ? "landscape" : "portrait"}; margin: ${margin}mm; }`;
+  style.textContent =
+    `@page { size: ${paper.css} ${landscape ? "landscape" : "portrait"}; ` +
+    `margin: ${blockMargin}mm ${sideMargin}mm; }`;
 }
 
 /**
@@ -102,8 +129,9 @@ export function paperNote(company) {
   const name = company.paperSize === "letter" ? "Letter" : (company.paperSize ?? "A4");
   return (
     `الورق: ${name} ${landscape ? "أفقي" : "عمودي"} (${width}×${height} مم). ` +
-    "في نافذة الطباعة اختر هذا المقاس، واجعل المقياس 100٪ والهوامش «افتراضية»، " +
-    "ونطاق الصفحات «الكل» حتى تُطبع كل الصفحات كاملة. للتصدير اختر «حفظ كـPDF»."
+    "في نافذة الطباعة اختر هذا المقاس، واجعل المقياس 100٪ ونطاق الصفحات «الكل» " +
+    "حتى تُطبع كل الصفحات كاملة. الهوامش «افتراضية» أو «بلا هوامش» كلتاهما " +
+    "تعملان: الورقة تحتفظ بهامش أمان داخلي فلا يُقصّ النص. للتصدير اختر «حفظ كـPDF»."
   );
 }
 
@@ -217,6 +245,9 @@ export function watermark(company) {
 
   const mark = document.createElement("div");
   mark.className = "sheet__watermark";
-  mark.textContent = text;
+  // النص في عنصر داخلي: الدوران عليه وحده فلا يتمدّد صندوق الورقة أفقياً
+  const inner = document.createElement("span");
+  inner.textContent = text;
+  mark.append(inner);
   return mark;
 }

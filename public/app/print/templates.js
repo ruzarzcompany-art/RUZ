@@ -4,7 +4,7 @@
  * الصياغة القانونية عامة، ويظهر معها إشعار «ليست استشارة قانونية».
  */
 
-import { formatDate, formatDateTime, formatMoney, label } from "../api.js?v=v7";
+import { formatDate, formatDateTime, formatMoney, label } from "../api.js?v=v8";
 
 const WEEKDAYS = [
   "الأحد",
