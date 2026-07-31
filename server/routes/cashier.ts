@@ -9,7 +9,12 @@ import {
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
-import { PERMISSIONS, hasAnyPermission, requirePermission } from "../rbac.js";
+import {
+  PERMISSIONS,
+  hasAnyPermission,
+  requireModuleLevel,
+  requirePermission,
+} from "../rbac.js";
 import { isoDateInZone, safeTimeZone } from "../time.js";
 import { asDateOnly, asEnum, asId, asNumber, asString, round2 } from "../validate.js";
 
@@ -230,6 +235,7 @@ cashierRouter.post(
   "/cashier/closings",
   requireAuth,
   requirePermission(PERMISSIONS.cashierSubmit),
+  requireModuleLevel("cashier_closing", 2),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -477,6 +483,7 @@ cashierRouter.patch(
   "/cashier/closings/:id/review",
   requireAuth,
   requirePermission(PERMISSIONS.cashierReview),
+  requireModuleLevel("cashier_closing", 4),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -537,6 +544,7 @@ cashierRouter.patch(
   "/cashier/closings/:id",
   requireAuth,
   requirePermission(PERMISSIONS.cashierReview),
+  requireModuleLevel("cashier_closing", 3),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -616,6 +624,7 @@ cashierRouter.delete(
   "/cashier/closings/:id",
   requireAuth,
   requirePermission(PERMISSIONS.cashierReview),
+  requireModuleLevel("cashier_closing", 3),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;

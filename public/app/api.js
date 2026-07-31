@@ -3,7 +3,7 @@
  */
 
 /** إصدار الواجهة المنشور — يُطابق `VERSION` في `sw.js` ويظهر في صفحة الطباعة. */
-export const APP_VERSION = "v9";
+export const APP_VERSION = "v10";
 
 export const TOKEN_KEY = "restaurant-hr.token";
 

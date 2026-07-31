@@ -1594,6 +1594,55 @@ select option {
   color: var(--bone);
 }
 
+/* ── جدول درجات الصلاحيات (شاشة إدارة الصلاحيات) ─────────────── */
+
+/* خانات الدرجات مربّعة وضيّقة، واسم البند وحده يأخذ ما تبقّى من العرض */
+.table--matrix td:first-child {
+  white-space: normal;
+  min-width: 12rem;
+}
+
+.table--matrix th:not(:first-child) {
+  text-align: center;
+}
+
+.matrix__cell {
+  text-align: center;
+  width: 6.5rem;
+}
+
+.matrix__cell input {
+  width: auto;
+  accent-color: var(--saffron);
+  cursor: pointer;
+}
+
+.matrix__cell input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* الدرجة غير المتاحة لهذا البند — تُعرض «—» بلا خانة */
+.matrix__cell--off {
+  color: var(--bone-dim);
+  opacity: 0.55;
+}
+
+/* صف عنوان المجموعة داخل الجدول */
+.table tr.table__group th {
+  padding: 0.5rem 0.7rem;
+  background: rgba(217, 161, 59, 0.07);
+  font-size: 0.76rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--bone-dim);
+  text-align: start;
+}
+
+.table tr.table__group:hover th {
+  background: rgba(217, 161, 59, 0.07);
+}
+
 /* ── الشاشات المضافة: الإعدادات، الكاشير، المخزون، النماذج ─────── */
 
 .perm__group {

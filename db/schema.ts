@@ -326,6 +326,54 @@ export const employeePermissionOverrides = pgTable(
 );
 
 /**
+ * access_rules — قواعد الصلاحيات المتدرّجة (شاشة «إدارة الصلاحيات»).
+ *
+ * كل صف = بند واحد من النظام (`module_key`) مع درجة واحدة (`level`) تُمنح
+ * لنطاق واحد:
+ *   • `employee`   — موظف محدّد بالاسم (`employee_id`، و`scope_key` = رقمه)
+ *   • `department` — قسم كامل (`scope_key` = اسم القسم)
+ *   • `job_title`  — مسمى وظيفي (`scope_key` = اسم المسمى)
+ *
+ * الدرجات تراكمية: (1) قراءة فقط، (2) رفع/تسجيل حركة، (3) إضافة/تعديل/حذف،
+ * (4) إعطاء موافقات — فالدرجة المخزّنة هي أعلى درجة، وما تحتها مُفعَّل حكماً.
+ * الأخصّ يفوز عند التعارض: الموظف ثم القسم ثم المسمى الوظيفي.
+ */
+export const accessRules = pgTable(
+  "access_rules",
+  {
+    id: serial().primaryKey(),
+    /** employee | department | job_title */
+    scopeType: text("scope_type").notNull(),
+    /** مرجع الموظف عند نطاق «موظف محدّد» — يُحذف الصف بحذف الموظف */
+    employeeId: integer("employee_id").references(() => employees.id, {
+      onDelete: "cascade",
+    }),
+    /** مفتاح النطاق النصّي: رقم الموظف، أو اسم القسم، أو اسم المسمى الوظيفي */
+    scopeKey: text("scope_key").notNull(),
+    /** رمز البند كما في `MODULE_CATALOG` (مثال: cashier_closing) */
+    moduleKey: text("module_key").notNull(),
+    /** 1..4 — أعلى درجة ممنوحة لهذا البند في هذا النطاق */
+    level: integer().notNull().default(1),
+    note: text().notNull().default(""),
+    grantedByEmployeeId: integer("granted_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("access_rules_scope_module_unique_idx").on(
+      table.scopeType,
+      table.scopeKey,
+      table.moduleKey,
+    ),
+    index("access_rules_scope_idx").on(table.scopeType, table.scopeKey),
+    index("access_rules_employee_idx").on(table.employeeId),
+  ],
+);
+
+/**
  * face_templates — القالب الرقمي للوجه (embedding) لكل موظف.
  *
  * لا تُخزَّن أي صورة إطلاقاً: القالب يُستخرج على جهاز الموظف داخل المتصفح،

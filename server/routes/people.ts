@@ -34,6 +34,7 @@ import {
   PERMISSIONS,
   permissionCodesForRole,
   requireAnyPermission,
+  requireModuleLevel,
   requirePermission,
   SECTION_CATALOG,
 } from "../rbac.js";
@@ -1114,6 +1115,7 @@ peopleRouter.put(
   "/employees/:id/permissions",
   requireAuth,
   requirePermission(PERMISSIONS.permissionsManage),
+  requireModuleLevel("access_control", 3),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;

@@ -50,6 +50,7 @@ import { initSettingsModule, refreshSettingsPanel } from "./settings.js";
 import { initCashierModule, refreshCashierPanel } from "./cashier.js";
 import { initInventoryModule, refreshInventoryPanel } from "./inventory.js";
 import { initDocumentsModule, refreshDocumentsPanel } from "./documents.js";
+import { initAccessModule, refreshAccessPanel } from "./access.js";
 import { createPager } from "../pagination.js";
 
 /** تقسيم صفحات جداول لوحة الموارد البشرية (العدد الافتراضي موحَّد في `pagination.js`). */
@@ -67,6 +68,8 @@ const pagers = {
 
 const state = {
   permissions: [],
+  /** درجة كل بند كما حسبها الخادم: `moduleKey → 0..4` */
+  moduleLevels: {},
   employees: [],
   branches: [],
   schema: null,
@@ -77,6 +80,13 @@ const state = {
 };
 
 const can = (code) => state.permissions.includes(code);
+
+/**
+ * درجة المستخدم في بند من بنود النظام (0 = لا شيء). تُستخدم لإخفاء ما
+ * سيرفضه الخادم أصلاً — فالرمز الذرّي وحده قد يكون مشتركاً بين درجتين
+ * (مثل `forms.approve` في درجتي التعديل والاعتماد).
+ */
+const levelOf = (moduleKey) => state.moduleLevels[moduleKey] ?? 0;
 
 /* ── تعبئة القوائم المنسدلة ───────────────────────────────── */
 
@@ -387,7 +397,9 @@ function formActions(resource, item) {
   const wrap = document.createElement("div");
   wrap.className = "row row--tight";
 
-  if (resource.decidable && item.status === "pending") {
+  // القرار يحتاج الدرجة الرابعة في البند، والحذف يحتاج الثالثة — نخفي ما
+  // سيرفضه الخادم بدلاً من إظهار زر ينتهي برسالة رفض.
+  if (resource.decidable && item.status === "pending" && levelOf(resource.key) >= 4) {
     wrap.append(
       button("اعتماد", {
         className: "btn btn--primary btn--xs",
@@ -407,24 +419,26 @@ function formActions(resource, item) {
     wrap.append(button("طباعة", { onClick: () => openPrint("contract", item.id) }));
   }
 
-  wrap.append(
-    button("حذف", {
-      className: "btn btn--danger btn--xs",
-      onClick: async () => {
-        const reason = window.prompt("سبب الحذف:", "") ?? "";
-        const result = await api(`/forms/${resource.key}/${item.id}`, {
-          method: "DELETE",
-          body: { reason },
-        });
-        setAlert(
-          el("forms-result"),
-          result.ok ? result.message : (result.error ?? "تعذّر الحذف"),
-          result.ok ? "ok" : "error",
-        );
-        if (result.ok) await refreshFormsList();
-      },
-    }),
-  );
+  if (levelOf(resource.key) >= 3) {
+    wrap.append(
+      button("حذف", {
+        className: "btn btn--danger btn--xs",
+        onClick: async () => {
+          const reason = window.prompt("سبب الحذف:", "") ?? "";
+          const result = await api(`/forms/${resource.key}/${item.id}`, {
+            method: "DELETE",
+            body: { reason },
+          });
+          setAlert(
+            el("forms-result"),
+            result.ok ? result.message : (result.error ?? "تعذّر الحذف"),
+            result.ok ? "ok" : "error",
+          );
+          if (result.ok) await refreshFormsList();
+        },
+      }),
+    );
+  }
 
   return wrap;
 }
@@ -1055,6 +1069,7 @@ const PANEL_LOADERS = {
   settings: async () => {
     await refreshSettingsPanel(state.employees);
   },
+  access: refreshAccessPanel,
   audit: refreshAudit,
 };
 
@@ -1292,6 +1307,7 @@ const TAB_PERMISSIONS = {
   inventory: ["inventory.read", "inventory.write", "sections.inventory"],
   reports: ["reports.view", "sections.reports"],
   settings: ["settings.manage", "branches.manage", "sections.settings"],
+  access: ["permissions.manage"],
   audit: ["audit.read"],
 };
 
@@ -1323,6 +1339,7 @@ async function boot() {
   watchIdle();
 
   state.permissions = me.permissions ?? [];
+  state.moduleLevels = me.moduleLevels ?? {};
   el("admin-who").textContent = [
     me.employee.fullName,
     me.employee.employeeCode,
@@ -1363,12 +1380,13 @@ async function boot() {
     if (tab) tab.hidden = !allowedTabs.includes(panel);
   }
 
-  initPeopleModule({ state, can, refreshPeople });
+  initPeopleModule({ state, can, levelOf, refreshPeople });
   initReportsModule();
   initSettingsModule({ can, employees: state.employees });
-  initCashierModule({ can });
+  initCashierModule({ can, levelOf });
   initInventoryModule({ can });
-  initDocumentsModule({ can });
+  initDocumentsModule({ can, levelOf });
+  initAccessModule({ can });
   await loadPeopleMeta();
 
   if (can("employees.read")) await refreshPeople();

@@ -2,7 +2,7 @@
  * شاشات ملف الموظف: إضافة/تعديل بياناته الكاملة، جدول دوامه، تخصيص صلاحيات
  * العرض له بعينه، وتعيين المدير المسؤول عن كل فرع.
  *
- * الوحدة تُهيَّأ من `admin.js` عبر `initPeopleModule({ state, can, refreshPeople })`
+ * الوحدة تُهيَّأ من `admin.js` عبر `initPeopleModule({ state, can, levelOf, refreshPeople })`
  * فتشترك معه في نفس قوائم الموظفين والفروع بلا استعلامات مكرّرة.
  */
 
@@ -35,6 +35,17 @@ let editingEmployeeId = null;
 let editingEmployee = null;
 
 const can = (code) => ctx?.can(code) ?? false;
+
+/**
+ * درجة المستخدم في بند من بنود النظام (0..4) كما حسبها الخادم — تخصيص
+ * صلاحيات موظف مثلاً يحتاج الدرجة الثالثة في «إدارة الصلاحيات» لا مجرّد
+ * الرمز، فنُخفي البطاقة على من سيرفضه الخادم.
+ */
+const levelOf = (moduleKey) => ctx?.levelOf?.(moduleKey) ?? 0;
+
+/** هل يستطيع المستخدم تخصيص صلاحيات موظف بعينه؟ */
+const canEditPermissions = () =>
+  can("permissions.manage") && levelOf("access_control") >= 3;
 
 /* ── قوائم مساعدة ─────────────────────────────────────────── */
 
@@ -257,7 +268,7 @@ export function employeeRowActions(employee) {
     );
   }
 
-  if (can("permissions.manage")) {
+  if (canEditPermissions()) {
     actions.append(
       button("الصلاحيات", {
         className: "btn btn--ghost btn--xs",
@@ -695,7 +706,7 @@ export function initPeopleModule(context) {
 
   el("employee-card").hidden = !can("employees.write");
   el("schedule-card").hidden = !(can("schedules.manage") || can("employees.write"));
-  el("perm-card").hidden = !can("permissions.manage");
+  el("perm-card").hidden = !canEditPermissions();
 
   el("employee-reset").addEventListener("click", () => editEmployee(null));
 

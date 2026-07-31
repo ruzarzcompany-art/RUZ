@@ -27,7 +27,12 @@ import {
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
 import { DEMO_EMPLOYEE_CODES } from "../demo.js";
-import { PERMISSIONS, hasAnyPermission, requirePermission } from "../rbac.js";
+import {
+  PERMISSIONS,
+  hasAnyPermission,
+  requireModuleLevel,
+  requirePermission,
+} from "../rbac.js";
 import { CHECK_IN, CHECK_OUT, EFFECTIVE_STATUSES } from "../shifts.js";
 import {
   isoDateInZone,
@@ -1522,6 +1527,7 @@ documentsRouter.delete(
   "/documents/issues/:id",
   requireAuth,
   requirePermission(PERMISSIONS.documentsReadAll),
+  requireModuleLevel("documents", 3),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -1567,6 +1573,7 @@ documentsRouter.post(
   "/documents/issues/purge",
   requireAuth,
   requirePermission(PERMISSIONS.documentsReadAll),
+  requireModuleLevel("documents", 3),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -1692,6 +1699,7 @@ documentsRouter.post(
   "/disciplinary",
   requireAuth,
   requirePermission(PERMISSIONS.disciplinaryManage),
+  requireModuleLevel("disciplinary", 2),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -1749,6 +1757,7 @@ documentsRouter.patch(
   "/disciplinary/:id",
   requireAuth,
   requirePermission(PERMISSIONS.disciplinaryManage),
+  requireModuleLevel("disciplinary", 3),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -1825,6 +1834,7 @@ documentsRouter.delete(
   "/disciplinary/:id",
   requireAuth,
   requirePermission(PERMISSIONS.disciplinaryManage),
+  requireModuleLevel("disciplinary", 3),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;

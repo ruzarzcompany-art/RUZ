@@ -41,6 +41,8 @@ const DISCIPLINARY_STATUS = {
 
 const state = {
   can: () => false,
+  /** درجة المستخدم في بنود «المستندات» و«الجزاءات» (0..4) من الخادم. */
+  levelOf: () => 0,
   documents: [],
   current: null,
   actions: [],
@@ -220,6 +222,8 @@ async function removeAction(action) {
 
 function renderActions() {
   const canManage = state.can("disciplinary.manage");
+  // التعديل والحذف يحتاجان الدرجة الثالثة، أما التسجيل فيكفيه الثانية
+  const canEdit = canManage && state.levelOf("disciplinary") >= 3;
 
   actionsPager.render(state.actions, (action) => {
     const actions = document.createElement("span");
@@ -232,7 +236,7 @@ function renderActions() {
       }),
     );
 
-    if (canManage) {
+    if (canEdit) {
       actions.append(
         button("تعديل", {
           onClick: () => {
@@ -281,7 +285,8 @@ export async function loadActions() {
 /* ── سجل النماذج المُصدرة ──────────────────────────────────────── */
 
 function renderIssues() {
-  const canClean = state.can("documents.read_all");
+  // حذف سجلّات الإصدار وتنظيفها من الدرجة الثالثة في بند «المستندات»
+  const canClean = state.can("documents.read_all") && state.levelOf("documents") >= 3;
 
   issuesPager.render(state.issues, (issue) =>
     row([
@@ -402,8 +407,9 @@ function fillIssuesKindPicker() {
 
 /* ── التهيئة ───────────────────────────────────────────────────── */
 
-export function initDocumentsModule({ can }) {
+export function initDocumentsModule({ can, levelOf }) {
   state.can = can;
+  if (levelOf) state.levelOf = levelOf;
 
   el("doc-kind").addEventListener("change", onDocChange);
   el("doc-employee").addEventListener("change", loadReferences);
