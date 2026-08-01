@@ -206,23 +206,12 @@ export async function accessProfile(options: {
   employeeId: number | null;
   roleId: number | null;
 }): Promise<AccessProfile> {
-  const [roleCodes, overrides, rules] = await Promise.all([
+    const [roleCodes, rules] = await Promise.all([
     permissionCodesForRole(options.roleId),
-    permissionOverridesForEmployee(options.employeeId),
     accessRulesForEmployee(options.employeeId),
   ]);
 
-  const denied = new Set<string>();
-  const baseCodes = new Set(roleCodes);
-  for (const override of overrides) {
-    if (override.effect === "deny") {
-      denied.add(override.permissionCode);
-      baseCodes.delete(override.permissionCode);
-    } else {
-      baseCodes.add(override.permissionCode);
-    }
-  }
-
+    const baseCodes = new Set(roleCodes);
   const decisions = resolveRuleDecisions(rules);
 
   // الدرجة الفعلية لكل بند: القاعدة إن وُجدت، وإلا الدرجة المستنتجة من الدور
@@ -265,8 +254,7 @@ export async function accessProfile(options: {
       if (!justified.has(code)) codes.delete(code);
     }
   }
-  for (const code of denied) codes.delete(code);
-
+  
   const moduleLevels: Record<string, number> = {};
   const moduleDelete: Record<string, boolean> = {};
   for (const module of MODULE_CATALOG) {
