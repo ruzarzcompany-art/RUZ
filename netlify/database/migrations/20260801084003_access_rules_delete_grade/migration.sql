@@ -1,0 +1,1 @@
+ALTER TABLE "access_rules" ADD COLUMN "can_delete" boolean DEFAULT false NOT NULL;

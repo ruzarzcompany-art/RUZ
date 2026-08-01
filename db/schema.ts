@@ -326,6 +326,59 @@ export const employeePermissionOverrides = pgTable(
 );
 
 /**
+ * access_rules — قواعد الصلاحيات المتدرّجة (شاشة «إدارة الصلاحيات»).
+ *
+ * كل صف = بند واحد من النظام (`module_key`) مع درجة واحدة (`level`) تُمنح
+ * لنطاق واحد:
+ *   • `employee`   — موظف محدّد بالاسم (`employee_id`، و`scope_key` = رقمه)
+ *   • `department` — قسم كامل (`scope_key` = اسم القسم)
+ *   • `job_title`  — مسمى وظيفي (`scope_key` = اسم المسمى)
+ *
+ * الدرجات تراكمية: (1) قراءة فقط، (2) رفع/تسجيل حركة، (3) إضافة/تعديل/حذف،
+ * (4) إعطاء موافقات — فالدرجة المخزّنة هي أعلى درجة، وما تحتها مُفعَّل حكماً.
+ * الأخصّ يفوز عند التعارض: الموظف ثم القسم ثم المسمى الوظيفي.
+ */
+export const accessRules = pgTable(
+  "access_rules",
+  {
+    id: serial().primaryKey(),
+    /** employee | department | job_title */
+    scopeType: text("scope_type").notNull(),
+    /** مرجع الموظف عند نطاق «موظف محدّد» — يُحذف الصف بحذف الموظف */
+    employeeId: integer("employee_id").references(() => employees.id, {
+      onDelete: "cascade",
+    }),
+    /** مفتاح النطاق النصّي: رقم الموظف، أو اسم القسم، أو اسم المسمى الوظيفي */
+    scopeKey: text("scope_key").notNull(),
+    /** رمز البند كما في `MODULE_CATALOG` (مثال: cashier_closing) */
+    moduleKey: text("module_key").notNull(),
+    /**
+     * 0..4 — الدرجة النهائية لهذا البند في هذا النطاق. القاعدة **تحسم**
+     * الدرجة ولا تُضاف فقط: الصفر يعني سحب البند كاملاً مهما منح الدور.
+     */
+    level: integer().notNull().default(1),
+    /** درجة الحذف المستقلة — تُمنح أو تُسحب بمعزل عن درجة الإضافة والتعديل */
+    canDelete: boolean("can_delete").notNull().default(false),
+    note: text().notNull().default(""),
+    grantedByEmployeeId: integer("granted_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("access_rules_scope_module_unique_idx").on(
+      table.scopeType,
+      table.scopeKey,
+      table.moduleKey,
+    ),
+    index("access_rules_scope_idx").on(table.scopeType, table.scopeKey),
+    index("access_rules_employee_idx").on(table.employeeId),
+  ],
+);
+
+/**
  * face_templates — القالب الرقمي للوجه (embedding) لكل موظف.
  *
  * لا تُخزَّن أي صورة إطلاقاً: القالب يُستخرج على جهاز الموظف داخل المتصفح،
@@ -756,6 +809,61 @@ export const companySettings = pgTable("company_settings", {
 });
 
 /**
+ * document_identity_fields — أي البيانات تظهر على مطبوعات كل نموذج.
+ *
+ * الأصل أن كل مطبوعة تحمل هوية المؤسسة كاملةً كما هي في `company_settings`
+ * وجدول تعريف الموظف كاملاً، لكن بعض النماذج لا يُناسبها ذلك (طلب إجازة
+ * داخلي لا يحتاج الرقم الضريبي ولا المدير المسؤول مثلاً). فيُسجَّل هنا صفٌّ
+ * واحد لكل نموذج يُستثنى فيه ما لا يُراد ظهوره، وغياب الصف يعني الظهور
+ * الافتراضي الكامل — فلا يتغيّر سلوك أي نموذج لم يُخصَّص.
+ *
+ * هذه المفاتيح تُقيّد الإظهار ولا تُنشئه: مفتاح المؤسسة العام في
+ * `company_settings` (الشعار، التذييل، التوقيعات، العلامة المائية) يبقى
+ * الأعلى، فإن أُغلق هناك لا يفتحه تخصيص نموذج.
+ *
+ * حقول لا تُعطَّل أصلاً فلا عمود لها هنا: تاريخ المستند، اسم الموظف، الرقم
+ * الوظيفي، الجنسية، ورقم الهوية/الإقامة — لأنها تعريف المستند وصاحبه.
+ */
+export const documentIdentityFields = pgTable("document_identity_fields", {
+  id: serial().primaryKey(),
+  /** مفتاح النموذج في حزمة النماذج (advance، leave، payroll_slip ...) */
+  docKey: text("doc_key").notNull().unique(),
+  showLogo: boolean("show_logo").notNull().default(true),
+  showCompanyName: boolean("show_company_name").notNull().default(true),
+  showCompanyNameEn: boolean("show_company_name_en").notNull().default(true),
+  showCommercialRegister: boolean("show_commercial_register").notNull().default(true),
+  showTaxNumber: boolean("show_tax_number").notNull().default(true),
+  showAddress: boolean("show_address").notNull().default(true),
+  showCity: boolean("show_city").notNull().default(true),
+  showCountry: boolean("show_country").notNull().default(true),
+  showPhone: boolean("show_phone").notNull().default(true),
+  showEmail: boolean("show_email").notNull().default(true),
+  showWebsite: boolean("show_website").notNull().default(true),
+  showHeaderNote: boolean("show_header_note").notNull().default(true),
+  showFooter: boolean("show_footer").notNull().default(true),
+  showFooterNote: boolean("show_footer_note").notNull().default(true),
+  showSignatures: boolean("show_signatures").notNull().default(true),
+  showWatermark: boolean("show_watermark").notNull().default(true),
+  /**
+   * بيانات الموظف في جدول تعريف المستند. تُطبع اليوم في كل النماذج، فالأصل
+   * `true` كي لا يتغيّر شكل مطبوعة قائمة.
+   */
+  showJobTitle: boolean("show_job_title").notNull().default(true),
+  showDepartment: boolean("show_department").notNull().default(true),
+  showBranch: boolean("show_branch").notNull().default(true),
+  showManager: boolean("show_manager").notNull().default(true),
+  showHiredAt: boolean("show_hired_at").notNull().default(true),
+  /** بيانات اتصال الموظف: تظهر في النماذج التي تعرضها أصلاً (نموذج التعيين). */
+  showEmployeeEmail: boolean("show_employee_email").notNull().default(true),
+  showEmployeePhone: boolean("show_employee_phone").notNull().default(true),
+  updatedByEmployeeId: integer("updated_by_employee_id").references(() => employees.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
  * departments — الأقسام (المطبخ، الكاشير، الصالة ...) لإدارتها من لوحة الإعدادات.
  */
 export const departments = pgTable("departments", {
@@ -926,8 +1034,9 @@ export const inventoryItems = pgTable("inventory_items", {
 
 /**
  * inventory_movements — حركة المخزون اليومية لكل فرع:
- * `in` إدخال، `out` إخراج/استهلاك، `count` جرد (الكمية المعدودة فعلياً).
- * الرصيد = آخر جرد + الإدخالات − الإخراجات بعد تاريخ ذلك الجرد.
+ * `in` إدخال، `out` إخراج/استهلاك، `count` جرد (الكمية المعدودة فعلياً)،
+ * `manufacture` تصنيع (خصم المادة الخام مقابل إضافة المنتج النهائي).
+ * الرصيد = آخر جرد + الإدخالات − الإخراجات والتصنيع بعد تاريخ ذلك الجرد.
  */
 export const inventoryMovements = pgTable(
   "inventory_movements",
@@ -939,17 +1048,38 @@ export const inventoryMovements = pgTable(
     itemId: integer("item_id")
       .notNull()
       .references(() => inventoryItems.id, { onDelete: "cascade" }),
-    /** in | out | count */
+    /** in | out | count | manufacture */
     movementType: text("movement_type").notNull().default("in"),
     businessDate: date("business_date").notNull(),
     quantity: doublePrecision().notNull().default(0),
     unitCost: money("unit_cost"),
     totalCost: money("total_cost"),
-    /** purchase | consumption | waste | transfer | stocktake | other */
+    /** purchase | consumption | waste | transfer | stocktake | manufacture | other */
     reason: text().notNull().default("other"),
     reference: text().notNull().default(""),
     /** فرق الجرد عن الرصيد الدفتري (يُحسب في الخادم لحركات الجرد) */
     variance: doublePrecision().notNull().default(0),
+    /** التصنيع: الصنف النهائي الناتج عن استهلاك هذا الخام */
+    producedItemId: integer("produced_item_id").references(() => inventoryItems.id, {
+      onDelete: "set null",
+    }),
+    /** عدد الوحدات المنتجة — صفر يعني أنه لم يُسجَّل بعد ويمكن إكماله لاحقاً */
+    producedUnits: doublePrecision("produced_units").notNull().default(0),
+    /**
+     * وزن الوحدة المنتجة الواحدة بوحدة `unitWeightUnit` (جرام عادةً):
+     * وزن الوحدة × عدد الوحدات (بعد التحويل إلى وحدة الخام) = الكمية الخام.
+     */
+    unitWeight: doublePrecision("unit_weight").notNull().default(0),
+    /**
+     * وحدة قياس `unitWeight` — تُخزَّن صريحةً لأنها تختلف عن وحدة الخام
+     * (جرام للوحدة مقابل كيلوجرام للخام)، فلا يُفسَّر الرقم بوحدة خاطئة لاحقاً.
+     */
+    unitWeightUnit: text("unit_weight_unit").notNull().default(""),
+    /**
+     * ربط حركتَي التصنيع: حركة خصم الخام ↔ حركة إضافة المنتج. عمود عادي بلا
+     * مفتاح أجنبي لأن الجدول يشير إلى نفسه، والحذف يتكفّل بإزالة الطرفين معاً.
+     */
+    linkedMovementId: integer("linked_movement_id"),
     notes: text().notNull().default(""),
     createdByEmployeeId: integer("created_by_employee_id").references(
       () => employees.id,

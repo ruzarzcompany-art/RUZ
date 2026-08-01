@@ -12,6 +12,7 @@ import {
   custodyItems,
   departments,
   disciplinaryActions,
+  documentIdentityFields,
   documentIssues,
   employees,
   inventoryItems,
@@ -27,7 +28,13 @@ import {
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
 import { DEMO_EMPLOYEE_CODES } from "../demo.js";
-import { PERMISSIONS, hasAnyPermission, requirePermission } from "../rbac.js";
+import {
+  PERMISSIONS,
+  hasAnyPermission,
+  requireModuleDelete,
+  requireModuleLevel,
+  requirePermission,
+} from "../rbac.js";
 import { CHECK_IN, CHECK_OUT, EFFECTIVE_STATUSES } from "../shifts.js";
 import {
   isoDateInZone,
@@ -46,6 +53,13 @@ import {
   round2,
 } from "../validate.js";
 import { getOffDates, monthBounds, offScheduleLabel } from "../schedule.js";
+import {
+  FIXED_FIELDS,
+  PRINT_FIELDS,
+  loadIdentityFieldMap,
+  loadIdentityFields,
+  readIdentityFields,
+} from "../printIdentity.js";
 import { loadLines as loadCashierLines } from "./cashier.js";
 import { loadDailySheet } from "./inventory.js";
 import { loadCompanySettings } from "./settings.js";
@@ -296,7 +310,8 @@ export const DOC_CATALOG: DocSpec[] = [
     key: "inventory_movement",
     title: "سند حركة مخزون",
     group: "المخزون",
-    description: "طباعة حركة مسجَّلة (إدخال، إخراج، جرد) بكميتها وسببها ومرجعها.",
+    description:
+      "طباعة حركة مسجَّلة (إدخال، إخراج، جرد، تصنيع) بكميتها وسببها ومرجعها.",
     needsEmployee: false,
     refType: null,
     refLabel: "الحركة",
@@ -919,7 +934,11 @@ async function loadInventoryMovements(options: {
   for (const row of rows) {
     if (row.movement.movementType === "in") {
       totals.quantityIn = round2(totals.quantityIn + row.movement.quantity);
-    } else if (row.movement.movementType === "out") {
+    } else if (
+      row.movement.movementType === "out" ||
+      row.movement.movementType === "manufacture"
+    ) {
+      // التصنيع يستهلك الخام، فيُحسب ضمن الصادر في إجماليات الكشف
       totals.quantityOut = round2(totals.quantityOut + row.movement.quantity);
     }
     totals.cost = round2(totals.cost + (row.movement.totalCost ?? 0));
@@ -960,6 +979,145 @@ documentsRouter.get(
       legalNotice: LEGAL_NOTICE,
       canPrintForOthers: canPrint,
       warningLevels: WARNING_LEVELS,
+    });
+  },
+);
+
+/* ── البيانات الظاهرة على مطبوعات كل نموذج ─────────────────────── */
+
+/**
+ * مطبوعات لها مسار طباعة مباشر بلا مدخل في حزمة النماذج (مسير الراتب والسند
+ * المسجَّل يُطبعان من شاشتيهما بـ`?doc=payroll|voucher&id=`). تُدرج هنا كي
+ * تُخصَّص هويتها كبقية النماذج.
+ */
+const LEGACY_PRINTABLES = [
+  {
+    key: "payroll",
+    title: "مسير راتب (طباعة من شاشة الرواتب)",
+    group: "الرواتب",
+  },
+  {
+    key: "voucher",
+    title: "سند قبض/صرف مسجَّل (طباعة من شاشة السندات)",
+    group: "المالية",
+  },
+] as const;
+
+/** كل ما يُطبع فعلاً: حزمة النماذج كاملةً (بما فيها المخفي) + المسارات المباشرة. */
+export const PRINTABLE_DOCS: Array<{ key: string; title: string; group: string }> = [
+  ...DOC_CATALOG.map((doc) => ({ key: doc.key, title: doc.title, group: doc.group })),
+  ...LEGACY_PRINTABLES.map((doc) => ({ ...doc })),
+];
+
+const PRINTABLE_KEYS = new Set(PRINTABLE_DOCS.map((doc) => doc.key));
+
+/** الشاشة تقرأ الدليل والحقول والتخصيصات المحفوظة في نداء واحد. */
+documentsRouter.get(
+  "/documents/print-fields",
+  requireAuth,
+  requirePermission(PERMISSIONS.settingsManage),
+  async (_req: AuthedRequest, res: Response) => {
+    res.json({
+      ok: true,
+      documents: PRINTABLE_DOCS,
+      fields: PRINT_FIELDS,
+      fixedFields: FIXED_FIELDS,
+      overrides: await loadIdentityFieldMap(),
+    });
+  },
+);
+
+/**
+ * تخصيص نموذج واحد. يُحفظ الصف كاملاً (ما لم يُذكر يُعتبر ظاهراً) فتُطابق
+ * الصورة المحفوظة ما تراه الشاشة تماماً.
+ */
+documentsRouter.put(
+  "/documents/print-fields/:docKey",
+  requireAuth,
+  requirePermission(PERMISSIONS.settingsManage),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const docKey = String(req.params.docKey ?? "");
+
+    if (!PRINTABLE_KEYS.has(docKey)) {
+      res.status(404).json({ ok: false, error: "نموذج غير معروف" });
+      return;
+    }
+
+    const fields = readIdentityFields((req.body ?? {}) as Record<string, unknown>);
+    if (typeof fields === "string") {
+      res.status(400).json({ ok: false, error: fields });
+      return;
+    }
+
+    const before = await loadIdentityFields(docKey);
+
+    const [saved] = await db
+      .insert(documentIdentityFields)
+      .values({ docKey, ...fields, updatedByEmployeeId: actor.id })
+      .onConflictDoUpdate({
+        target: documentIdentityFields.docKey,
+        set: { ...fields, updatedByEmployeeId: actor.id, updatedAt: new Date() },
+      })
+      .returning();
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "documents.print_fields.update",
+      entityType: "document_identity_fields",
+      entityId: saved?.id ?? null,
+      before,
+      after: saved,
+      ipAddress: clientIp(req),
+    });
+
+    const hidden = PRINT_FIELDS.filter((field) => !fields[field.key]);
+    res.json({
+      ok: true,
+      docKey,
+      fields,
+      message:
+        hidden.length === 0
+          ? "كل البيانات تظهر على هذا النموذج."
+          : `تم الحفظ. لن يظهر على هذا النموذج: ${hidden.map((f) => f.label).join("، ")}.`,
+    });
+  },
+);
+
+/** إعادة نموذج إلى الأصل: كل بيانات المؤسسة والموظف كما في الإعدادات العامة. */
+documentsRouter.delete(
+  "/documents/print-fields/:docKey",
+  requireAuth,
+  requirePermission(PERMISSIONS.settingsManage),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const docKey = String(req.params.docKey ?? "");
+
+    const before = await loadIdentityFields(docKey);
+    if (!before) {
+      res.json({ ok: true, docKey, message: "هذا النموذج على الأصل أساساً." });
+      return;
+    }
+
+    await db
+      .delete(documentIdentityFields)
+      .where(eq(documentIdentityFields.docKey, docKey));
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "documents.print_fields.reset",
+      entityType: "document_identity_fields",
+      entityId: null,
+      before,
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      docKey,
+      message: "أُعيد النموذج إلى إظهار كل البيانات.",
     });
   },
 );
@@ -1195,7 +1353,10 @@ documentsRouter.get(
       inventory = await loadInventoryMovements({
         branchId,
         itemId: asId(req.query.itemId),
-        movementType: asEnum(req.query.movementType, ["in", "out", "count"] as const),
+        movementType: asEnum(
+          req.query.movementType,
+          ["in", "out", "count", "manufacture"] as const,
+        ),
         from,
         to,
       });
@@ -1522,6 +1683,7 @@ documentsRouter.delete(
   "/documents/issues/:id",
   requireAuth,
   requirePermission(PERMISSIONS.documentsReadAll),
+  requireModuleDelete("documents"),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -1567,6 +1729,7 @@ documentsRouter.post(
   "/documents/issues/purge",
   requireAuth,
   requirePermission(PERMISSIONS.documentsReadAll),
+  requireModuleDelete("documents"),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -1692,6 +1855,7 @@ documentsRouter.post(
   "/disciplinary",
   requireAuth,
   requirePermission(PERMISSIONS.disciplinaryManage),
+  requireModuleLevel("disciplinary", 2),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -1749,6 +1913,7 @@ documentsRouter.patch(
   "/disciplinary/:id",
   requireAuth,
   requirePermission(PERMISSIONS.disciplinaryManage),
+  requireModuleLevel("disciplinary", 3),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -1825,6 +1990,7 @@ documentsRouter.delete(
   "/disciplinary/:id",
   requireAuth,
   requirePermission(PERMISSIONS.disciplinaryManage),
+  requireModuleDelete("disciplinary"),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;

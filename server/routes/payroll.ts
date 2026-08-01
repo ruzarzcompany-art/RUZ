@@ -13,7 +13,14 @@ import {
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
-import { hasAnyPermission, PERMISSIONS, requireAnyPermission } from "../rbac.js";
+import {
+  hasAnyPermission,
+  hasModuleLevel,
+  PERMISSIONS,
+  requireAnyPermission,
+  requireModuleDelete,
+  requireModuleLevel,
+} from "../rbac.js";
 import {
   evaluateShift,
   expectedMonthlyHours,
@@ -454,6 +461,7 @@ payrollRouter.post(
   "/payroll/slips",
   requireAuth,
   requireAnyPermission(PERMISSIONS.payrollManage),
+  requireModuleLevel("payroll", 2),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -483,6 +491,17 @@ payrollRouter.post(
     const extraNote = asString(req.body?.notes, 1000) ?? "";
     const netPay = round2(computed.netPay - otherDeductions);
 
+    // اعتماد المسير إجراء موافقة: يحتاج الدرجة الرابعة في بند «مسير الرواتب»،
+    // أما توليده كمسوّدة فيكفيه بلوغ درجة «رفع/تسجيل حركة».
+    const wantsApproval = req.body?.status === "approved";
+    if (wantsApproval && !(await hasModuleLevel(req, "payroll", 4))) {
+      res.status(403).json({
+        ok: false,
+        error: "لا تملك صلاحية اعتماد مسير الرواتب — يمكنك حفظه كمسوّدة فقط.",
+      });
+      return;
+    }
+
     const values = {
       employeeId,
       periodYear: computed.periodYear,
@@ -502,7 +521,7 @@ payrollRouter.post(
       netPay,
       hourlyRate: computed.hourlyRate,
       currency: computed.currency,
-      status: req.body?.status === "approved" ? "approved" : "draft",
+      status: wantsApproval ? "approved" : "draft",
       notes: [computed.notes, extraNote].filter(Boolean).join(" ").slice(0, 1000),
       generatedByEmployeeId: actor.id,
       generatedAt: new Date(),
@@ -684,6 +703,7 @@ payrollRouter.delete(
   "/payroll/slips/:id",
   requireAuth,
   requireAnyPermission(PERMISSIONS.payrollManage),
+  requireModuleDelete("payroll"),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;

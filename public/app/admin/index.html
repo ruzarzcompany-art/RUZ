@@ -42,6 +42,7 @@
       <button class="tab" type="button" data-panel="inventory">المخزون</button>
       <button class="tab" type="button" data-panel="reports">التقارير</button>
       <button class="tab" type="button" data-panel="settings">الإعدادات</button>
+      <button class="tab" type="button" data-panel="access">إدارة الصلاحيات</button>
       <button class="tab" type="button" data-panel="audit">سجل التدقيق</button>
     </nav>
 
@@ -1322,35 +1323,36 @@
             <select id="inventory-item" required></select>
           </label>
           <label class="field field--sm">
-            <span class="field__label">نوع الحركة</span>
-            <select id="inventory-type">
-              <option value="in">إدخال</option>
-              <option value="out">إخراج</option>
-              <option value="count">جرد</option>
-            </select>
+            <span class="field__label">الحركة وسببها</span>
+            <select id="inventory-action"></select>
           </label>
           <label class="field field--sm">
             <span class="field__label">التاريخ</span>
             <input id="inventory-date" type="date" required />
           </label>
+          <label class="field field--sm" id="inventory-produced-field" hidden>
+            <span class="field__label">المنتج النهائي</span>
+            <select id="inventory-produced-item"></select>
+          </label>
           <label class="field field--sm">
             <span class="field__label" id="inventory-quantity-label">الكمية</span>
             <input id="inventory-quantity" type="number" step="any" min="0" required />
           </label>
+          <label class="field field--sm" id="inventory-units-field" hidden>
+            <span class="field__label">عدد الوحدات المنتجة</span>
+            <input id="inventory-produced-units" type="number" step="any" min="0" />
+          </label>
+          <label class="field field--sm" id="inventory-weight-field" hidden>
+            <span class="field__label" id="inventory-weight-label">وزن الوحدة</span>
+            <input id="inventory-unit-weight" type="number" step="any" min="0" />
+          </label>
+          <label class="field field--sm" id="inventory-weight-unit-field" hidden>
+            <span class="field__label">وحدة وزن الوحدة</span>
+            <select id="inventory-weight-unit"></select>
+          </label>
           <label class="field field--sm">
             <span class="field__label">تكلفة الوحدة</span>
             <input id="inventory-unitcost" type="number" step="any" min="0" />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">السبب</span>
-            <select id="inventory-reason">
-              <option value="purchase">شراء</option>
-              <option value="consumption">استهلاك</option>
-              <option value="waste">هدر</option>
-              <option value="transfer">تحويل بين الفروع</option>
-              <option value="stocktake">جرد</option>
-              <option value="other">أخرى</option>
-            </select>
           </label>
           <label class="field field--sm">
             <span class="field__label">المرجع</span>
@@ -1370,10 +1372,18 @@
           </div>
         </form>
         <p id="inventory-price-hint" class="hint"></p>
+        <p id="inventory-manufacture-hint" class="hint" hidden></p>
         <p class="hint">
           حركة «الجرد» تُثبّت الرصيد على الكمية المعدودة ويحسب الخادم الفرق عن الرصيد
           الدفتري تلقائياً. الأصناف ذات السعر المتغيّر تأخذ سعرها من فاتورة الشراء،
           وآخر سعر فاتورة يصبح سعر الوحدة المحتسب للصنف.
+        </p>
+        <p class="hint">
+          حركة «التصنيع» تربط ثلاثة أرقام: الكمية الخام ÷ عدد الوحدات المنتجة =
+          وزن الوحدة. إدخال أي رقمين يُكمل الثالث تلقائياً، ويكفي إدخال الكمية
+          الخام وحدها فتُسجَّل العملية ويُخصم الخام، ثم يُسجَّل عدد الوحدات لاحقاً
+          من زر «تسجيل العدد» في جدول الحركات. وعند اكتمال العملية يُخصم الخام
+          ويُضاف المنتج النهائي إلى المخزون في حركة واحدة مرتبطة بها.
         </p>
       </section>
 
@@ -1507,6 +1517,49 @@
         </p>
       </section>
 
+      <section id="print-fields-card" class="card" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">البيانات الظاهرة على مطبوعات كل نموذج</h2>
+          <label class="field field--sm">
+            <span class="field__label">النموذج</span>
+            <select id="print-fields-doc"></select>
+          </label>
+        </div>
+
+        <p class="hint">
+          اختر النموذج ثم حدّد بيانات المؤسسة وبيانات الموظف التي تظهر على
+          مطبوعته وحده. النموذج الذي لم يُخصَّص يحمل بياناته كاملة كما في
+          الإعدادات أعلاه، ولا يُظهر التخصيص بياناً أغلقته الإعدادات العامة.
+          إخفاء بيان من هوية المؤسسة يشمل الورقة كلها لا ترويستها وحدها —
+          فبيانٌ يذكره متن المستند (أطراف العقد مثلاً) يسقط منه أيضاً. أما إخفاء
+          بيان من بيانات الموظف فيسقط سطره من جدول تعريف المستند (ومن ترويسة
+          الورقة في حالة الفرع)، ولا يمس نص البنود ولا سطر نطاق التقارير
+          المجمَّعة.
+        </p>
+
+        <p id="print-fields-fixed" class="hint"></p>
+
+        <div id="print-fields-grid"></div>
+
+        <div class="row row--wrap">
+          <button id="print-fields-save" class="btn btn--primary btn--sm" type="button">
+            حفظ هذا النموذج
+          </button>
+          <button id="print-fields-all" class="btn btn--ghost btn--xs" type="button">
+            تحديد الكل
+          </button>
+          <button id="print-fields-none" class="btn btn--ghost btn--xs" type="button">
+            إلغاء الكل
+          </button>
+          <button id="print-fields-reset" class="btn btn--ghost btn--xs" type="button">
+            إعادة إلى كل البيانات
+          </button>
+        </div>
+
+        <p id="print-fields-result" class="alert" role="status" hidden></p>
+        <p id="print-fields-state" class="hint"></p>
+      </section>
+
       <section class="card">
         <div class="card__head">
           <h2 class="card__title card__title--sm">الكيانات الأساسية</h2>
@@ -1575,6 +1628,163 @@
           الحذف نهائي ولا يمكن الرجوع عنه، ولا يُحذف حسابك الذي تعمل به الآن. بعد الحذف
           يُمنع بذر البيانات التجريبية مرة أخرى عند إقلاع الموقع، وتبقى الكيانات
           الأساسية (الصلاحيات والأدوار والفرع والإعدادات) كما هي.
+        </p>
+      </section>
+    </main>
+
+    <!-- ── إدارة الصلاحيات ────────────────────────────────────── -->
+    <main id="panel-access" class="panel" hidden>
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">قواعد الصلاحيات المحفوظة</h2>
+          <button id="access-rules-refresh" class="btn btn--ghost btn--xs" type="button">
+            تحديث
+          </button>
+        </div>
+        <p class="hint">
+          كل قاعدة تحدّد درجات بنود النظام لنطاق واحد: موظف محدّد، أو قسم كامل،
+          أو مسمى وظيفي. عند تعارض النطاقات يُقدَّم الأخص (الموظف ثم القسم ثم
+          المسمى). القاعدة هي الكلمة النهائية: أي بند تضبطه هنا يتجاوز ما يمنحه
+          «الدور» — رفعاً أو خفضاً أو سحباً كاملاً — ويبقى الدور تصنيفاً ابتدائياً
+          للبنود التي لم تُضبط بقاعدة.
+        </p>
+        <div class="table-wrap">
+          <table class="table" id="access-rules-table">
+            <thead>
+              <tr>
+                <th>النطاق</th>
+                <th>الجهة</th>
+                <th>عدد البنود</th>
+                <th>أعلى درجة</th>
+                <th>مسحوب / حذف</th>
+                <th>آخر تحديث</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="access-rules-empty" class="empty" hidden>
+          لا توجد قواعد صلاحيات بعد — الجميع على صلاحيات أدوارهم.
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">إنشاء / تعديل قاعدة</h2>
+          <span id="access-affected" class="chip">لم يُحدَّد نطاق بعد</span>
+        </div>
+
+        <div class="filters">
+          <label class="field field--sm">
+            <span class="field__label">النطاق</span>
+            <select id="access-scope-type"></select>
+          </label>
+          <label class="field field--sm" id="access-employee-field">
+            <span class="field__label">الموظف</span>
+            <select id="access-scope-employee"></select>
+          </label>
+          <label class="field field--sm" id="access-department-field" hidden>
+            <span class="field__label">القسم</span>
+            <select id="access-scope-department"></select>
+          </label>
+          <label class="field field--sm" id="access-job-title-field" hidden>
+            <span class="field__label">المسمى الوظيفي</span>
+            <select id="access-scope-job-title"></select>
+          </label>
+          <button id="access-load" class="btn btn--ghost btn--sm" type="button">
+            تحميل القاعدة
+          </button>
+        </div>
+
+        <p id="access-scope-hint" class="hint"></p>
+
+        <form id="access-form" novalidate>
+          <div class="table-wrap">
+            <table class="table table--matrix" id="access-matrix">
+              <thead>
+                <tr>
+                  <th>البند / الشاشة</th>
+                  <th>قاعدة صريحة</th>
+                  <th>1 — قراءة فقط</th>
+                  <th>2 — رفع / تسجيل حركة</th>
+                  <th>3 — إضافة / تعديل</th>
+                  <th>حذف</th>
+                  <th>4 — إعطاء الموافقات</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <p class="hint">
+            فعّل «قاعدة صريحة» في أي بند لتتحكّم به بنفسك بدل الدور؛ عندها تصبح
+            الدرجة المختارة هي النهائية، وترك كل الدرجات فارغة يعني سحب البند
+            بالكامل مهما منحه الدور. البنود بلا قاعدة صريحة تبقى على ما يمنحه
+            الدور. الدرجات 1–3 تراكمية: اختيار الثالثة يُفعّل الأولى والثانية
+            معها. أما «حذف» فدرجة مستقلة تُمنح أو تُسحب وحدها، ولا علاقة لها
+            بدرجة الموافقات. والخانة «—» تعني أن هذه الدرجة لا معنى لها في هذا
+            البند (كدرجة الموافقات في بند لا يحتاج اعتماداً، أو الحذف في بند لا
+            يُحذف منه شيء).
+          </p>
+
+          <label class="field field--sm field--wide">
+            <span class="field__label">ملاحظة / سبب المنح</span>
+            <input id="access-note" type="text" autocomplete="off" />
+          </label>
+
+          <div class="row row--wrap">
+            <button id="access-save" class="btn btn--primary btn--sm" type="submit">
+              حفظ القاعدة
+            </button>
+            <button id="access-clear" class="btn btn--ghost btn--sm" type="button">
+              إلغاء كل القواعد الصريحة
+            </button>
+            <button id="access-withdraw" class="btn btn--ghost btn--sm" type="button">
+              سحب كل البنود
+            </button>
+            <button id="access-delete" class="btn btn--ghost btn--sm" type="button">
+              حذف قاعدة النطاق
+            </button>
+          </div>
+        </form>
+        <p id="access-result" class="alert" role="status" hidden></p>
+      </section>
+
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">المحصّلة الفعلية لموظف</h2>
+        </div>
+        <div class="filters">
+          <label class="field field--sm">
+            <span class="field__label">الموظف</span>
+            <select id="access-preview-employee"></select>
+          </label>
+          <button id="access-preview-run" class="btn btn--ghost btn--sm" type="button">
+            عرض المحصّلة
+          </button>
+        </div>
+        <p class="hint">
+          هذه هي الدرجات التي يفرضها الخادم فعلاً على طلبات هذا الموظف بعد تطبيق
+          قواعد الصلاحيات فوق تصنيف دوره: البند الذي تضبطه قاعدة تُعرض درجتها هي
+          النهائية، والبند بلا قاعدة يبقى على ما يمنحه الدور.
+        </p>
+        <div class="table-wrap">
+          <table class="table" id="access-preview-table">
+            <thead>
+              <tr>
+                <th>البند</th>
+                <th>الدرجة الفعلية</th>
+                <th>الحذف</th>
+                <th>المصدر</th>
+                <th>ما يستطيعه</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="access-preview-empty" class="empty" hidden>
+          اختر موظفاً لعرض محصّلة صلاحياته.
         </p>
       </section>
     </main>

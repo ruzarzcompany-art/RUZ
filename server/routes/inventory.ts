@@ -9,21 +9,86 @@ import {
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
-import { PERMISSIONS, hasAnyPermission, requirePermission } from "../rbac.js";
+import {
+  PERMISSIONS,
+  hasAnyPermission,
+  hasModuleDelete,
+  hasModuleLevel,
+  requireModuleDelete,
+  requireModuleLevel,
+  requirePermission,
+} from "../rbac.js";
 import { isoDateInZone, safeTimeZone } from "../time.js";
+import {
+  conversionFactor,
+  defaultWeightUnit,
+  resolveWeightUnit,
+  unitMeta,
+  weightUnitOptions,
+} from "../units.js";
 import { asDateOnly, asEnum, asId, asNumber, asString, round2 } from "../validate.js";
 
 export const inventoryRouter = Router();
 
-const MOVEMENT_TYPES = ["in", "out", "count"] as const;
+const MOVEMENT_TYPES = ["in", "out", "count", "manufacture"] as const;
 const REASONS = [
   "purchase",
   "consumption",
   "waste",
   "transfer",
   "stocktake",
+  "manufacture",
   "other",
 ] as const;
+
+/** تقريب بأربع منازل — وزن الوحدة قد يكون كسراً دقيقاً (جرامات من كيلو). */
+function round4(value: number): number {
+  return Math.round((Number.isFinite(value) ? value : 0) * 10_000) / 10_000;
+}
+
+/**
+ * التصنيع يربط ثلاثة أرقام بوحدتين مختلفتين:
+ *
+ *   وزن الوحدة (بوحدة المنتج، جرام مثلاً) × عدد الوحدات المنتجة
+ *     = الكمية الخام (بوحدة الخام، كيلوجرام مثلاً)
+ *
+ * فيُحوَّل وزن الوحدة إلى وحدة الخام بمعامل ثابت قبل الضرب: 50 جرام × 20 وحدة
+ * = 1 كجم. وإدخال أي رقمين يُكمل الثالث، وإدخال الخام وحده يمرّ كما هو (عدد
+ * الوحدات يُسجَّل لاحقاً) — لا يتوقف النظام في أي من الحالتين.
+ */
+export function resolveManufacturing(input: {
+  rawQuantity: number | null;
+  producedUnits: number | null;
+  unitWeight: number | null;
+  rawUnit: string;
+  weightUnit?: unknown;
+}): {
+  rawQuantity: number;
+  producedUnits: number;
+  unitWeight: number;
+  unitWeightUnit: string;
+  rawUnit: string;
+} {
+  const unitWeightUnit = resolveWeightUnit(input.rawUnit, input.weightUnit);
+  // كم من وحدة الخام في وحدة وزن واحدة (جرام ← كجم = 0.001)
+  const toRaw = conversionFactor(unitWeightUnit, input.rawUnit);
+
+  let raw = input.rawQuantity !== null && input.rawQuantity > 0 ? input.rawQuantity : 0;
+  let units = input.producedUnits !== null && input.producedUnits > 0 ? input.producedUnits : 0;
+  let weight = input.unitWeight !== null && input.unitWeight > 0 ? input.unitWeight : 0;
+
+  if (raw > 0 && units > 0) weight = round4(raw / units / toRaw);
+  else if (raw > 0 && weight > 0) units = round2(raw / (weight * toRaw));
+  else if (units > 0 && weight > 0) raw = round2(units * weight * toRaw);
+
+  return {
+    rawQuantity: round2(raw),
+    producedUnits: round2(units),
+    unitWeight: round4(weight),
+    unitWeightUnit,
+    rawUnit: input.rawUnit,
+  };
+}
 
 /** أقصى عدد حركات تُقرأ لحساب الأرصدة (حماية من استعلام ضخم). */
 const BALANCE_SCAN_LIMIT = 20_000;
@@ -65,6 +130,7 @@ export async function computeBalances(branchId: number): Promise<
     } else if (row.movementType === "in") {
       current.balance += row.quantity;
     } else {
+      // الإخراج والتصنيع كلاهما يستهلك من رصيد الصنف
       current.balance -= row.quantity;
     }
 
@@ -74,6 +140,86 @@ export async function computeBalances(branchId: number): Promise<
   }
 
   return balances;
+}
+
+/**
+ * إنشاء حركة إضافة المنتج النهائي المقابلة لحركة تصنيع.
+ *
+ * تكلفة الوحدة المنتجة = تكلفة الخام المستهلك ÷ عدد الوحدات، وهي التكلفة
+ * الحقيقية للوحدة الواحدة. والمنتج ذو السعر المتغيّر يأخذ هذه التكلفة سعراً
+ * لوحدته (كما يفعل الشراء بفاتورته)، أما ثابت السعر فيبقى على سعره المعرّف.
+ */
+async function createProducedMovement(input: {
+  rawMovementId: number;
+  branchId: number;
+  producedItem: { id: number; unitCost: number; priceMode: string };
+  businessDate: string;
+  producedUnits: number;
+  unitWeight: number;
+  unitWeightUnit: string;
+  rawTotalCost: number;
+  reference: string;
+  notes: string;
+  actorId: number;
+  ipAddress: string;
+}) {
+  const db = getDb();
+  const isVariable = input.producedItem.priceMode === "variable";
+  const derivedCost =
+    input.producedUnits > 0 ? round2(input.rawTotalCost / input.producedUnits) : 0;
+  const unitCost = isVariable && derivedCost > 0 ? derivedCost : input.producedItem.unitCost;
+
+  const [movement] = await db
+    .insert(inventoryMovements)
+    .values({
+      branchId: input.branchId,
+      itemId: input.producedItem.id,
+      movementType: "in",
+      businessDate: input.businessDate,
+      quantity: input.producedUnits,
+      unitCost,
+      totalCost: round2(input.producedUnits * unitCost),
+      reason: "manufacture",
+      reference: input.reference,
+      variance: 0,
+      producedUnits: 0,
+      unitWeight: input.unitWeight,
+      unitWeightUnit: input.unitWeightUnit,
+      linkedMovementId: input.rawMovementId,
+      notes: input.notes,
+      createdByEmployeeId: input.actorId,
+    })
+    .returning();
+
+  await recordAudit({
+    actorEmployeeId: input.actorId,
+    action: "inventory.movement.manufacture_output",
+    entityType: "inventory_movements",
+    entityId: movement?.id ?? null,
+    after: movement,
+    ipAddress: input.ipAddress,
+  });
+
+  let itemCostUpdated = false;
+  if (isVariable && derivedCost > 0 && derivedCost !== input.producedItem.unitCost) {
+    await db
+      .update(inventoryItems)
+      .set({ unitCost: derivedCost, updatedAt: new Date() })
+      .where(eq(inventoryItems.id, input.producedItem.id));
+
+    itemCostUpdated = true;
+    await recordAudit({
+      actorEmployeeId: input.actorId,
+      action: "inventory.item.cost_from_manufacturing",
+      entityType: "inventory_items",
+      entityId: input.producedItem.id,
+      before: { unitCost: input.producedItem.unitCost },
+      after: { unitCost: derivedCost, movementId: movement?.id ?? null },
+      ipAddress: input.ipAddress,
+    });
+  }
+
+  return { movement, unitCost, itemCostUpdated };
 }
 
 async function branchTimezone(branchId: number | null): Promise<string> {
@@ -118,9 +264,15 @@ inventoryRouter.get(
           lastCountDate: state?.lastCountDate ?? null,
           belowMinimum: balance < item.minQuantity,
           stockValue: round2(balance * item.unitCost),
+          /**
+           * وحدات وزن الوحدة المنتجة المتاحة إن كان هذا الصنف مادة خام:
+           * الخادم يحسبها من جدول الوحدات فلا تُعرّف في المتصفح مرة ثانية.
+           */
+          weightUnits: weightUnitOptions(item.unit),
+          defaultWeightUnit: defaultWeightUnit(item.unit),
         };
       }),
-      meta: { movementTypes: MOVEMENT_TYPES, reasons: REASONS },
+      meta: { movementTypes: MOVEMENT_TYPES, reasons: REASONS, units: unitMeta() },
     });
   },
 );
@@ -131,6 +283,7 @@ inventoryRouter.post(
   "/inventory/movements",
   requireAuth,
   requirePermission(PERMISSIONS.inventoryWrite),
+  requireModuleLevel("inventory_movements", 2),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -168,16 +321,74 @@ inventoryRouter.post(
       return;
     }
 
-    const quantityRaw = asNumber(body.quantity);
+    /**
+     * التصنيع: يُستهلك الخام من هذا الصنف ويُضاف المنتج النهائي إلى صنف آخر،
+     * والحركتان تُنشآن معاً ومرتبطتين. عدد الوحدات قد يبقى بلا تسجيل الآن
+     * فيُكمَّل لاحقاً عبر `PATCH /inventory/movements/:id/production`.
+     */
+    const isManufacture = movementType === "manufacture";
+    const producedItemId = isManufacture ? asId(body.producedItemId) : null;
+
+    let producedItem: typeof item | null = null;
+    if (isManufacture) {
+      if (producedItemId === null) {
+        res.status(400).json({ ok: false, error: "اختر المنتج النهائي الناتج عن التصنيع" });
+        return;
+      }
+      if (producedItemId === itemId) {
+        res.status(400).json({
+          ok: false,
+          error: "المنتج النهائي لا يمكن أن يكون المادة الخام نفسها",
+        });
+        return;
+      }
+
+      const [found] = await db
+        .select()
+        .from(inventoryItems)
+        .where(eq(inventoryItems.id, producedItemId))
+        .limit(1);
+
+      if (!found) {
+        res.status(404).json({ ok: false, error: "المنتج النهائي غير موجود" });
+        return;
+      }
+      producedItem = found;
+    }
+
+    const manufacturing = isManufacture
+      ? resolveManufacturing({
+          rawQuantity: asNumber(body.quantity),
+          producedUnits: asNumber(body.producedUnits),
+          unitWeight: asNumber(body.unitWeight),
+          rawUnit: item.unit,
+          weightUnit: body.unitWeightUnit,
+        })
+      : null;
+
+    const quantityRaw = manufacturing ? manufacturing.rawQuantity : asNumber(body.quantity);
     if (quantityRaw === null || quantityRaw < 0) {
       res.status(400).json({ ok: false, error: "الكمية يجب أن تكون رقماً غير سالب" });
+      return;
+    }
+    if (manufacturing && quantityRaw <= 0) {
+      res.status(400).json({
+        ok: false,
+        error: "أدخل الكمية الخام، أو عدد الوحدات المنتجة مع وزن الوحدة",
+      });
       return;
     }
     const quantity = round2(quantityRaw);
 
     const reason =
       asEnum(body.reason, REASONS) ??
-      (movementType === "count" ? "stocktake" : movementType === "in" ? "purchase" : "consumption");
+      (movementType === "count"
+        ? "stocktake"
+        : movementType === "in"
+          ? "purchase"
+          : isManufacture
+            ? "manufacture"
+            : "consumption");
 
     const unitCostRaw = asNumber(body.unitCost);
     const invoiceCost = unitCostRaw === null || unitCostRaw < 0 ? null : round2(unitCostRaw);
@@ -205,6 +416,10 @@ inventoryRouter.post(
     const bookBalance = balances.get(itemId)?.balance ?? 0;
     const variance = movementType === "count" ? round2(quantity - bookBalance) : 0;
 
+    const reference = asString(body.reference, 120) ?? "";
+    const notes = asString(body.notes, 1000) ?? "";
+    const totalCost = round2(quantity * unitCost);
+
     const [saved] = await db
       .insert(inventoryMovements)
       .values({
@@ -214,11 +429,15 @@ inventoryRouter.post(
         businessDate,
         quantity,
         unitCost,
-        totalCost: round2(quantity * unitCost),
+        totalCost,
         reason,
-        reference: asString(body.reference, 120) ?? "",
+        reference,
         variance,
-        notes: asString(body.notes, 1000) ?? "",
+        producedItemId,
+        producedUnits: manufacturing?.producedUnits ?? 0,
+        unitWeight: manufacturing?.unitWeight ?? 0,
+        unitWeightUnit: manufacturing?.unitWeightUnit ?? "",
+        notes,
         createdByEmployeeId: actor.id,
       })
       .returning();
@@ -231,6 +450,44 @@ inventoryRouter.post(
       after: saved,
       ipAddress: clientIp(req),
     });
+
+    /**
+     * التصنيع يُنشئ حركتين مرتبطتين: خصم الخام (أعلاه) وإضافة المنتج. وإن لم
+     * يُسجَّل عدد الوحدات بعد، يُكتفى بخصم الخام ويُكمل العدد لاحقاً.
+     */
+    let producedMovement: Awaited<ReturnType<typeof createProducedMovement>>["movement"] | null =
+      null;
+    let producedUnitCost: number | null = null;
+    let producedCostUpdated = false;
+
+    if (saved && manufacturing && producedItem && manufacturing.producedUnits > 0) {
+      const created = await createProducedMovement({
+        rawMovementId: saved.id,
+        branchId,
+        producedItem,
+        businessDate,
+        producedUnits: manufacturing.producedUnits,
+        unitWeight: manufacturing.unitWeight,
+        unitWeightUnit: manufacturing.unitWeightUnit,
+        rawTotalCost: totalCost,
+        reference,
+        notes,
+        actorId: actor.id,
+        ipAddress: clientIp(req),
+      });
+
+      producedMovement = created.movement;
+      producedUnitCost = created.unitCost;
+      producedCostUpdated = created.itemCostUpdated;
+
+      if (created.movement) {
+        await db
+          .update(inventoryMovements)
+          .set({ linkedMovementId: created.movement.id, updatedAt: new Date() })
+          .where(eq(inventoryMovements.id, saved.id));
+        saved.linkedMovementId = created.movement.id;
+      }
+    }
 
     // السعر المتغيّر: آخر فاتورة شراء تُحدّث سعر وحدة الصنف لتقييم المخزون
     let itemCostUpdated = false;
@@ -252,21 +509,39 @@ inventoryRouter.post(
       });
     }
 
+    let message = "تم تسجيل الحركة";
+    if (movementType === "count") {
+      message = `تم تسجيل الجرد. الفرق عن الرصيد الدفتري: ${variance}`;
+    } else if (isManufacture && manufacturing) {
+      const consumed = `خُصم ${manufacturing.rawQuantity} ${item.unit} من «${item.name}»`;
+      const weightNote =
+        manufacturing.unitWeight > 0
+          ? ` بوزن ${manufacturing.unitWeight} ${manufacturing.unitWeightUnit} للوحدة`
+          : "";
+      message =
+        manufacturing.producedUnits > 0
+          ? `تم تسجيل التصنيع: ${consumed} وأُضيف ${manufacturing.producedUnits} ${
+              producedItem?.unit ?? "وحدة"
+            } إلى «${producedItem?.name ?? ""}»${weightNote}` +
+            (producedCostUpdated ? ` بتكلفة ${producedUnitCost} للوحدة` : "")
+          : `${consumed}. لم يُسجَّل عدد الوحدات المنتجة بعد — يمكن تسجيله لاحقاً على الحركة نفسها`;
+    } else if (itemCostUpdated) {
+      message = `تم تسجيل الحركة وتحديث سعر وحدة الصنف إلى ${invoiceCost} حسب الفاتورة`;
+    }
+
     res.status(201).json({
       ok: true,
       movement: saved,
+      producedMovement,
+      manufacturing,
       bookBalance,
       itemCostUpdated,
+      producedCostUpdated,
       newBalance:
         movementType === "count"
           ? quantity
           : round2(movementType === "in" ? bookBalance + quantity : bookBalance - quantity),
-      message:
-        movementType === "count"
-          ? `تم تسجيل الجرد. الفرق عن الرصيد الدفتري: ${variance}`
-          : itemCostUpdated
-            ? `تم تسجيل الحركة وتحديث سعر وحدة الصنف إلى ${invoiceCost} حسب الفاتورة`
-            : "تم تسجيل الحركة",
+      message,
     });
   },
 );
@@ -328,6 +603,7 @@ inventoryRouter.delete(
   "/inventory/movements/:id",
   requireAuth,
   requirePermission(PERMISSIONS.inventoryItemsManage),
+  requireModuleDelete("inventory_movements"),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -349,18 +625,173 @@ inventoryRouter.delete(
       return;
     }
 
+    /**
+     * حركتا التصنيع طرفان لعملية واحدة: حذف أحدهما دون الآخر يترك المخزون
+     * غير متوازن، فيُحذف الطرفان معاً أياً كان الطرف المطلوب حذفه.
+     */
+    const linkedId = before.linkedMovementId;
+    const [linked] =
+      linkedId === null
+        ? []
+        : await db
+            .select()
+            .from(inventoryMovements)
+            .where(eq(inventoryMovements.id, linkedId))
+            .limit(1);
+
     await db.delete(inventoryMovements).where(eq(inventoryMovements.id, id));
+    if (linked) {
+      await db.delete(inventoryMovements).where(eq(inventoryMovements.id, linked.id));
+    }
 
     await recordAudit({
       actorEmployeeId: actor.id,
       action: "inventory.movement.delete",
       entityType: "inventory_movements",
       entityId: id,
-      before,
+      before: linked ? { movement: before, linked } : before,
       ipAddress: clientIp(req),
     });
 
-    res.json({ ok: true, message: "تم حذف الحركة" });
+    res.json({
+      ok: true,
+      message: linked ? "تم حذف طرفَي عملية التصنيع" : "تم حذف الحركة",
+    });
+  },
+);
+
+/**
+ * إكمال عملية تصنيع سُجِّل خامها دون عدد وحداتها: يُدخل المسؤول عدد الوحدات
+ * أو وزن الوحدة (والثالث يُحسب من الخام المسجَّل)، فتُنشأ حركة إضافة المنتج
+ * النهائي وتُربط بحركة الخام. لا يُعاد فتح عملية اكتملت — تُحذف وتُسجَّل من
+ * جديد كي لا يختلّ الرصيد بتعديل صامت.
+ */
+inventoryRouter.patch(
+  "/inventory/movements/:id/production",
+  requireAuth,
+  requirePermission(PERMISSIONS.inventoryWrite),
+  requireModuleLevel("inventory_movements", 3),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const id = asId(req.params.id);
+
+    if (id === null) {
+      res.status(400).json({ ok: false, error: "معرّف الحركة غير صالح" });
+      return;
+    }
+
+    const [movement] = await db
+      .select()
+      .from(inventoryMovements)
+      .where(eq(inventoryMovements.id, id))
+      .limit(1);
+
+    if (!movement) {
+      res.status(404).json({ ok: false, error: "الحركة غير موجودة" });
+      return;
+    }
+
+    if (movement.movementType !== "manufacture") {
+      res.status(400).json({ ok: false, error: "هذه الحركة ليست عملية تصنيع" });
+      return;
+    }
+
+    if (movement.linkedMovementId !== null || movement.producedUnits > 0) {
+      res.status(409).json({
+        ok: false,
+        error: "عدد الوحدات مسجَّل لهذه العملية — احذف الحركة وسجّلها من جديد لتصحيحه",
+      });
+      return;
+    }
+
+    const producedItemId = movement.producedItemId ?? asId(body.producedItemId);
+    if (producedItemId === null) {
+      res.status(400).json({ ok: false, error: "اختر المنتج النهائي الناتج عن التصنيع" });
+      return;
+    }
+
+    const [producedItem] = await db
+      .select()
+      .from(inventoryItems)
+      .where(eq(inventoryItems.id, producedItemId))
+      .limit(1);
+
+    if (!producedItem) {
+      res.status(404).json({ ok: false, error: "المنتج النهائي غير موجود" });
+      return;
+    }
+
+    // وحدة المادة الخام تُحدّد معامل تحويل وزن الوحدة، فتُقرأ من صنف الحركة
+    const [rawItem] = await db
+      .select({ unit: inventoryItems.unit })
+      .from(inventoryItems)
+      .where(eq(inventoryItems.id, movement.itemId))
+      .limit(1);
+
+    // الخام مسجَّل سلفاً، فالمطلوب هنا عدد الوحدات أو وزن الوحدة ليُحسب الآخر
+    const resolved = resolveManufacturing({
+      rawQuantity: movement.quantity,
+      producedUnits: asNumber(body.producedUnits),
+      unitWeight: asNumber(body.unitWeight),
+      rawUnit: rawItem?.unit ?? "",
+      weightUnit: body.unitWeightUnit ?? movement.unitWeightUnit,
+    });
+
+    if (resolved.producedUnits <= 0) {
+      res.status(400).json({ ok: false, error: "أدخل عدد الوحدات المنتجة أو وزن الوحدة" });
+      return;
+    }
+
+    const created = await createProducedMovement({
+      rawMovementId: movement.id,
+      branchId: movement.branchId,
+      producedItem,
+      businessDate: movement.businessDate,
+      producedUnits: resolved.producedUnits,
+      unitWeight: resolved.unitWeight,
+      unitWeightUnit: resolved.unitWeightUnit,
+      rawTotalCost: movement.totalCost,
+      reference: movement.reference,
+      notes: movement.notes,
+      actorId: actor.id,
+      ipAddress: clientIp(req),
+    });
+
+    const [updated] = await db
+      .update(inventoryMovements)
+      .set({
+        producedItemId,
+        producedUnits: resolved.producedUnits,
+        unitWeight: resolved.unitWeight,
+        unitWeightUnit: resolved.unitWeightUnit,
+        linkedMovementId: created.movement?.id ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(inventoryMovements.id, movement.id))
+      .returning();
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "inventory.movement.manufacture_complete",
+      entityType: "inventory_movements",
+      entityId: movement.id,
+      before: movement,
+      after: updated,
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      movement: updated,
+      producedMovement: created.movement,
+      manufacturing: resolved,
+      message: `تم تسجيل ${resolved.producedUnits} ${producedItem.unit} من «${producedItem.name}» وإضافتها للمخزون` +
+        (resolved.unitWeight > 0
+          ? ` بوزن ${resolved.unitWeight} ${resolved.unitWeightUnit} للوحدة`
+          : ""),
+    });
   },
 );
 
@@ -411,8 +842,10 @@ export async function loadDailySheet(
   for (const row of todayRows) {
     const entry = byItem.get(row.itemId) ?? { in: 0, out: 0, count: null };
     if (row.movementType === "in") entry.in = round2(entry.in + row.quantity);
-    else if (row.movementType === "out") entry.out = round2(entry.out + row.quantity);
-    else entry.count = row.quantity;
+    else if (row.movementType === "out" || row.movementType === "manufacture") {
+      // التصنيع استهلاك للخام كالإخراج تماماً في ورقة الجرد
+      entry.out = round2(entry.out + row.quantity);
+    } else entry.count = row.quantity;
     byItem.set(row.itemId, entry);
   }
 
@@ -475,6 +908,10 @@ inventoryRouter.get(
       canRead: await hasAnyPermission(req, [PERMISSIONS.inventoryRead]),
       canWrite: await hasAnyPermission(req, [PERMISSIONS.inventoryWrite]),
       canManageItems: await hasAnyPermission(req, [PERMISSIONS.inventoryItemsManage]),
+      // درجتا الحذف مستقلتان عن الإضافة والتعديل، ولكل بند درجته
+      canDeleteMovements: await hasModuleDelete(req, "inventory_movements"),
+      canDeleteItems: await hasModuleDelete(req, "inventory_items"),
+      canEditItems: await hasModuleLevel(req, "inventory_items", 3),
     });
   },
 );

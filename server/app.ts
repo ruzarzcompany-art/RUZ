@@ -15,10 +15,11 @@ import { isValidCoordinates } from "./geo.js";
 import { hashPassword, verifyPassword } from "./passwords.js";
 import { consumeResetCode, createResetRequest } from "./reset.js";
 import {
-  effectivePermissionCodes,
+  accessProfile,
   PERMISSIONS,
   requirePermission,
 } from "./rbac.js";
+import { accessRouter } from "./routes/access.js";
 import { adminRouter } from "./routes/admin.js";
 import { attendanceRouter } from "./routes/attendance.js";
 import { cashierRouter } from "./routes/cashier.js";
@@ -153,6 +154,13 @@ export function createApp() {
       .set({ lastLoginAt: new Date() })
       .where(eq(employees.id, employee.id));
 
+    // الرموز الذرّية ودرجات البنود معاً — الواجهة تخفي بناءً عليها، والخادم
+    // يعيد حسابها في كل طلب فلا تُغني عن الفحص هناك.
+    const profile = await accessProfile({
+      employeeId: employee.id,
+      roleId: employee.roleId,
+    });
+
     res.json({
       ok: true,
       token,
@@ -164,10 +172,9 @@ export function createApp() {
         jobTitle: employee.jobTitle,
         branchId: employee.branchId,
       },
-      permissions: await effectivePermissionCodes({
-        employeeId: employee.id,
-        roleId: employee.roleId,
-      }),
+      permissions: profile.codes,
+      moduleLevels: profile.moduleLevels,
+      moduleDelete: profile.moduleDelete,
     });
   });
 
@@ -205,6 +212,11 @@ export function createApp() {
       branchManagerName = manager?.fullName ?? null;
     }
 
+    const profile = await accessProfile({
+      employeeId: employee.id,
+      roleId: employee.roleId,
+    });
+
     res.json({
       ok: true,
       employee: {
@@ -215,10 +227,9 @@ export function createApp() {
         role: employee.roleName,
       },
       branch: branch ? { ...branch, managerName: branchManagerName } : null,
-      permissions: await effectivePermissionCodes({
-        employeeId: employee.id,
-        roleId: employee.roleId,
-      }),
+      permissions: profile.codes,
+      moduleLevels: profile.moduleLevels,
+      moduleDelete: profile.moduleDelete,
       serverTime: new Date().toISOString(),
     });
   });
@@ -422,7 +433,8 @@ export function createApp() {
   // ------------------------------------------------------- الحضور والنماذج
   // الحضور (مع الموقع الجغرافي ومطابقة الوجه)، الشاشات الإدارية،
   // نماذج الموارد البشرية، مسير الرواتب، ملفات الموظفين والجداول، والتقارير،
-  // ثم الإعدادات الشاملة وتقفيل الكاشير والمخزون وحزمة النماذج المطبوعة.
+  // ثم الإعدادات الشاملة وتقفيل الكاشير والمخزون وحزمة النماذج المطبوعة،
+  // وأخيراً إدارة الصلاحيات المتدرّجة.
   app.use("/api", attendanceRouter);
   app.use("/api", adminRouter);
   app.use("/api", formsRouter);
@@ -433,6 +445,7 @@ export function createApp() {
   app.use("/api", cashierRouter);
   app.use("/api", inventoryRouter);
   app.use("/api", documentsRouter);
+  app.use("/api", accessRouter);
 
   app.use("/api", (_req: Request, res: Response) => {
     res.status(404).json({ ok: false, error: "المسار غير موجود" });

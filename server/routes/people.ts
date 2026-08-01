@@ -34,6 +34,8 @@ import {
   PERMISSIONS,
   permissionCodesForRole,
   requireAnyPermission,
+  requireModuleDelete,
+  requireModuleLevel,
   requirePermission,
   SECTION_CATALOG,
 } from "../rbac.js";
@@ -462,6 +464,7 @@ peopleRouter.delete(
   "/employees/:id",
   requireAuth,
   requirePermission(PERMISSIONS.employeesWrite),
+  requireModuleDelete("employees"),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -1114,6 +1117,7 @@ peopleRouter.put(
   "/employees/:id/permissions",
   requireAuth,
   requirePermission(PERMISSIONS.permissionsManage),
+  requireModuleLevel("access_control", 3),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;

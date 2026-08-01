@@ -18,8 +18,12 @@ import { clientIp, recordAudit } from "../audit.js";
 import { DEMO_EMPLOYEE_CODES } from "../demo.js";
 import {
   hasAnyPermission,
+  hasModuleDelete,
+  hasModuleLevel,
   PERMISSIONS,
   requireAnyPermission,
+  requireModuleDelete,
+  requireModuleLevel,
   requirePermission,
 } from "../rbac.js";
 import {
@@ -67,6 +71,12 @@ interface ResourceSpec {
   managePermission: string;
   readAllPermission: string;
   approvePermission?: string;
+  /**
+   * بند شاشة «إدارة الصلاحيات» المقابل. يُفحص مع رمز الصلاحية حتى لا يتجاوز
+   * صاحب درجة أدنى سقفه في النماذج التي يتشارك فيها رمز واحد أكثر من درجة
+   * (مثل `bonuses.manage` للتسجيل والتعديل والاعتماد معاً).
+   */
+  moduleKey: string;
   /** جدول قد يكون بلا موظف مرتبط (السندات) */
   ownerOptional?: boolean;
   dateColumn?: string;
@@ -78,6 +88,7 @@ const DECISION_STATUSES = ["pending", "approved", "rejected"] as const;
 const RESOURCES: ResourceSpec[] = [
   {
     key: "advances",
+    moduleKey: "advances",
     labelAr: "طلب سلفة",
     table: advances,
     entity: "advances",
@@ -106,6 +117,7 @@ const RESOURCES: ResourceSpec[] = [
   },
   {
     key: "overtime",
+    moduleKey: "overtime",
     labelAr: "طلب أوفرتايم",
     table: overtimeRequests,
     entity: "overtime_requests",
@@ -124,6 +136,7 @@ const RESOURCES: ResourceSpec[] = [
   },
   {
     key: "leaves",
+    moduleKey: "leaves",
     labelAr: "طلب إجازة",
     table: leaveRequests,
     entity: "leave_requests",
@@ -150,6 +163,7 @@ const RESOURCES: ResourceSpec[] = [
   },
   {
     key: "bonuses",
+    moduleKey: "bonuses",
     labelAr: "مكافأة",
     table: bonuses,
     entity: "bonuses",
@@ -167,6 +181,7 @@ const RESOURCES: ResourceSpec[] = [
   },
   {
     key: "custody",
+    moduleKey: "custody",
     labelAr: "إخراج عهدة",
     table: custodyItems,
     entity: "custody_items",
@@ -200,6 +215,7 @@ const RESOURCES: ResourceSpec[] = [
   },
   {
     key: "vouchers",
+    moduleKey: "vouchers",
     labelAr: "سند",
     table: vouchers,
     entity: "vouchers",
@@ -244,6 +260,7 @@ const RESOURCES: ResourceSpec[] = [
   },
   {
     key: "contracts",
+    moduleKey: "contracts",
     labelAr: "عقد عمل",
     table: contracts,
     entity: "contracts",
@@ -656,7 +673,10 @@ for (const resource of RESOURCES) {
     async (req: AuthedRequest, res: Response) => {
       const db = getDb();
       const actor = req.employee!;
-      const canManage = await hasAnyPermission(req, [resource.managePermission]);
+      // إدارة النموذج تتطلب الرمز **ودرجة «تسجيل حركة»** على الأقل في البند
+      const canManage =
+        (await hasAnyPermission(req, [resource.managePermission])) &&
+        (await hasModuleLevel(req, resource.moduleKey, 2));
 
       const requestedOwner = asId(req.body?.employeeId);
       const isSelf = requestedOwner === null || requestedOwner === actor.id;
@@ -753,7 +773,10 @@ for (const resource of RESOURCES) {
       }
 
       const record = before as Record<string, unknown>;
-      const canManage = await hasAnyPermission(req, [resource.managePermission]);
+      // التعديل على نماذج الآخرين درجة «إضافة/تعديل/حذف» لا «تسجيل حركة»
+      const canManage =
+        (await hasAnyPermission(req, [resource.managePermission])) &&
+        (await hasModuleLevel(req, resource.moduleKey, 3));
       const isOwner = record.employeeId === actor.id;
       const isPending = !resource.decidable || record.status === "pending";
 
@@ -821,6 +844,7 @@ for (const resource of RESOURCES) {
       `/forms/${resource.key}/:id/decision`,
       requireAuth,
       requireAnyPermission(resource.approvePermission ?? resource.managePermission),
+      requireModuleLevel(resource.moduleKey, 4),
       async (req: AuthedRequest, res: Response) => {
         const db = getDb();
         const actor = req.employee!;
@@ -925,7 +949,10 @@ for (const resource of RESOURCES) {
       }
 
       const record = before as Record<string, unknown>;
-      const canManage = await hasAnyPermission(req, [resource.managePermission]);
+      // الحذف درجة مستقلة: «إضافة/تعديل» وحدها لا تكفي لحذف نموذج
+      const canManage =
+        (await hasAnyPermission(req, [resource.managePermission])) &&
+        (await hasModuleDelete(req, resource.moduleKey));
       const isOwner = record.employeeId === actor.id;
       const isPending = resource.decidable && record.status === "pending";
 
@@ -955,6 +982,7 @@ for (const resource of RESOURCES) {
     `/forms/${resource.key}/purge/preview`,
     requireAuth,
     requirePermission(resource.managePermission),
+    requireModuleDelete(resource.moduleKey),
     async (req: AuthedRequest, res: Response) => {
       const db = getDb();
       const scope = asEnum(req.query.scope, PURGE_SCOPES) ?? "before";
@@ -986,6 +1014,7 @@ for (const resource of RESOURCES) {
     `/forms/${resource.key}/purge`,
     requireAuth,
     requirePermission(resource.managePermission),
+    requireModuleDelete(resource.moduleKey),
     async (req: AuthedRequest, res: Response) => {
       const db = getDb();
       const actor = req.employee!;
@@ -1082,6 +1111,7 @@ formsRouter.put(
   "/forms/salary/:employeeId",
   requireAuth,
   requirePermission(PERMISSIONS.salaryManage),
+  requireModuleLevel("salary", 3),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;

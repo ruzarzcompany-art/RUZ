@@ -42,6 +42,8 @@ const state = {
   serverOffsetMs: 0,
   branch: null,
   permissions: [],
+  /** درجة الموظف في كل بند (0..4) كما حسبها الخادم بعد تطبيق قواعد الصلاحيات. */
+  moduleLevels: {},
   nextType: "check_in",
   busy: false,
   lastPunchAt: 0,
@@ -57,10 +59,10 @@ const state = {
     supported: isFaceCaptureSupported(),
   },
   myResource: "advances",
-  /** القسم الإضافي المعروض من القائمة العلوية */
-  panel: "requests",
-  /** الأقسام الإضافية المسموحة لهذا الموظف */
-  allowedPanels: new Set(["requests", "password"]),
+  /** الصفحة المعروضة من قائمة التنقّل */
+  panel: "punch",
+  /** صفحات التطبيق المسموحة لهذا الموظف (الحضور صفحة الجميع) */
+  allowedPanels: new Set(["punch", "requests", "password"]),
   /** آخر اسم موظف مسجَّل — يُعرض مع لقطة المطابقة */
   fullName: "",
   schema: null,
@@ -68,6 +70,9 @@ const state = {
   /** هل يستطيع الموقع إرسال رمز الاستعادة بالبريد؟ */
   resetByEmail: false,
 };
+
+/** درجة الموظف في بند معيّن كما حسبها الخادم (0 = ممنوع). */
+const levelOf = (moduleKey) => Number(state.moduleLevels[moduleKey] ?? 0);
 
 /* ── التنقّل بين الشاشات ───────────────────────────────────── */
 
@@ -430,16 +435,23 @@ async function renderMyForm() {
   await refreshMyForms();
 }
 
-/* ── قائمة الإضافات العلوية ────────────────────────────────── */
+/* ── صفحات التطبيق وقائمة التنقّل ──────────────────────────── */
 
-/** أقسام القائمة العلوية: الطلبات، الملف الوظيفي، تغيير كلمة المرور. */
+/**
+ * صفحات التطبيق: لكل بند في قائمة التنقّل صفحته الكاملة، فاختيار «حركة
+ * المخزون» مثلاً يستبدل الشاشة كلها ولا يُلحق قسماً أسفل الساعة وزر البصمة.
+ * صفحة «الحضور» تضم الساعة والبصمة وسجل اليوم، وهي صفحة كل الحسابات.
+ */
 const EXTRA_PANELS = [
+  { key: "punch", nodeId: "page-punch" },
   { key: "requests", nodeId: "panel-requests" },
   { key: "file", nodeId: "file-card" },
+  { key: "cashier", nodeId: "panel-cashier" },
+  { key: "inventory", nodeId: "panel-inventory" },
   { key: "password", nodeId: "panel-password" },
 ];
 
-/** يعرض القسم المختار من القائمة ويخفي البقية (والممنوع يُخفى زره أيضاً). */
+/** يعرض الصفحة المختارة ويخفي البقية (والممنوعة يُخفى زرها أيضاً). */
 function paintPanels() {
   for (const panel of EXTRA_PANELS) {
     const allowed = state.allowedPanels.has(panel.key);
@@ -449,17 +461,35 @@ function paintPanels() {
     const tab = el("extras-nav").querySelector(`[data-panel="${panel.key}"]`);
     if (!tab) continue;
     tab.hidden = !allowed;
-    tab.classList.toggle("is-active", allowed && state.panel === panel.key);
+    const active = allowed && state.panel === panel.key;
+    tab.classList.toggle("is-active", active);
+    // قارئ الشاشة يحتاج معرفة الصفحة الحالية لا لونها فقط
+    tab.setAttribute("aria-current", active ? "page" : "false");
   }
 }
 
-/** ينتقل إلى قسم إضافي ويحمّل بياناته عند الحاجة. */
+/** ينتقل إلى صفحة ويحمّل بياناتها عند الحاجة. */
 async function showPanel(key) {
   if (!state.allowedPanels.has(key)) return;
   state.panel = key;
   paintPanels();
+  // الانتقال صفحة كاملة: تبدأ من أعلاها لا من موضع تمرير الصفحة السابقة
+  window.scrollTo({ top: 0, behavior: "instant" });
 
   if (key === "file") await refreshMyFile();
+
+  // شاشتا التقفيل والمخزون تُحمَّلان عند أول فتح فقط — أغلب الموظفين لا يفتحونهما
+  if (key === "cashier") {
+    const module = await import("./self-cashier.js");
+    module.initSelfCashier();
+    await module.refreshSelfCashier();
+  }
+
+  if (key === "inventory") {
+    const module = await import("./self-inventory.js");
+    module.initSelfInventory();
+    await module.refreshSelfInventory();
+  }
 }
 
 /* ── ملفي الوظيفي ─────────────────────────────────────────── */
@@ -473,7 +503,7 @@ async function refreshMyFile() {
   if (!result.ok) {
     // الملف غير متاح لهذا الحساب: يُسحب من قائمة الإضافات بدل عرض قسم فارغ
     state.allowedPanels.delete("file");
-    if (state.panel === "file") state.panel = "requests";
+    if (state.panel === "file") state.panel = "punch";
     paintPanels();
     return;
   }
@@ -528,6 +558,7 @@ async function loadProfile() {
 
   state.branch = result.branch;
   state.permissions = result.permissions ?? [];
+  state.moduleLevels = result.moduleLevels ?? {};
   state.fullName = result.employee.fullName;
   state.serverOffsetMs = new Date(result.serverTime).getTime() - Date.now();
 
@@ -540,10 +571,18 @@ async function loadProfile() {
   el("set-branch").hidden = !(state.permissions.includes("branches.write") && state.branch);
   el("admin-link").hidden = !state.permissions.some((code) => ADMIN_PERMISSIONS.includes(code));
 
-  // أقسام القائمة العلوية: الملف الوظيفي قابل للتعطيل لموظف بعينه
-  state.allowedPanels = new Set(["requests", "password"]);
+  // أقسام القائمة العلوية: الملف الوظيفي قابل للتعطيل لموظف بعينه، والتقفيل
+  // وحركة المخزون يظهران لمن بلغت درجته في البند «تسجيل» (2) فأعلى — وهي
+  // الدرجة التي يفرضها الخادم نفسه على الرفع، فلا تُعرض شاشة لا تُقبل منها.
+  state.allowedPanels = new Set(["punch", "requests", "password"]);
   if (state.permissions.includes("sections.employee_file")) state.allowedPanels.add("file");
-  if (!state.allowedPanels.has(state.panel)) state.panel = "requests";
+  if (levelOf("cashier_closing") >= 2 && state.permissions.includes("cashier.submit")) {
+    state.allowedPanels.add("cashier");
+  }
+  if (levelOf("inventory_movements") >= 2 && state.permissions.includes("inventory.write")) {
+    state.allowedPanels.add("inventory");
+  }
+  if (!state.allowedPanels.has(state.panel)) state.panel = "punch";
   paintPanels();
 
   el("punch-btn").disabled = false;

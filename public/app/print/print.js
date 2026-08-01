@@ -30,6 +30,8 @@ import {
   documentFooter,
   documentHeader,
   documentMeta,
+  employeeFieldsForDoc,
+  identityForDoc,
   loadIdentity,
   paperNote,
   PAPER_CHOICES,
@@ -228,9 +230,20 @@ async function renderPackaged(company) {
 
   // إعدادات المؤسسة القادمة مع البيانات أحدث من النسخة المخزَّنة محلياً،
   // ويبقى اختيار المستخدم للورق فوقها لأنه يطابق الطابعة الفعلية.
-  const identity = withPaper({ ...company, ...(result.company ?? {}) }, readPaperPreference());
+  // تُعاد التنقية بعد الدمج لأن النسخة الأحدث تُرجع الهوية كاملة.
+  const identity = withPaper(
+    identityForDoc({ ...company, ...(result.company ?? {}) }, docKey),
+    readPaperPreference(),
+  );
   applyDesign(identity);
   setupPaperControls(identity);
+
+  // القوالب تقرأ `data.company` في متن بعض المستندات (أطراف العقد مثلاً)،
+  // فتأخذ النسخة المُنقّاة نفسها: البند المخفي يختفي عن الورقة كلها لا عن
+  // ترويستها وحدها.
+  result.company = identity;
+  // وتخصيص بيانات الموظف يصل القوالب في المفتاح نفسه لكل نماذج الحزمة
+  result.employeeFields = employeeFieldsForDoc(docKey);
 
   const subtitleParts = [
     result.employee ? `${result.employee.fullName} — ${result.employee.employeeCode}` : "",
@@ -250,9 +263,10 @@ async function renderPackaged(company) {
     subtitle: subtitleParts.join(" | "),
     meta: [
       ["التاريخ", result.today],
-      ["الفرع", result.branch?.name],
+      // فرع الموظف يخضع لتخصيص النموذج كي لا يظهر في الترويسة بعد إخفائه من الجدول
+      result.employeeFields?.showBranch === false ? null : ["الفرع", result.branch?.name],
       ["أصدره", result.issuedBy?.fullName],
-    ],
+    ].filter(Boolean),
     body: template.render(result),
     signLabels: template.signatures,
     notice: result.legalNotice,
@@ -335,22 +349,26 @@ async function renderLegacyPayroll(company) {
   notes.className = "sheet__note";
   notes.textContent = slip.notes ? `ملاحظات: ${slip.notes}` : "";
 
+  // المسار المباشر يبني سطوره بنفسه، فيقرأ تخصيص «مسير الراتب» هنا كي يخضع
+  // للقاعدة نفسها التي تخضع لها نماذج الحزمة
+  const employeeFields = employeeFieldsForDoc(docKey) ?? {};
+  const identityRows = [
+    ["الموظف", `${slip.employeeCode ?? ""} — ${slip.fullName ?? ""}`],
+    employeeFields.showJobTitle === false ? null : ["المسمى الوظيفي", slip.jobTitle],
+    employeeFields.showBranch === false ? null : ["الفرع", slip.branchName],
+    ["الشهر", slip.period],
+    ["ساعات العمل الفعلية", `${slip.workedHours ?? 0} ساعة`],
+    ["أجر الساعة", formatMoney(slip.hourlyRate, currency)],
+  ].filter(Boolean);
+
   compose(company, {
     title: "مسير راتب شهري",
     subtitle: `الشهر ${slip.period} — ${slip.fullName ?? ""}`,
-    meta: [["الفرع", slip.branchName], ["الرقم الوظيفي", slip.employeeCode]],
-    body: [
-      pairs([
-        ["الموظف", `${slip.employeeCode ?? ""} — ${slip.fullName ?? ""}`],
-        ["المسمى الوظيفي", slip.jobTitle],
-        ["الفرع", slip.branchName],
-        ["الشهر", slip.period],
-        ["ساعات العمل الفعلية", `${slip.workedHours ?? 0} ساعة`],
-        ["أجر الساعة", formatMoney(slip.hourlyRate, currency)],
-      ]),
-      table,
-      slip.notes ? notes : null,
-    ],
+    meta: [
+      employeeFields.showBranch === false ? null : ["الفرع", slip.branchName],
+      ["الرقم الوظيفي", slip.employeeCode],
+    ].filter(Boolean),
+    body: [pairs(identityRows), table, slip.notes ? notes : null],
     signLabels: ["الموظف", "الموارد البشرية", "المدير المالي"],
   });
 }
@@ -377,25 +395,26 @@ async function renderLegacyContract(company) {
     terms.append(title, text);
   }
 
+  // نفس تخصيص «عقد العمل» يسري على مساره المباشر كي لا يختلف المخرَجان
+  const contractFields = employeeFieldsForDoc(docKey) ?? {};
+  const contractRows = [
+    ["الموظف", `${contract.employeeCode ?? ""} — ${contract.fullName ?? ""}`],
+    contractFields.showJobTitle === false ? null : ["المسمى الوظيفي", contract.jobTitle],
+    ["تاريخ البداية", contract.startDate],
+    ["تاريخ النهاية", contract.endDate ?? "غير محدّد (عقد مفتوح)"],
+    ["الراتب الأساسي", formatMoney(contract.basicSalary)],
+    ["إجمالي البدلات", formatMoney(contract.allowancesTotal)],
+    ["فترة التجربة", `${contract.probationMonths ?? 0} شهر`],
+    ["ساعات العمل", contract.workingHours],
+    ["حالة العقد", label(contract.status)],
+    ["تاريخ التوقيع", contract.signedAt ?? "—"],
+  ].filter(Boolean);
+
   compose(company, {
     title: "عقد عمل",
     subtitle: `رقم العقد ${contract.contractNumber ?? "—"}`,
     meta: [["التاريخ", contract.startDate]],
-    body: [
-      pairs([
-        ["الموظف", `${contract.employeeCode ?? ""} — ${contract.fullName ?? ""}`],
-        ["المسمى الوظيفي", contract.jobTitle],
-        ["تاريخ البداية", contract.startDate],
-        ["تاريخ النهاية", contract.endDate ?? "غير محدّد (عقد مفتوح)"],
-        ["الراتب الأساسي", formatMoney(contract.basicSalary)],
-        ["إجمالي البدلات", formatMoney(contract.allowancesTotal)],
-        ["فترة التجربة", `${contract.probationMonths ?? 0} شهر`],
-        ["ساعات العمل", contract.workingHours],
-        ["حالة العقد", label(contract.status)],
-        ["تاريخ التوقيع", contract.signedAt ?? "—"],
-      ]),
-      contract.terms ? terms : null,
-    ],
+    body: [pairs(contractRows), contract.terms ? terms : null],
     signLabels: ["الطرف الأول (المنشأة)", "الطرف الثاني (الموظف)"],
     notice:
       "هذا النموذج صيغة عامة لأغراض تنظيمية داخلية، وليس استشارة قانونية رسمية. " +
@@ -496,7 +515,12 @@ async function boot() {
     return;
   }
 
-  const company = withPaper(await loadIdentity(), readPaperPreference());
+  // هوية المؤسسة تُنقّى مرة واحدة بحسب النموذج المطلوب، فتسري على مسار حزمة
+  // النماذج والمسارات المباشرة (المسير/العقد/السند) معاً
+  const company = withPaper(
+    identityForDoc(await loadIdentity(), docKey),
+    readPaperPreference(),
+  );
   applyDesign(company);
   setupPaperControls(company);
 

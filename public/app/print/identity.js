@@ -48,6 +48,7 @@ const FALLBACK = {
 };
 
 let cached = null;
+let cachedFields = {};
 
 /** يقرأ إعدادات المؤسسة مرة واحدة لكل صفحة طباعة. */
 export async function loadIdentity() {
@@ -55,7 +56,75 @@ export async function loadIdentity() {
   const result = await api("/settings/company");
   cached =
     result.ok && result.settings ? { ...FALLBACK, ...result.settings } : { ...FALLBACK };
+  cachedFields = (result.ok && result.printFields) || {};
   return cached;
+}
+
+/**
+ * ما يُلغيه إخفاء كل حقل: تفريغ النص كافٍ لأن كل من يعرضه يتجاهل الفراغ
+ * (`filter(Boolean)` في الترويسة والتذييل).
+ */
+const FIELD_BLANKS = {
+  showCompanyName: ["companyName"],
+  showCompanyNameEn: ["companyNameEn"],
+  showCommercialRegister: ["commercialRegister"],
+  showTaxNumber: ["taxNumber"],
+  showAddress: ["address"],
+  showCity: ["city"],
+  showCountry: ["country"],
+  showPhone: ["phone"],
+  showEmail: ["email"],
+  showWebsite: ["website"],
+  showHeaderNote: ["headerNote"],
+  showFooterNote: ["footerNote"],
+};
+
+/** حقول يحكمها مفتاح منطقي في كائن الهوية نفسه. */
+const FIELD_SWITCHES = {
+  showLogo: "showLogo",
+  showFooter: "showFooter",
+  showSignatures: "showSignatures",
+  showWatermark: "showWatermark",
+};
+
+/**
+ * هوية المؤسسة كما يجب أن تظهر على مطبوعة نموذج بعينه: نسخة مُنقّاة من
+ * الإعدادات العامة بحسب ما اختاره المسؤول لهذا النموذج في
+ * `document_identity_fields`.
+ *
+ * التنقية إخفاء فقط ولا تُفعّل شيئاً، فتبقى مفاتيح الإعدادات العامة
+ * (الشعار، التذييل، التوقيعات، العلامة المائية) هي السلطة الأعلى: ما أغلقته
+ * عامّاً لا يُعيده تخصيص نموذج. والنموذج الذي لم يُخصَّص يعود بالكائن نفسه.
+ */
+export function identityForDoc(company, docKey) {
+  const fields = cachedFields[docKey];
+  if (!fields) return company;
+
+  const scoped = { ...company };
+
+  for (const [key, targets] of Object.entries(FIELD_BLANKS)) {
+    if (fields[key] === false) {
+      for (const target of targets) scoped[target] = "";
+    }
+  }
+
+  for (const [key, target] of Object.entries(FIELD_SWITCHES)) {
+    if (fields[key] === false) scoped[target] = false;
+  }
+
+  // اسم المؤسسة: تفريغ النص وحده لا يكفي، فالترويسة تستبدله بالاسم الافتراضي
+  if (fields.showCompanyName === false) scoped.hideCompanyName = true;
+
+  return scoped;
+}
+
+/**
+ * تخصيص بيانات الموظف لمطبوعة نموذج بعينه، كما هو محفوظ (أو `null` للنموذج
+ * الذي لم يُخصَّص). القوالب تقرأه بقاعدة «الغائب ظاهر» (`!== false`) فلا
+ * تُكرَّر القيم الافتراضية في المتصفح.
+ */
+export function employeeFieldsForDoc(docKey) {
+  return cachedFields[docKey] ?? null;
 }
 
 /**
@@ -153,9 +222,11 @@ export function documentHeader(company, title, subtitle) {
 
   const text = document.createElement("div");
   text.className = "sheet__brand-text";
-  const name = document.createElement("h2");
-  name.textContent = company.companyName || FALLBACK.companyName;
-  text.append(name);
+  if (!company.hideCompanyName) {
+    const name = document.createElement("h2");
+    name.textContent = company.companyName || FALLBACK.companyName;
+    text.append(name);
+  }
 
   const identityLines = [
     company.companyNameEn,

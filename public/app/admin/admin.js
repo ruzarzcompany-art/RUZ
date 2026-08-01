@@ -50,6 +50,7 @@ import { initSettingsModule, refreshSettingsPanel } from "./settings.js";
 import { initCashierModule, refreshCashierPanel } from "./cashier.js";
 import { initInventoryModule, refreshInventoryPanel } from "./inventory.js";
 import { initDocumentsModule, refreshDocumentsPanel } from "./documents.js";
+import { initAccessModule, refreshAccessPanel } from "./access.js";
 import { createPager } from "../pagination.js";
 
 /** تقسيم صفحات جداول لوحة الموارد البشرية (العدد الافتراضي موحَّد في `pagination.js`). */
@@ -67,6 +68,10 @@ const pagers = {
 
 const state = {
   permissions: [],
+  /** درجة كل بند كما حسبها الخادم: `moduleKey → 0..4` */
+  moduleLevels: {},
+  /** درجة الحذف المستقلة لكل بند: `moduleKey → true/false` */
+  moduleDelete: {},
   employees: [],
   branches: [],
   schema: null,
@@ -77,6 +82,19 @@ const state = {
 };
 
 const can = (code) => state.permissions.includes(code);
+
+/**
+ * درجة المستخدم في بند من بنود النظام (0 = لا شيء). تُستخدم لإخفاء ما
+ * سيرفضه الخادم أصلاً — فالرمز الذرّي وحده قد يكون مشتركاً بين درجتين
+ * (مثل `forms.approve` في درجتي التعديل والاعتماد).
+ */
+const levelOf = (moduleKey) => state.moduleLevels[moduleKey] ?? 0;
+
+/**
+ * درجة الحذف مستقلة تماماً عن درجة الإضافة والتعديل: تُمنح أو تُسحب وحدها
+ * من شاشة «إدارة الصلاحيات»، فلا يكفي أن يكون للمستخدم الدرجة الثالثة.
+ */
+const canDeleteIn = (moduleKey) => state.moduleDelete[moduleKey] === true;
 
 /* ── تعبئة القوائم المنسدلة ───────────────────────────────── */
 
@@ -160,13 +178,16 @@ function logActions(log) {
   }
 
   if (can("attendance.manual_write")) {
-    wrap.append(
-      button("تعديل", { onClick: () => startEdit(log) }),
-      button("حذف", {
-        className: "btn btn--danger btn--xs",
-        onClick: () => deleteLog(log),
-      }),
-    );
+    wrap.append(button("تعديل", { onClick: () => startEdit(log) }));
+    // الحذف درجة مستقلة: قد يملك التعديل ولا يملكه
+    if (canDeleteIn("attendance_records")) {
+      wrap.append(
+        button("حذف", {
+          className: "btn btn--danger btn--xs",
+          onClick: () => deleteLog(log),
+        }),
+      );
+    }
   }
 
   return wrap;
@@ -387,7 +408,9 @@ function formActions(resource, item) {
   const wrap = document.createElement("div");
   wrap.className = "row row--tight";
 
-  if (resource.decidable && item.status === "pending") {
+  // القرار يحتاج الدرجة الرابعة في البند، والحذف يحتاج درجة الحذف المستقلة —
+  // نخفي ما سيرفضه الخادم بدلاً من إظهار زر ينتهي برسالة رفض.
+  if (resource.decidable && item.status === "pending" && levelOf(resource.key) >= 4) {
     wrap.append(
       button("اعتماد", {
         className: "btn btn--primary btn--xs",
@@ -407,24 +430,26 @@ function formActions(resource, item) {
     wrap.append(button("طباعة", { onClick: () => openPrint("contract", item.id) }));
   }
 
-  wrap.append(
-    button("حذف", {
-      className: "btn btn--danger btn--xs",
-      onClick: async () => {
-        const reason = window.prompt("سبب الحذف:", "") ?? "";
-        const result = await api(`/forms/${resource.key}/${item.id}`, {
-          method: "DELETE",
-          body: { reason },
-        });
-        setAlert(
-          el("forms-result"),
-          result.ok ? result.message : (result.error ?? "تعذّر الحذف"),
-          result.ok ? "ok" : "error",
-        );
-        if (result.ok) await refreshFormsList();
-      },
-    }),
-  );
+  if (canDeleteIn(resource.key)) {
+    wrap.append(
+      button("حذف", {
+        className: "btn btn--danger btn--xs",
+        onClick: async () => {
+          const reason = window.prompt("سبب الحذف:", "") ?? "";
+          const result = await api(`/forms/${resource.key}/${item.id}`, {
+            method: "DELETE",
+            body: { reason },
+          });
+          setAlert(
+            el("forms-result"),
+            result.ok ? result.message : (result.error ?? "تعذّر الحذف"),
+            result.ok ? "ok" : "error",
+          );
+          if (result.ok) await refreshFormsList();
+        },
+      }),
+    );
+  }
 
   return wrap;
 }
@@ -506,8 +531,9 @@ function applyPurgeScope() {
   const scopeSelect = el("forms-purge-scope");
   const decided = scopeSelect.querySelector('option[value="decided"]');
 
-  // بطاقة التنظيف لا تظهر إلا لمن يملك صلاحية إدارة هذا النموذج
-  el("forms-purge-card").hidden = !resource || !can(resource.managePermission);
+  // بطاقة التنظيف حذفٌ جماعي، فتحتاج درجة الحذف في البند لا مجرد إدارته
+  el("forms-purge-card").hidden =
+    !resource || !can(resource.managePermission) || !canDeleteIn(state.formsResource);
 
   if (decided) {
     decided.disabled = !resource?.decidable;
@@ -675,7 +701,7 @@ async function refreshSavedSlips() {
     actions.className = "row-actions";
     actions.append(button("طباعة", { onClick: () => openPrint("payroll", slip.id) }));
 
-    if (canManage) {
+    if (canManage && canDeleteIn("payroll")) {
       actions.append(
         button("حذف", {
           className: "btn btn--danger btn--xs",
@@ -1055,6 +1081,7 @@ const PANEL_LOADERS = {
   settings: async () => {
     await refreshSettingsPanel(state.employees);
   },
+  access: refreshAccessPanel,
   audit: refreshAudit,
 };
 
@@ -1292,6 +1319,7 @@ const TAB_PERMISSIONS = {
   inventory: ["inventory.read", "inventory.write", "sections.inventory"],
   reports: ["reports.view", "sections.reports"],
   settings: ["settings.manage", "branches.manage", "sections.settings"],
+  access: ["permissions.manage"],
   audit: ["audit.read"],
 };
 
@@ -1323,6 +1351,8 @@ async function boot() {
   watchIdle();
 
   state.permissions = me.permissions ?? [];
+  state.moduleLevels = me.moduleLevels ?? {};
+  state.moduleDelete = me.moduleDelete ?? {};
   el("admin-who").textContent = [
     me.employee.fullName,
     me.employee.employeeCode,
@@ -1363,12 +1393,13 @@ async function boot() {
     if (tab) tab.hidden = !allowedTabs.includes(panel);
   }
 
-  initPeopleModule({ state, can, refreshPeople });
+  initPeopleModule({ state, can, levelOf, canDeleteIn, refreshPeople });
   initReportsModule();
   initSettingsModule({ can, employees: state.employees });
-  initCashierModule({ can });
-  initInventoryModule({ can });
-  initDocumentsModule({ can });
+  initCashierModule({ can, levelOf, canDeleteIn });
+  initInventoryModule({ can, levelOf, canDeleteIn });
+  initDocumentsModule({ can, levelOf, canDeleteIn });
+  initAccessModule({ can });
   await loadPeopleMeta();
 
   if (can("employees.read")) await refreshPeople();

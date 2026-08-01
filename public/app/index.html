@@ -163,121 +163,128 @@
         </div>
       </header>
 
-      <!-- ── قائمة الإضافات ────────────────────────────────────── -->
-      <nav class="tabs tabs--extras" id="extras-nav" aria-label="أقسام إضافية">
-        <button class="tab is-active" type="button" data-panel="requests">الطلبات</button>
+      <!-- ── قائمة الإضافات: كل بند صفحة مستقلة ────────────────── -->
+      <nav class="tabs tabs--extras" id="extras-nav" aria-label="صفحات التطبيق">
+        <button class="tab is-active" type="button" data-panel="punch">الحضور</button>
+        <button class="tab" type="button" data-panel="requests">الطلبات</button>
         <button class="tab" type="button" data-panel="file">الملف الوظيفي</button>
+        <button class="tab" type="button" data-panel="cashier">تقفيل الكاشير</button>
+        <button class="tab" type="button" data-panel="inventory">حركة المخزون</button>
         <button class="tab" type="button" data-panel="password">تغيير كلمة المرور</button>
       </nav>
 
-      <section class="clock" aria-live="off">
-        <p class="clock__label">توقيت الخادم</p>
-        <p id="clock-time" class="clock__time" dir="ltr">--:--:--</p>
-        <p id="clock-date" class="clock__date">—</p>
-      </section>
+      <!-- ── صفحة الحضور: الساعة وزر البصمة وسجل اليوم ─────────── -->
+      <div id="page-punch" class="panel">
+        <section class="clock" aria-live="off">
+          <p class="clock__label">توقيت الخادم</p>
+          <p id="clock-time" class="clock__time" dir="ltr">--:--:--</p>
+          <p id="clock-date" class="clock__date">—</p>
+        </section>
 
-      <section class="punch">
-        <button id="punch-btn" class="punch__btn" type="button" disabled>
-          <span class="punch__ring" aria-hidden="true"></span>
-          <span id="punch-label" class="punch__label">تسجيل حضور</span>
-          <span id="punch-sub" class="punch__sub">اضغط للسماح بالموقع</span>
-        </button>
-      </section>
-
-      <p id="punch-result" class="alert" role="status" hidden></p>
-
-      <!-- ── صورة المطابقة عند التسجيل (على الجهاز فقط) ────────── -->
-      <section id="match-card" class="card card--match" hidden>
-        <div class="card__head">
-          <h2 class="card__title card__title--sm">تأكيد الهوية</h2>
-          <span id="match-badge" class="badge">—</span>
-        </div>
-        <div class="match">
-          <img id="match-photo" class="match__photo" alt="لقطة التحقق من الوجه" />
-          <div class="match__info">
-            <p id="match-name" class="match__name">—</p>
-            <p id="match-meta" class="match__meta">—</p>
-          </div>
-        </div>
-        <p class="hint">
-          هذه اللقطة تُعرض على جهازك للتأكيد البصري فقط، ولا تُرسل إلى الخادم ولا
-          تُخزَّن.
-        </p>
-      </section>
-
-      <!-- ── مطابقة الوجه ──────────────────────────────────────── -->
-      <section id="face-card" class="card card--face" hidden>
-        <div class="card__head">
-          <h2 class="card__title card__title--sm">مطابقة الوجه</h2>
-          <span id="face-badge" class="badge">—</span>
-        </div>
-
-        <div class="face__stage">
-          <video id="face-video" class="face__video" playsinline muted></video>
-          <p id="face-hint" class="face__hint">تُستخرج بصمة الوجه على جهازك، ولا تُرسل أي صورة إلى الخادم.</p>
-        </div>
-
-        <label class="check">
-          <input id="face-toggle" type="checkbox" checked />
-          <span>استخدام الوجه مع تسجيل الحضور</span>
-        </label>
-
-        <!-- ثلاث بصمات، لكل واحدة زر التقاط مستقل -->
-        <div id="face-slots" class="face__slots" hidden>
-          <p class="hint">
-            سجّل ثلاث بصمات لوجهك من زوايا وإضاءات مختلفة (أمامية، يمين، يسار)
-            لترتفع دقة المطابقة عند الحضور.
-          </p>
-          <div class="row row--wrap">
-            <button class="btn btn--ghost btn--sm" type="button" data-face-slot="1">
-              التقاط البصمة الأولى
-            </button>
-            <button class="btn btn--ghost btn--sm" type="button" data-face-slot="2">
-              التقاط البصمة الثانية
-            </button>
-            <button class="btn btn--ghost btn--sm" type="button" data-face-slot="3">
-              التقاط البصمة الثالثة
-            </button>
-          </div>
-          <p id="face-slots-state" class="hint">—</p>
-        </div>
-
-        <div class="row row--wrap">
-          <button id="face-warm" class="btn btn--ghost btn--sm" type="button">
-            تحميل محرّك الوجه مسبقاً
+        <section class="punch">
+          <button id="punch-btn" class="punch__btn" type="button" disabled>
+            <span class="punch__ring" aria-hidden="true"></span>
+            <span id="punch-label" class="punch__label">تسجيل حضور</span>
+            <span id="punch-sub" class="punch__sub">اضغط للسماح بالموقع</span>
           </button>
-        </div>
+        </section>
 
-        <p id="face-status" class="hint">—</p>
-      </section>
+        <p id="punch-result" class="alert" role="status" hidden></p>
 
-      <section class="card card--geo">
-        <div class="geo__row">
-          <span class="geo__key">الفرع</span>
-          <span id="geo-branch" class="geo__val">—</span>
-        </div>
-        <div class="geo__row">
-          <span class="geo__key">المسافة عن الفرع</span>
-          <span id="geo-distance" class="geo__val" dir="ltr">—</span>
-        </div>
-        <div class="geo__row">
-          <span class="geo__key">النطاق المسموح</span>
-          <span id="geo-radius" class="geo__val" dir="ltr">—</span>
-        </div>
-        <button id="set-branch" class="btn btn--ghost btn--sm" type="button" hidden>
-          اعتماد موقعي الحالي كموقع الفرع
-        </button>
-      </section>
+        <!-- ── صورة المطابقة عند التسجيل (على الجهاز فقط) ────────── -->
+        <section id="match-card" class="card card--match" hidden>
+          <div class="card__head">
+            <h2 class="card__title card__title--sm">تأكيد الهوية</h2>
+            <span id="match-badge" class="badge">—</span>
+          </div>
+          <div class="match">
+            <img id="match-photo" class="match__photo" alt="لقطة التحقق من الوجه" />
+            <div class="match__info">
+              <p id="match-name" class="match__name">—</p>
+              <p id="match-meta" class="match__meta">—</p>
+            </div>
+          </div>
+          <p class="hint">
+            هذه اللقطة تُعرض على جهازك للتأكيد البصري فقط، ولا تُرسل إلى الخادم ولا
+            تُخزَّن.
+          </p>
+        </section>
 
-      <section class="card card--log">
-        <h2 class="card__title card__title--sm">سجل اليوم</h2>
-        <ul id="today-list" class="log"></ul>
-        <p id="today-empty" class="empty" hidden>لا توجد حركات مسجّلة اليوم بعد.</p>
-        <p id="open-shift" class="alert alert--warn" hidden></p>
-      </section>
+        <!-- ── مطابقة الوجه ──────────────────────────────────────── -->
+        <section id="face-card" class="card card--face" hidden>
+          <div class="card__head">
+            <h2 class="card__title card__title--sm">مطابقة الوجه</h2>
+            <span id="face-badge" class="badge">—</span>
+          </div>
+
+          <div class="face__stage">
+            <video id="face-video" class="face__video" playsinline muted></video>
+            <p id="face-hint" class="face__hint">تُستخرج بصمة الوجه على جهازك، ولا تُرسل أي صورة إلى الخادم.</p>
+          </div>
+
+          <label class="check">
+            <input id="face-toggle" type="checkbox" checked />
+            <span>استخدام الوجه مع تسجيل الحضور</span>
+          </label>
+
+          <!-- ثلاث بصمات، لكل واحدة زر التقاط مستقل -->
+          <div id="face-slots" class="face__slots" hidden>
+            <p class="hint">
+              سجّل ثلاث بصمات لوجهك من زوايا وإضاءات مختلفة (أمامية، يمين، يسار)
+              لترتفع دقة المطابقة عند الحضور.
+            </p>
+            <div class="row row--wrap">
+              <button class="btn btn--ghost btn--sm" type="button" data-face-slot="1">
+                التقاط البصمة الأولى
+              </button>
+              <button class="btn btn--ghost btn--sm" type="button" data-face-slot="2">
+                التقاط البصمة الثانية
+              </button>
+              <button class="btn btn--ghost btn--sm" type="button" data-face-slot="3">
+                التقاط البصمة الثالثة
+              </button>
+            </div>
+            <p id="face-slots-state" class="hint">—</p>
+          </div>
+
+          <div class="row row--wrap">
+            <button id="face-warm" class="btn btn--ghost btn--sm" type="button">
+              تحميل محرّك الوجه مسبقاً
+            </button>
+          </div>
+
+          <p id="face-status" class="hint">—</p>
+        </section>
+
+        <section class="card card--geo">
+          <div class="geo__row">
+            <span class="geo__key">الفرع</span>
+            <span id="geo-branch" class="geo__val">—</span>
+          </div>
+          <div class="geo__row">
+            <span class="geo__key">المسافة عن الفرع</span>
+            <span id="geo-distance" class="geo__val" dir="ltr">—</span>
+          </div>
+          <div class="geo__row">
+            <span class="geo__key">النطاق المسموح</span>
+            <span id="geo-radius" class="geo__val" dir="ltr">—</span>
+          </div>
+          <button id="set-branch" class="btn btn--ghost btn--sm" type="button" hidden>
+            اعتماد موقعي الحالي كموقع الفرع
+          </button>
+        </section>
+
+        <section class="card card--log">
+          <h2 class="card__title card__title--sm">سجل اليوم</h2>
+          <ul id="today-list" class="log"></ul>
+          <p id="today-empty" class="empty" hidden>لا توجد حركات مسجّلة اليوم بعد.</p>
+          <p id="open-shift" class="alert alert--warn" hidden></p>
+        </section>
+      </div>
+      <!-- ── نهاية صفحة الحضور ─────────────────────────────────── -->
 
       <!-- ── طلباتي ────────────────────────────────────────────── -->
-      <section id="panel-requests" class="card card--forms">
+      <section id="panel-requests" class="card card--forms" hidden>
         <div class="card__head">
           <h2 class="card__title card__title--sm">طلباتي ونماذجي</h2>
         </div>
@@ -347,6 +354,245 @@
           <span class="geo__key">أيام إجازتي</span>
           <span id="file-off-days" class="geo__val">—</span>
         </div>
+      </section>
+
+      <!-- ── تقفيل الكاشير اليومي ──────────────────────────────── -->
+      <section id="panel-cashier" class="card card--form" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">تقفيل الكاشير اليومي</h2>
+          <span id="self-cash-status" class="badge">—</span>
+        </div>
+
+        <p class="hint">
+          ارفع تقفيل ورديتك من جهازك مباشرة. النقد المتوقّع والفرق يُحسبان في
+          الخادم، ويراجع مدير فرعك ما ترفعه.
+        </p>
+
+        <form id="self-cash-form" class="form-grid" novalidate>
+          <label class="field field--sm">
+            <span class="field__label">تاريخ العمل</span>
+            <input id="self-cash-date" type="date" readonly />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الوردية</span>
+            <select id="self-cash-shift">
+              <option value="full">اليوم كامل</option>
+              <option value="morning">صباحية</option>
+              <option value="evening">مسائية</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">عدد الفواتير</span>
+            <input id="self-cash-invoices" type="number" min="0" step="1" value="0" />
+          </label>
+
+          <label class="field field--sm">
+            <span class="field__label">عهدة بداية الوردية</span>
+            <input id="self-cash-openingFloat" type="number" step="any" min="0" value="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">إجمالي المبيعات</span>
+            <input id="self-cash-totalSales" type="number" step="any" min="0" value="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">مبيعات نقدية</span>
+            <input id="self-cash-cashSales" type="number" step="any" min="0" value="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">مبيعات شبكة (محسوبة)</span>
+            <input id="self-cash-cardSales" type="number" step="any" min="0" value="0" readonly />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">شبكة foodics</span>
+            <input id="self-cash-foodicsSales" type="number" step="any" min="0" value="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">تحويلات</span>
+            <input id="self-cash-transferSales" type="number" step="any" min="0" value="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">مبيعات التوصيل (محسوبة)</span>
+            <input id="self-cash-deliverySales" type="number" step="any" min="0" value="0" readonly />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">مبيعات أخرى</span>
+            <input id="self-cash-otherSales" type="number" step="any" min="0" value="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الخصومات</span>
+            <input id="self-cash-discounts" type="number" step="any" min="0" value="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">المرتجعات</span>
+            <input id="self-cash-refunds" type="number" step="any" min="0" value="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">مصروفات نقدية</span>
+            <input id="self-cash-expenses" type="number" step="any" min="0" value="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">النقد المعدود في الدرج</span>
+            <input id="self-cash-countedCash" type="number" step="any" min="0" value="0" />
+          </label>
+
+          <div class="field--wide">
+            <div class="card__head">
+              <h3 class="card__title card__title--xs">بنود مبيعات الشبكة</h3>
+              <button id="self-cash-add-network" class="btn btn--ghost btn--xs" type="button">
+                إضافة بند شبكة
+              </button>
+            </div>
+            <div class="table-wrap">
+              <table class="table" id="self-cash-network">
+                <thead>
+                  <tr>
+                    <th>البند</th>
+                    <th>رقم الجهاز / المرجع</th>
+                    <th>المبلغ</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <p id="self-cash-network-empty" class="empty" hidden>
+              لا توجد بنود شبكة — أضف بنداً لكل جهاز أو نوع شبكة.
+            </p>
+          </div>
+
+          <div class="field--wide">
+            <div class="card__head">
+              <h3 class="card__title card__title--xs">تطبيقات التواصل والتوصيل</h3>
+              <button id="self-cash-add-delivery" class="btn btn--ghost btn--xs" type="button">
+                إضافة تطبيق
+              </button>
+            </div>
+            <div class="table-wrap">
+              <table class="table" id="self-cash-delivery">
+                <thead>
+                  <tr>
+                    <th>التطبيق</th>
+                    <th>رقم الدفعة / المرجع</th>
+                    <th>المبلغ</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <p id="self-cash-delivery-empty" class="empty" hidden>
+              لا توجد تطبيقات — أضف تطبيقاً لتسجيل مبيعاته.
+            </p>
+          </div>
+
+          <label class="field field--sm field--wide">
+            <span class="field__label">ملاحظات</span>
+            <textarea id="self-cash-notes" rows="2"></textarea>
+          </label>
+
+          <div class="row row--wrap">
+            <span class="chip">النقد المتوقّع: <strong id="self-cash-expected">0.00</strong></span>
+            <span class="chip">الفرق: <strong id="self-cash-difference">0.00</strong></span>
+            <span class="chip" id="self-cash-diff-hint">مطابق</span>
+          </div>
+
+          <button id="self-cash-submit" class="btn btn--primary btn--sm" type="submit">
+            رفع التقفيل
+          </button>
+        </form>
+
+        <p id="self-cash-result" class="alert" role="status" hidden></p>
+      </section>
+
+      <!-- ── حركة المخزون ──────────────────────────────────────── -->
+      <section id="panel-inventory" class="card card--form" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">تسجيل حركة مخزون</h2>
+          <button id="self-inv-refresh" class="btn btn--ghost btn--xs" type="button">تحديث</button>
+        </div>
+
+        <p class="hint">
+          سجّل الإدخال والصرف والجرد والتصنيع من جهازك. الرصيد المعروض هو رصيد
+          فرعك كما هو في الخادم.
+        </p>
+
+        <form id="self-inv-form" class="form-grid" novalidate>
+          <label class="field field--sm">
+            <span class="field__label">التصنيف</span>
+            <select id="self-inv-category"></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الصنف</span>
+            <select id="self-inv-item" required></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الحركة وسببها</span>
+            <select id="self-inv-action"></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">تاريخ العمل</span>
+            <input id="self-inv-date" type="date" required />
+          </label>
+
+          <label class="field field--sm" id="self-inv-produced-field" hidden>
+            <span class="field__label">المنتج النهائي</span>
+            <select id="self-inv-produced-item"></select>
+          </label>
+
+          <label class="field field--sm">
+            <span class="field__label" id="self-inv-quantity-label">الكمية</span>
+            <input id="self-inv-quantity" type="number" step="any" min="0" required />
+          </label>
+          <label class="field field--sm" id="self-inv-units-field" hidden>
+            <span class="field__label">عدد الوحدات المنتجة</span>
+            <input id="self-inv-units" type="number" step="any" min="0" />
+          </label>
+          <label class="field field--sm" id="self-inv-weight-field" hidden>
+            <span class="field__label" id="self-inv-weight-label">وزن الوحدة</span>
+            <input id="self-inv-weight" type="number" step="any" min="0" />
+          </label>
+          <label class="field field--sm" id="self-inv-weight-unit-field" hidden>
+            <span class="field__label">وحدة وزن الوحدة</span>
+            <select id="self-inv-weight-unit"></select>
+          </label>
+
+          <label class="field field--sm" id="self-inv-cost-field">
+            <span class="field__label">سعر الوحدة من الفاتورة</span>
+            <input id="self-inv-cost" type="number" step="any" min="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">المرجع</span>
+            <input id="self-inv-reference" type="text" maxlength="120" />
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">ملاحظات</span>
+            <textarea id="self-inv-notes" rows="2"></textarea>
+          </label>
+
+          <p id="self-inv-hint" class="hint field--wide">—</p>
+
+          <button id="self-inv-submit" class="btn btn--primary btn--sm" type="submit">
+            تسجيل الحركة
+          </button>
+        </form>
+
+        <p id="self-inv-result" class="alert" role="status" hidden></p>
+
+        <h3 class="card__title card__title--xs">آخر حركات فرعي</h3>
+        <div class="table-wrap">
+          <table class="table" id="self-inv-table">
+            <thead>
+              <tr>
+                <th>التاريخ</th>
+                <th>الصنف</th>
+                <th>الحركة</th>
+                <th>الكمية</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="self-inv-empty" class="empty" hidden>لا توجد حركات مسجّلة بعد.</p>
       </section>
 
       <!-- ── كلمة المرور ───────────────────────────────────────── -->

@@ -179,21 +179,57 @@ function table(headers, rows, className = "sheet__table") {
   return element;
 }
 
-/** سطور تعريف الموظف المشتركة في معظم النماذج. */
+/**
+ * سطور تعريف الموظف المشتركة في معظم النماذج.
+ *
+ * أول أربعة سطور تعريف صاحب المستند فلا تُعطَّل أبداً (ومعها تاريخ المستند
+ * الذي يضيفه كل قالب قبلها)، وما بعدها يخضع لتخصيص النموذج المحفوظ في
+ * `document_identity_fields` والواصل هنا في `data.employeeFields`.
+ * قاعدة القراءة «الغائب ظاهر» (`!== false`) فالنموذج غير المخصَّص يطبع
+ * الجدول كاملاً كما كان.
+ */
 function employeeRows(data) {
   const employee = data.employee ?? {};
   const branch = data.branch ?? {};
+  const fields = data.employeeFields ?? {};
+  const shown = (key, row) => (fields[key] === false ? null : row);
+
   return [
     ["اسم الموظف", employee.fullName],
     ["الرقم الوظيفي", employee.employeeCode],
     ["الجنسية", employee.nationality],
     ["رقم الهوية / الإقامة", employee.nationalId],
-    ["المسمى الوظيفي", employee.jobTitle],
-    ["القسم", employee.department],
-    ["الفرع", branch.name],
-    ["المدير المسؤول", branch.managerName],
-    ["تاريخ المباشرة", employee.hiredAt ? formatDate(employee.hiredAt) : "—"],
-  ];
+    shown("showJobTitle", ["المسمى الوظيفي", employee.jobTitle]),
+    shown("showDepartment", ["القسم", employee.department]),
+    shown("showBranch", ["الفرع", branch.name]),
+    shown("showManager", ["المدير المسؤول", branch.managerName]),
+    shown("showHiredAt", [
+      "تاريخ المباشرة",
+      employee.hiredAt ? formatDate(employee.hiredAt) : "—",
+    ]),
+  ].filter(Boolean);
+}
+
+/**
+ * بيانات اتصال الموظف: تظهر في النماذج التي تعرضها أصلاً (نموذج التعيين)
+ * وتخضع لتخصيص النموذج مثل بقية بيانات الموظف.
+ */
+function employeeContactRows(data) {
+  const fields = data.employeeFields ?? {};
+  return [
+    fields.showEmployeeEmail === false
+      ? null
+      : ["البريد الإلكتروني", data.employee?.email],
+    fields.showEmployeePhone === false ? null : ["رقم الجوال", data.employee?.phone],
+  ].filter(Boolean);
+}
+
+/**
+ * صف واحد من بيانات الموظف داخل نموذج يبني جدوله بنفسه (سند القبض/الصرف
+ * مثلاً). يُستعمل مع `.filter(Boolean)` على الصفوف.
+ */
+function employeeRow(data, key, row) {
+  return (data.employeeFields ?? {})[key] === false ? null : row;
 }
 
 const currencyOf = (data) => data.salary?.currency || data.company?.currency || "SAR";
@@ -370,8 +406,7 @@ function appointment(data) {
     pairs([
       ["تاريخ النموذج", data.today],
       ...employeeRows(data),
-      ["البريد الإلكتروني", data.employee?.email],
-      ["رقم الجوال", data.employee?.phone],
+      ...employeeContactRows(data),
     ]),
     section("قرار التعيين", [
       `بناءً على ما تقتضيه مصلحة العمل، واستناداً إلى المقابلة الشخصية والمؤهلات المقدَّمة، تقرر تعيين ${
@@ -548,9 +583,9 @@ function voucher(data, isReceipt) {
         record.beneficiaryName || data.employee?.fullName || blank,
       ],
       ["الرقم الوظيفي", data.employee?.employeeCode],
-      ["الفرع", data.branch?.name],
+      employeeRow(data, "showBranch", ["الفرع", data.branch?.name]),
       ["البيان", record.description ?? blank],
-    ]),
+    ].filter(Boolean)),
     clauses([
       isReceipt
         ? [
@@ -1033,7 +1068,12 @@ function cashierClosingsRange(data) {
 
 /* ── 15) المخزون: سند حركة، ورقة جرد، كشف حركات ─────────────────── */
 
-const MOVEMENT_LABELS = { in: "إدخال", out: "إخراج", count: "جرد" };
+const MOVEMENT_LABELS = {
+  in: "إدخال",
+  out: "إخراج",
+  count: "جرد",
+  manufacture: "تصنيع",
+};
 
 const MOVEMENT_REASON_LABELS = {
   purchase: "شراء",
@@ -1041,6 +1081,7 @@ const MOVEMENT_REASON_LABELS = {
   waste: "هالك",
   transfer: "تحويل",
   stocktake: "جرد",
+  manufacture: "تصنيع",
   other: "أخرى",
 };
 
@@ -1049,6 +1090,7 @@ function inventoryMovement(data) {
   const movement = data.inventory?.movement ?? {};
   const currency = data.company?.currency || "SAR";
   const isCount = movement.movementType === "count";
+  const isManufacture = movement.movementType === "manufacture";
 
   const nodes = [
     pairs([
@@ -1061,9 +1103,23 @@ function inventoryMovement(data) {
     ]),
     pairs([
       [
-        isCount ? "الكمية المعدودة" : "الكمية",
+        isCount ? "الكمية المعدودة" : isManufacture ? "الكمية الخام" : "الكمية",
         `${movement.quantity ?? 0} ${movement.unit ?? ""}`,
       ],
+      ...(isManufacture
+        ? [
+            [
+              "عدد الوحدات المنتجة",
+              movement.producedUnits > 0 ? movement.producedUnits : "لم يُسجَّل بعد",
+            ],
+            [
+              "وزن الوحدة",
+              movement.unitWeight > 0
+                ? `${movement.unitWeight} ${movement.unitWeightUnit || movement.unit || ""} لكل وحدة`
+                : "—",
+            ],
+          ]
+        : []),
       [
         "سعر الوحدة",
         movement.unitCost === null || movement.unitCost === undefined
