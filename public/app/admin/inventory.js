@@ -18,6 +18,7 @@ import {
   todayIso,
 } from "../api.js";
 import { createPager } from "../pagination.js";
+import { fillActionPicker, parseAction } from "../inventory-actions.js";
 import {
   conversionFactor,
   fillWeightUnitPicker,
@@ -112,6 +113,11 @@ function printMovements() {
 
 function currentBranch() {
   return el("inventory-branch").value;
+}
+
+/** النوع والسبب معاً من قائمة «الحركة وسببها» الواحدة. */
+function currentAction() {
+  return parseAction(el("inventory-action").value);
 }
 
 /** تصنيف الصنف كما يُعرض في القوائم (الفراغ يُعرض كـ«بدون تصنيف»). */
@@ -411,8 +417,8 @@ async function loadDaily() {
  */
 function applyItemPriceMode() {
   const item = state.items.find((entry) => entry.id === Number(el("inventory-item").value));
-  const isPurchase =
-    el("inventory-type").value === "in" && el("inventory-reason").value === "purchase";
+  const { movementType, reason } = currentAction();
+  const isPurchase = movementType === "in" && reason === "purchase";
   const variable = item?.priceMode === "variable";
   const required = Boolean(variable && isPurchase);
 
@@ -447,7 +453,7 @@ const WEIGHT_UNIT_SELECT = "inventory-weight-unit";
 let manufactureOrder = ["weight", "units", "raw"];
 
 function isManufacture() {
-  return el("inventory-type").value === "manufacture";
+  return currentAction().movementType === "manufacture";
 }
 
 /** قيمة رقمية موجبة من حقل، أو `null` إن كان فارغاً أو غير صالح. */
@@ -584,7 +590,7 @@ function applyManufacturingFields() {
 
   el("inventory-quantity-label").textContent = manufacture
     ? `الكمية الخام${rawItem ? ` (${rawItem.unit})` : ""}`
-    : el("inventory-type").value === "count"
+    : currentAction().movementType === "count"
       ? "الكمية المعدودة"
       : "الكمية";
 
@@ -605,17 +611,18 @@ async function submitMovement(event) {
 
   const branchId = currentBranch();
   const manufacture = isManufacture();
+  const { movementType, reason } = currentAction();
 
   const result = await api("/inventory/movements", {
     method: "POST",
     body: {
       itemId: Number(el("inventory-item").value),
       branchId: branchId ? Number(branchId) : undefined,
-      movementType: el("inventory-type").value,
+      movementType,
       businessDate: el("inventory-date").value,
       quantity: Number(el("inventory-quantity").value || 0),
       unitCost: el("inventory-unitcost").value === "" ? undefined : Number(el("inventory-unitcost").value),
-      reason: el("inventory-reason").value,
+      reason,
       reference: el("inventory-reference").value.trim(),
       notes: el("inventory-notes").value.trim(),
       // حقول التصنيع — الخادم يُكمل الناقص منها بالمعادلة والوحدة نفسها
@@ -837,22 +844,13 @@ export function initInventoryModule({ can }) {
     applyManufacturingFields();
   });
 
-  // الجرد يُثبّت الرصيد، فالسبب يُضبط تلقائياً ويُخفى حقل التكلفة
-  el("inventory-type").addEventListener("change", () => {
-    const type = el("inventory-type").value;
-    el("inventory-reason").value =
-      type === "count"
-        ? "stocktake"
-        : type === "in"
-          ? "purchase"
-          : type === "manufacture"
-            ? "manufacture"
-            : "consumption";
+  // الحركة وسببها خيار واحد: السبب يُستنتج منه فلا حقل ثانٍ يُختار
+  fillActionPicker(el("inventory-action"));
+  el("inventory-action").addEventListener("change", () => {
     applyManufacturingFields();
     applyItemPriceMode();
   });
 
-  el("inventory-reason").addEventListener("change", applyItemPriceMode);
   el("inventory-produced-item").addEventListener("change", renderManufactureHint);
 
   // إدخال أي رقمين من الثلاثة يُكمل الثالث

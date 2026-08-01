@@ -5,9 +5,13 @@
  * والأرصدة كلها في الخادم (`POST /api/inventory/movements` بدرجة 2 في بند
  * «حركة المخزون»). حقول التصنيع هنا تُكمل بعضها بالمعادلة نفسها المستخدمة في
  * اللوحة: وزن الوحدة المنتجة (جرام مثلاً) × عدد الوحدات = الكمية الخام (كجم).
+ *
+ * ترتيب الحقول كما في اللوحة: التصنيف أولاً فيُفلتر الأصناف، ثم الصنف، ثم
+ * «الحركة وسببها» خياراً واحداً يُستنتج منه السبب.
  */
 
 import { api, el, formatDate, row, setAlert, setBusy, todayIso } from "./api.js";
+import { fillActionPicker, parseAction } from "./inventory-actions.js";
 import { conversionFactor, fillWeightUnitPicker, setUnitTable } from "./units.js";
 
 const MOVEMENT_LABELS = {
@@ -26,6 +30,9 @@ const MANUFACTURE_INPUTS = {
 /** قائمة وحدة قياس وزن الوحدة المنتجة (جرام مقابل كيلوجرام للخام). */
 const WEIGHT_UNIT_SELECT = "self-inv-weight-unit";
 
+/** قيمة خيار «بدون تصنيف» — حقل التصنيف نصّي وقد يكون فارغاً. */
+const NO_CATEGORY = "__none__";
+
 const state = {
   ready: false,
   items: [],
@@ -36,8 +43,13 @@ const state = {
 
 /* ── أدوات ─────────────────────────────────────────────────── */
 
+/** النوع والسبب معاً من قائمة «الحركة وسببها» الواحدة. */
+function currentAction() {
+  return parseAction(el("self-inv-action").value);
+}
+
 function isManufacture() {
-  return el("self-inv-type").value === "manufacture";
+  return currentAction().movementType === "manufacture";
 }
 
 function positiveValue(id) {
@@ -73,18 +85,63 @@ function weightToRawFactor() {
 
 /* ── تعبئة القوائم ─────────────────────────────────────────── */
 
-function fillItemPickers() {
-  const options = state.items.map((item) => {
-    const option = document.createElement("option");
-    option.value = String(item.id);
-    option.textContent = `${item.name} (${item.unit}) — الرصيد ${item.balance}`;
-    return option;
-  });
+function optionNode(value, text) {
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = text;
+  return option;
+}
 
-  const raw = el("self-inv-item");
-  const rawValue = raw.value;
-  raw.replaceChildren(...options);
-  if (rawValue) raw.value = rawValue;
+/** تصنيف الصنف كما يُعرض في القائمة (الفراغ يُعرض «بدون تصنيف»). */
+function categoryKey(item) {
+  return item.category ? item.category : NO_CATEGORY;
+}
+
+/** التصنيفات الموجودة فعلاً في أصناف الفرع، مرتّبة عربياً. */
+function categoryList() {
+  return [...new Set(state.items.map(categoryKey))].sort((a, b) => {
+    if (a === NO_CATEGORY) return 1;
+    if (b === NO_CATEGORY) return -1;
+    return a.localeCompare(b, "ar");
+  });
+}
+
+/** أصناف التصنيف المختار («» تعني كل الأصناف). */
+function itemsOfSelectedCategory() {
+  const chosen = el("self-inv-category").value;
+  if (!chosen) return state.items;
+  return state.items.filter((item) => categoryKey(item) === chosen);
+}
+
+/** قائمة التصنيفات: تُبنى من الأصناف، ويبقى اختيار المستخدم إن ظلّ موجوداً. */
+function fillCategoryPicker() {
+  const picker = el("self-inv-category");
+  const previous = picker.value;
+  picker.replaceChildren(optionNode("", "كل التصنيفات"));
+
+  for (const key of categoryList()) {
+    picker.append(optionNode(key, key === NO_CATEGORY ? "بدون تصنيف" : key));
+  }
+
+  picker.value = [...picker.options].some((option) => option.value === previous) ? previous : "";
+}
+
+/**
+ * قائمة الأصناف — مفلترة على التصنيف المختار. يبقى الصنف المختار إن كان داخل
+ * التصنيف، وإلا يُختار أوله كي لا يبقى الحقل بلا قيمة.
+ */
+function fillItemPickers() {
+  const picker = el("self-inv-item");
+  const previous = picker.value;
+
+  picker.replaceChildren(
+    ...itemsOfSelectedCategory().map((item) =>
+      optionNode(String(item.id), `${item.name} (${item.unit}) — الرصيد ${item.balance}`),
+    ),
+  );
+
+  const stillThere = [...picker.options].some((option) => option.value === previous);
+  picker.value = stillThere ? previous : (picker.options[0]?.value ?? "");
 
   fillProducedPicker();
 }
@@ -190,7 +247,7 @@ function recompute(edited) {
 /** يُظهر حقول التصنيع ويضبط عناوينها ووحدة وزن الوحدة المنتجة. */
 function applyType() {
   const manufacture = isManufacture();
-  const type = el("self-inv-type").value;
+  const { movementType } = currentAction();
   const item = selectedItem("self-inv-item");
 
   el("self-inv-produced-field").hidden = !manufacture;
@@ -201,7 +258,7 @@ function applyType() {
 
   el("self-inv-quantity-label").textContent = manufacture
     ? `الكمية الخام${item ? ` (${item.unit})` : ""}`
-    : type === "count"
+    : movementType === "count"
       ? "الكمية المعدودة"
       : "الكمية";
 
@@ -212,13 +269,7 @@ function applyType() {
     : "وزن الوحدة المنتجة";
 
   // سعر الفاتورة يلزم الإدخال الشرائي فقط
-  el("self-inv-cost-field").hidden = type !== "in";
-
-  const reason = el("self-inv-reason");
-  if (manufacture) reason.value = "manufacture";
-  else if (type === "count") reason.value = "stocktake";
-  else if (type === "in" && reason.value === "manufacture") reason.value = "purchase";
-  else if (type === "out" && reason.value === "manufacture") reason.value = "consumption";
+  el("self-inv-cost-field").hidden = movementType !== "in";
 
   if (manufacture) fillProducedPicker();
   // تغيير الصنف قد يغيّر وحدة الوزن ومعامل التحويل، فيُعاد الحساب لا العرض فقط
@@ -242,6 +293,7 @@ export async function refreshSelfInventory() {
   state.items = items.items ?? [];
   // جدول الوحدات يأتي مع الأصناف كي يحسب المتصفح التحويل أثناء الكتابة
   setUnitTable(items.meta?.units);
+  fillCategoryPicker();
   fillItemPickers();
   applyType();
 
@@ -283,17 +335,18 @@ async function submitMovement(event) {
   setBusy(submit, true);
 
   const manufacture = isManufacture();
+  const { movementType, reason } = currentAction();
   const cost = el("self-inv-cost").value;
 
   const result = await api("/inventory/movements", {
     method: "POST",
     body: {
       itemId: Number(el("self-inv-item").value),
-      movementType: el("self-inv-type").value,
+      movementType,
       businessDate: el("self-inv-date").value,
       quantity: Number(el("self-inv-quantity").value || 0),
       unitCost: cost === "" ? undefined : Number(cost),
-      reason: el("self-inv-reason").value,
+      reason,
       reference: el("self-inv-reference").value.trim(),
       notes: el("self-inv-notes").value.trim(),
       producedItemId: manufacture ? Number(el("self-inv-produced-item").value) || undefined : undefined,
@@ -328,7 +381,17 @@ export function initSelfInventory() {
   el("self-inv-date").value = todayIso();
   el("self-inv-form").addEventListener("submit", submitMovement);
   el("self-inv-refresh").addEventListener("click", () => void refreshSelfInventory());
-  el("self-inv-type").addEventListener("change", applyType);
+
+  // الحركة وسببها خيار واحد: السبب يُستنتج منه فلا حقل ثانٍ يُختار
+  fillActionPicker(el("self-inv-action"));
+  el("self-inv-action").addEventListener("change", applyType);
+
+  // التصنيف يُختار أولاً فتُفلتر قائمة الأصناف عليه، ثم يُختار الصنف
+  el("self-inv-category").addEventListener("change", () => {
+    fillItemPickers();
+    applyType();
+  });
+
   el("self-inv-item").addEventListener("change", () => {
     fillProducedPicker();
     applyType();

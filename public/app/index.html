@@ -163,123 +163,128 @@
         </div>
       </header>
 
-      <!-- ── قائمة الإضافات ────────────────────────────────────── -->
-      <nav class="tabs tabs--extras" id="extras-nav" aria-label="أقسام إضافية">
-        <button class="tab is-active" type="button" data-panel="requests">الطلبات</button>
+      <!-- ── قائمة الإضافات: كل بند صفحة مستقلة ────────────────── -->
+      <nav class="tabs tabs--extras" id="extras-nav" aria-label="صفحات التطبيق">
+        <button class="tab is-active" type="button" data-panel="punch">الحضور</button>
+        <button class="tab" type="button" data-panel="requests">الطلبات</button>
         <button class="tab" type="button" data-panel="file">الملف الوظيفي</button>
         <button class="tab" type="button" data-panel="cashier">تقفيل الكاشير</button>
         <button class="tab" type="button" data-panel="inventory">حركة المخزون</button>
         <button class="tab" type="button" data-panel="password">تغيير كلمة المرور</button>
       </nav>
 
-      <section class="clock" aria-live="off">
-        <p class="clock__label">توقيت الخادم</p>
-        <p id="clock-time" class="clock__time" dir="ltr">--:--:--</p>
-        <p id="clock-date" class="clock__date">—</p>
-      </section>
+      <!-- ── صفحة الحضور: الساعة وزر البصمة وسجل اليوم ─────────── -->
+      <div id="page-punch" class="panel">
+        <section class="clock" aria-live="off">
+          <p class="clock__label">توقيت الخادم</p>
+          <p id="clock-time" class="clock__time" dir="ltr">--:--:--</p>
+          <p id="clock-date" class="clock__date">—</p>
+        </section>
 
-      <section class="punch">
-        <button id="punch-btn" class="punch__btn" type="button" disabled>
-          <span class="punch__ring" aria-hidden="true"></span>
-          <span id="punch-label" class="punch__label">تسجيل حضور</span>
-          <span id="punch-sub" class="punch__sub">اضغط للسماح بالموقع</span>
-        </button>
-      </section>
-
-      <p id="punch-result" class="alert" role="status" hidden></p>
-
-      <!-- ── صورة المطابقة عند التسجيل (على الجهاز فقط) ────────── -->
-      <section id="match-card" class="card card--match" hidden>
-        <div class="card__head">
-          <h2 class="card__title card__title--sm">تأكيد الهوية</h2>
-          <span id="match-badge" class="badge">—</span>
-        </div>
-        <div class="match">
-          <img id="match-photo" class="match__photo" alt="لقطة التحقق من الوجه" />
-          <div class="match__info">
-            <p id="match-name" class="match__name">—</p>
-            <p id="match-meta" class="match__meta">—</p>
-          </div>
-        </div>
-        <p class="hint">
-          هذه اللقطة تُعرض على جهازك للتأكيد البصري فقط، ولا تُرسل إلى الخادم ولا
-          تُخزَّن.
-        </p>
-      </section>
-
-      <!-- ── مطابقة الوجه ──────────────────────────────────────── -->
-      <section id="face-card" class="card card--face" hidden>
-        <div class="card__head">
-          <h2 class="card__title card__title--sm">مطابقة الوجه</h2>
-          <span id="face-badge" class="badge">—</span>
-        </div>
-
-        <div class="face__stage">
-          <video id="face-video" class="face__video" playsinline muted></video>
-          <p id="face-hint" class="face__hint">تُستخرج بصمة الوجه على جهازك، ولا تُرسل أي صورة إلى الخادم.</p>
-        </div>
-
-        <label class="check">
-          <input id="face-toggle" type="checkbox" checked />
-          <span>استخدام الوجه مع تسجيل الحضور</span>
-        </label>
-
-        <!-- ثلاث بصمات، لكل واحدة زر التقاط مستقل -->
-        <div id="face-slots" class="face__slots" hidden>
-          <p class="hint">
-            سجّل ثلاث بصمات لوجهك من زوايا وإضاءات مختلفة (أمامية، يمين، يسار)
-            لترتفع دقة المطابقة عند الحضور.
-          </p>
-          <div class="row row--wrap">
-            <button class="btn btn--ghost btn--sm" type="button" data-face-slot="1">
-              التقاط البصمة الأولى
-            </button>
-            <button class="btn btn--ghost btn--sm" type="button" data-face-slot="2">
-              التقاط البصمة الثانية
-            </button>
-            <button class="btn btn--ghost btn--sm" type="button" data-face-slot="3">
-              التقاط البصمة الثالثة
-            </button>
-          </div>
-          <p id="face-slots-state" class="hint">—</p>
-        </div>
-
-        <div class="row row--wrap">
-          <button id="face-warm" class="btn btn--ghost btn--sm" type="button">
-            تحميل محرّك الوجه مسبقاً
+        <section class="punch">
+          <button id="punch-btn" class="punch__btn" type="button" disabled>
+            <span class="punch__ring" aria-hidden="true"></span>
+            <span id="punch-label" class="punch__label">تسجيل حضور</span>
+            <span id="punch-sub" class="punch__sub">اضغط للسماح بالموقع</span>
           </button>
-        </div>
+        </section>
 
-        <p id="face-status" class="hint">—</p>
-      </section>
+        <p id="punch-result" class="alert" role="status" hidden></p>
 
-      <section class="card card--geo">
-        <div class="geo__row">
-          <span class="geo__key">الفرع</span>
-          <span id="geo-branch" class="geo__val">—</span>
-        </div>
-        <div class="geo__row">
-          <span class="geo__key">المسافة عن الفرع</span>
-          <span id="geo-distance" class="geo__val" dir="ltr">—</span>
-        </div>
-        <div class="geo__row">
-          <span class="geo__key">النطاق المسموح</span>
-          <span id="geo-radius" class="geo__val" dir="ltr">—</span>
-        </div>
-        <button id="set-branch" class="btn btn--ghost btn--sm" type="button" hidden>
-          اعتماد موقعي الحالي كموقع الفرع
-        </button>
-      </section>
+        <!-- ── صورة المطابقة عند التسجيل (على الجهاز فقط) ────────── -->
+        <section id="match-card" class="card card--match" hidden>
+          <div class="card__head">
+            <h2 class="card__title card__title--sm">تأكيد الهوية</h2>
+            <span id="match-badge" class="badge">—</span>
+          </div>
+          <div class="match">
+            <img id="match-photo" class="match__photo" alt="لقطة التحقق من الوجه" />
+            <div class="match__info">
+              <p id="match-name" class="match__name">—</p>
+              <p id="match-meta" class="match__meta">—</p>
+            </div>
+          </div>
+          <p class="hint">
+            هذه اللقطة تُعرض على جهازك للتأكيد البصري فقط، ولا تُرسل إلى الخادم ولا
+            تُخزَّن.
+          </p>
+        </section>
 
-      <section class="card card--log">
-        <h2 class="card__title card__title--sm">سجل اليوم</h2>
-        <ul id="today-list" class="log"></ul>
-        <p id="today-empty" class="empty" hidden>لا توجد حركات مسجّلة اليوم بعد.</p>
-        <p id="open-shift" class="alert alert--warn" hidden></p>
-      </section>
+        <!-- ── مطابقة الوجه ──────────────────────────────────────── -->
+        <section id="face-card" class="card card--face" hidden>
+          <div class="card__head">
+            <h2 class="card__title card__title--sm">مطابقة الوجه</h2>
+            <span id="face-badge" class="badge">—</span>
+          </div>
+
+          <div class="face__stage">
+            <video id="face-video" class="face__video" playsinline muted></video>
+            <p id="face-hint" class="face__hint">تُستخرج بصمة الوجه على جهازك، ولا تُرسل أي صورة إلى الخادم.</p>
+          </div>
+
+          <label class="check">
+            <input id="face-toggle" type="checkbox" checked />
+            <span>استخدام الوجه مع تسجيل الحضور</span>
+          </label>
+
+          <!-- ثلاث بصمات، لكل واحدة زر التقاط مستقل -->
+          <div id="face-slots" class="face__slots" hidden>
+            <p class="hint">
+              سجّل ثلاث بصمات لوجهك من زوايا وإضاءات مختلفة (أمامية، يمين، يسار)
+              لترتفع دقة المطابقة عند الحضور.
+            </p>
+            <div class="row row--wrap">
+              <button class="btn btn--ghost btn--sm" type="button" data-face-slot="1">
+                التقاط البصمة الأولى
+              </button>
+              <button class="btn btn--ghost btn--sm" type="button" data-face-slot="2">
+                التقاط البصمة الثانية
+              </button>
+              <button class="btn btn--ghost btn--sm" type="button" data-face-slot="3">
+                التقاط البصمة الثالثة
+              </button>
+            </div>
+            <p id="face-slots-state" class="hint">—</p>
+          </div>
+
+          <div class="row row--wrap">
+            <button id="face-warm" class="btn btn--ghost btn--sm" type="button">
+              تحميل محرّك الوجه مسبقاً
+            </button>
+          </div>
+
+          <p id="face-status" class="hint">—</p>
+        </section>
+
+        <section class="card card--geo">
+          <div class="geo__row">
+            <span class="geo__key">الفرع</span>
+            <span id="geo-branch" class="geo__val">—</span>
+          </div>
+          <div class="geo__row">
+            <span class="geo__key">المسافة عن الفرع</span>
+            <span id="geo-distance" class="geo__val" dir="ltr">—</span>
+          </div>
+          <div class="geo__row">
+            <span class="geo__key">النطاق المسموح</span>
+            <span id="geo-radius" class="geo__val" dir="ltr">—</span>
+          </div>
+          <button id="set-branch" class="btn btn--ghost btn--sm" type="button" hidden>
+            اعتماد موقعي الحالي كموقع الفرع
+          </button>
+        </section>
+
+        <section class="card card--log">
+          <h2 class="card__title card__title--sm">سجل اليوم</h2>
+          <ul id="today-list" class="log"></ul>
+          <p id="today-empty" class="empty" hidden>لا توجد حركات مسجّلة اليوم بعد.</p>
+          <p id="open-shift" class="alert alert--warn" hidden></p>
+        </section>
+      </div>
+      <!-- ── نهاية صفحة الحضور ─────────────────────────────────── -->
 
       <!-- ── طلباتي ────────────────────────────────────────────── -->
-      <section id="panel-requests" class="card card--forms">
+      <section id="panel-requests" class="card card--forms" hidden>
         <div class="card__head">
           <h2 class="card__title card__title--sm">طلباتي ونماذجي</h2>
         </div>
@@ -513,17 +518,16 @@
 
         <form id="self-inv-form" class="form-grid" novalidate>
           <label class="field field--sm">
+            <span class="field__label">التصنيف</span>
+            <select id="self-inv-category"></select>
+          </label>
+          <label class="field field--sm">
             <span class="field__label">الصنف</span>
             <select id="self-inv-item" required></select>
           </label>
           <label class="field field--sm">
-            <span class="field__label">نوع الحركة</span>
-            <select id="self-inv-type">
-              <option value="in">إدخال</option>
-              <option value="out">صرف</option>
-              <option value="count">جرد</option>
-              <option value="manufacture">تصنيع</option>
-            </select>
+            <span class="field__label">الحركة وسببها</span>
+            <select id="self-inv-action"></select>
           </label>
           <label class="field field--sm">
             <span class="field__label">تاريخ العمل</span>
@@ -552,18 +556,6 @@
             <select id="self-inv-weight-unit"></select>
           </label>
 
-          <label class="field field--sm">
-            <span class="field__label">السبب</span>
-            <select id="self-inv-reason">
-              <option value="purchase">شراء</option>
-              <option value="consumption">استهلاك</option>
-              <option value="waste">هدر</option>
-              <option value="transfer">تحويل بين الفروع</option>
-              <option value="stocktake">جرد</option>
-              <option value="manufacture">تصنيع</option>
-              <option value="other">أخرى</option>
-            </select>
-          </label>
           <label class="field field--sm" id="self-inv-cost-field">
             <span class="field__label">سعر الوحدة من الفاتورة</span>
             <input id="self-inv-cost" type="number" step="any" min="0" />
