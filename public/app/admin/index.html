@@ -1351,6 +1351,10 @@
             <span class="field__label" id="inventory-weight-label">وزن الوحدة</span>
             <input id="inventory-unit-weight" type="number" step="any" min="0" />
           </label>
+          <label class="field field--sm" id="inventory-weight-unit-field" hidden>
+            <span class="field__label">وحدة وزن الوحدة</span>
+            <select id="inventory-weight-unit"></select>
+          </label>
           <label class="field field--sm">
             <span class="field__label">تكلفة الوحدة</span>
             <input id="inventory-unitcost" type="number" step="any" min="0" />
@@ -1528,6 +1532,44 @@
           هذه الإعدادات تُطبَّق تلقائياً على كل النماذج والمستندات المطبوعة: الشعار
           والترويسة والتذييل وحجم الورق والهوامش والخط والألوان والعلامة المائية.
         </p>
+      </section>
+
+      <section id="print-fields-card" class="card" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">البيانات الظاهرة على مطبوعات كل نموذج</h2>
+          <label class="field field--sm">
+            <span class="field__label">النموذج</span>
+            <select id="print-fields-doc"></select>
+          </label>
+        </div>
+
+        <p class="hint">
+          اختر النموذج ثم حدّد بيانات المؤسسة التي تظهر على مطبوعته وحده. النموذج
+          الذي لم يُخصَّص يحمل الهوية كاملة كما في الإعدادات أعلاه، ولا يُظهر
+          التخصيص بياناً أغلقته الإعدادات العامة. الإخفاء يشمل الورقة كلها لا
+          ترويستها وحدها — فبيانٌ يذكره متن المستند (أطراف العقد مثلاً) يسقط
+          منه أيضاً.
+        </p>
+
+        <div id="print-fields-grid"></div>
+
+        <div class="row row--wrap">
+          <button id="print-fields-save" class="btn btn--primary btn--sm" type="button">
+            حفظ هذا النموذج
+          </button>
+          <button id="print-fields-all" class="btn btn--ghost btn--xs" type="button">
+            تحديد الكل
+          </button>
+          <button id="print-fields-none" class="btn btn--ghost btn--xs" type="button">
+            إلغاء الكل
+          </button>
+          <button id="print-fields-reset" class="btn btn--ghost btn--xs" type="button">
+            إعادة إلى الهوية الكاملة
+          </button>
+        </div>
+
+        <p id="print-fields-result" class="alert" role="status" hidden></p>
+        <p id="print-fields-state" class="hint"></p>
       </section>
 
       <section class="card">

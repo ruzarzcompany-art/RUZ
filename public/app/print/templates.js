@@ -1080,7 +1080,7 @@ function inventoryMovement(data) {
             [
               "وزن الوحدة",
               movement.unitWeight > 0
-                ? `${movement.unitWeight} ${movement.unit ?? ""} لكل وحدة`
+                ? `${movement.unitWeight} ${movement.unitWeightUnit || movement.unit || ""} لكل وحدة`
                 : "—",
             ],
           ]

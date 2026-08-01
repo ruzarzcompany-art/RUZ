@@ -210,9 +210,197 @@ async function saveCompany() {
   setBusy(submit, false);
 
   if (result.ok) state.settings = result.settings;
+  // بطاقة تخصيص المطبوعات تُعلِم البنود المغلقة عامّاً، فتُعاد بعد كل حفظ
+  if (result.ok && printFields.fields.length) renderPrintFieldsGrid();
   setAlert(
     el("settings-result"),
     result.ok ? "تم حفظ إعدادات المؤسسة والمطبوعات." : (result.error ?? "تعذّر الحفظ"),
+    result.ok ? "ok" : "error",
+  );
+}
+
+/* ── البيانات الظاهرة على مطبوعات كل نموذج ─────────────────────── */
+
+/**
+ * تخصيص هوية المؤسسة لكل نموذج على حدة: الدليل والحقول والتخصيصات المحفوظة
+ * تأتي من `GET /documents/print-fields`، والحفظ يُثبّت الصورة الكاملة التي
+ * تراها الشاشة لنموذج واحد.
+ */
+const printFields = {
+  documents: [],
+  fields: [],
+  /** `{ docKey: { showTaxNumber: false, ... } }` — النماذج المخصَّصة فقط */
+  overrides: {},
+  docKey: "",
+};
+
+function printFieldsCheckId(key) {
+  return `print-field-${key}`;
+}
+
+/** الحالة المعروضة للنموذج المختار: تخصيصه إن وُجد، وإلا الهوية كاملة. */
+function activePrintFields() {
+  const saved = printFields.overrides[printFields.docKey];
+  return saved ?? null;
+}
+
+function renderPrintFieldsDocs() {
+  const picker = el("print-fields-doc");
+  picker.textContent = "";
+
+  const groups = new Map();
+  for (const doc of printFields.documents) {
+    if (!groups.has(doc.group)) groups.set(doc.group, []);
+    groups.get(doc.group).push(doc);
+  }
+
+  for (const [groupName, docs] of groups) {
+    const optgroup = document.createElement("optgroup");
+    optgroup.label = groupName;
+    for (const doc of docs) {
+      const option = document.createElement("option");
+      option.value = doc.key;
+      // النموذج المخصَّص يُعلَّم في القائمة نفسها فتُعرف المطبوعات المعدَّلة بنظرة
+      option.textContent = printFields.overrides[doc.key]
+        ? `${doc.title} — مخصَّص`
+        : doc.title;
+      optgroup.append(option);
+    }
+    picker.append(optgroup);
+  }
+
+  picker.value = printFields.docKey;
+}
+
+function renderPrintFieldsGrid() {
+  const grid = el("print-fields-grid");
+  grid.textContent = "";
+
+  const active = activePrintFields();
+  const globals = state.settings ?? {};
+  let currentGroup = "";
+  let holder = null;
+
+  for (const spec of printFields.fields) {
+    if (spec.group !== currentGroup) {
+      currentGroup = spec.group;
+      const heading = document.createElement("h3");
+      heading.className = "card__title card__title--xs";
+      heading.textContent = currentGroup;
+      holder = document.createElement("div");
+      holder.className = "row row--wrap";
+      grid.append(heading, holder);
+    }
+
+    const wrap = document.createElement("label");
+    wrap.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.id = printFieldsCheckId(spec.key);
+    box.checked = active ? active[spec.key] !== false : true;
+
+    const text = document.createElement("span");
+    // مفاتيح الإعدادات العامة هي السلطة الأعلى: يُنبَّه أن البند مغلق عامّاً
+    const mutedGlobally = spec.key in globals && globals[spec.key] === false;
+    text.textContent = mutedGlobally ? `${spec.label} (مغلق في الإعدادات العامة)` : spec.label;
+
+    wrap.append(box, text);
+    holder.append(wrap);
+  }
+
+  const status = el("print-fields-state");
+  const doc = printFields.documents.find((entry) => entry.key === printFields.docKey);
+  if (!active) {
+    status.textContent = doc
+      ? `«${doc.title}» يحمل هوية المؤسسة كاملة (لم يُخصَّص).`
+      : "";
+  } else {
+    const hidden = printFields.fields
+      .filter((spec) => active[spec.key] === false)
+      .map((spec) => spec.label);
+    status.textContent = hidden.length
+      ? `المخفي حالياً على «${doc?.title ?? ""}»: ${hidden.join("، ")}.`
+      : `«${doc?.title ?? ""}» مخصَّص بكل البيانات ظاهرة.`;
+  }
+}
+
+async function loadPrintFields() {
+  if (!state.can("settings.manage")) return;
+
+  const result = await api("/documents/print-fields");
+  if (!result.ok) {
+    setAlert(
+      el("print-fields-result"),
+      result.error ?? "تعذّر تحميل تخصيص المطبوعات",
+      "error",
+    );
+    return;
+  }
+
+  printFields.documents = result.documents ?? [];
+  printFields.fields = result.fields ?? [];
+  printFields.overrides = result.overrides ?? {};
+  if (!printFields.documents.some((doc) => doc.key === printFields.docKey)) {
+    printFields.docKey = printFields.documents[0]?.key ?? "";
+  }
+
+  renderPrintFieldsDocs();
+  renderPrintFieldsGrid();
+}
+
+function setAllPrintFields(checked) {
+  for (const spec of printFields.fields) {
+    const box = document.getElementById(printFieldsCheckId(spec.key));
+    if (box) box.checked = checked;
+  }
+}
+
+async function savePrintFields() {
+  if (!printFields.docKey) return;
+  const submit = el("print-fields-save");
+  setBusy(submit, true);
+
+  const fields = {};
+  for (const spec of printFields.fields) {
+    fields[spec.key] = document.getElementById(printFieldsCheckId(spec.key))?.checked !== false;
+  }
+
+  const result = await api(`/documents/print-fields/${encodeURIComponent(printFields.docKey)}`, {
+    method: "PUT",
+    body: { fields },
+  });
+  setBusy(submit, false);
+
+  if (result.ok) {
+    printFields.overrides[printFields.docKey] = result.fields ?? fields;
+    renderPrintFieldsDocs();
+    renderPrintFieldsGrid();
+  }
+  setAlert(
+    el("print-fields-result"),
+    result.ok ? (result.message ?? "تم الحفظ.") : (result.error ?? "تعذّر الحفظ"),
+    result.ok ? "ok" : "error",
+  );
+}
+
+async function resetPrintFields() {
+  if (!printFields.docKey) return;
+  const submit = el("print-fields-reset");
+  setBusy(submit, true);
+
+  const result = await api(`/documents/print-fields/${encodeURIComponent(printFields.docKey)}`, {
+    method: "DELETE",
+  });
+  setBusy(submit, false);
+
+  if (result.ok) {
+    delete printFields.overrides[printFields.docKey];
+    renderPrintFieldsDocs();
+    renderPrintFieldsGrid();
+  }
+  setAlert(
+    el("print-fields-result"),
+    result.ok ? (result.message ?? "تم الإرجاع.") : (result.error ?? "تعذّر الإرجاع"),
     result.ok ? "ok" : "error",
   );
 }
@@ -837,6 +1025,18 @@ export function initSettingsModule({ can, employees }) {
   });
   el("company-logo-remove").addEventListener("click", removeLogo);
 
+  // تخصيص مطبوعات كل نموذج بند من إدارة الإعدادات نفسها
+  el("print-fields-card").hidden = !can("settings.manage");
+  el("print-fields-doc").addEventListener("change", (event) => {
+    printFields.docKey = event.target.value;
+    setAlert(el("print-fields-result"), "", null);
+    renderPrintFieldsGrid();
+  });
+  el("print-fields-save").addEventListener("click", savePrintFields);
+  el("print-fields-reset").addEventListener("click", resetPrintFields);
+  el("print-fields-all").addEventListener("click", () => setAllPrintFields(true));
+  el("print-fields-none").addEventListener("click", () => setAllPrintFields(false));
+
   el("entity-kind").addEventListener("change", async (event) => {
     state.currentEntity =
       state.entities.find((entity) => entity.key === event.target.value) ?? null;
@@ -864,6 +1064,7 @@ export async function refreshSettingsPanel(employees) {
   }
 
   await loadCompany();
+  await loadPrintFields();
   await loadSummary();
   await loadDemoData();
   if (state.entities.length === 0) {

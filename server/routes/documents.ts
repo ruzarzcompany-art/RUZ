@@ -12,6 +12,7 @@ import {
   custodyItems,
   departments,
   disciplinaryActions,
+  documentIdentityFields,
   documentIssues,
   employees,
   inventoryItems,
@@ -52,6 +53,12 @@ import {
   round2,
 } from "../validate.js";
 import { getOffDates, monthBounds, offScheduleLabel } from "../schedule.js";
+import {
+  IDENTITY_FIELDS,
+  loadIdentityFieldMap,
+  loadIdentityFields,
+  readIdentityFields,
+} from "../printIdentity.js";
 import { loadLines as loadCashierLines } from "./cashier.js";
 import { loadDailySheet } from "./inventory.js";
 import { loadCompanySettings } from "./settings.js";
@@ -971,6 +978,144 @@ documentsRouter.get(
       legalNotice: LEGAL_NOTICE,
       canPrintForOthers: canPrint,
       warningLevels: WARNING_LEVELS,
+    });
+  },
+);
+
+/* ── هوية المؤسسة على مطبوعات كل نموذج ─────────────────────────── */
+
+/**
+ * مطبوعات لها مسار طباعة مباشر بلا مدخل في حزمة النماذج (مسير الراتب والسند
+ * المسجَّل يُطبعان من شاشتيهما بـ`?doc=payroll|voucher&id=`). تُدرج هنا كي
+ * تُخصَّص هويتها كبقية النماذج.
+ */
+const LEGACY_PRINTABLES = [
+  {
+    key: "payroll",
+    title: "مسير راتب (طباعة من شاشة الرواتب)",
+    group: "الرواتب",
+  },
+  {
+    key: "voucher",
+    title: "سند قبض/صرف مسجَّل (طباعة من شاشة السندات)",
+    group: "المالية",
+  },
+] as const;
+
+/** كل ما يُطبع فعلاً: حزمة النماذج كاملةً (بما فيها المخفي) + المسارات المباشرة. */
+export const PRINTABLE_DOCS: Array<{ key: string; title: string; group: string }> = [
+  ...DOC_CATALOG.map((doc) => ({ key: doc.key, title: doc.title, group: doc.group })),
+  ...LEGACY_PRINTABLES.map((doc) => ({ ...doc })),
+];
+
+const PRINTABLE_KEYS = new Set(PRINTABLE_DOCS.map((doc) => doc.key));
+
+/** الشاشة تقرأ الدليل والحقول والتخصيصات المحفوظة في نداء واحد. */
+documentsRouter.get(
+  "/documents/print-fields",
+  requireAuth,
+  requirePermission(PERMISSIONS.settingsManage),
+  async (_req: AuthedRequest, res: Response) => {
+    res.json({
+      ok: true,
+      documents: PRINTABLE_DOCS,
+      fields: IDENTITY_FIELDS,
+      overrides: await loadIdentityFieldMap(),
+    });
+  },
+);
+
+/**
+ * تخصيص نموذج واحد. يُحفظ الصف كاملاً (ما لم يُذكر يُعتبر ظاهراً) فتُطابق
+ * الصورة المحفوظة ما تراه الشاشة تماماً.
+ */
+documentsRouter.put(
+  "/documents/print-fields/:docKey",
+  requireAuth,
+  requirePermission(PERMISSIONS.settingsManage),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const docKey = String(req.params.docKey ?? "");
+
+    if (!PRINTABLE_KEYS.has(docKey)) {
+      res.status(404).json({ ok: false, error: "نموذج غير معروف" });
+      return;
+    }
+
+    const fields = readIdentityFields((req.body ?? {}) as Record<string, unknown>);
+    if (typeof fields === "string") {
+      res.status(400).json({ ok: false, error: fields });
+      return;
+    }
+
+    const before = await loadIdentityFields(docKey);
+
+    const [saved] = await db
+      .insert(documentIdentityFields)
+      .values({ docKey, ...fields, updatedByEmployeeId: actor.id })
+      .onConflictDoUpdate({
+        target: documentIdentityFields.docKey,
+        set: { ...fields, updatedByEmployeeId: actor.id, updatedAt: new Date() },
+      })
+      .returning();
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "documents.print_fields.update",
+      entityType: "document_identity_fields",
+      entityId: saved?.id ?? null,
+      before,
+      after: saved,
+      ipAddress: clientIp(req),
+    });
+
+    const hidden = IDENTITY_FIELDS.filter((field) => !fields[field.key]);
+    res.json({
+      ok: true,
+      docKey,
+      fields,
+      message:
+        hidden.length === 0
+          ? "هوية المؤسسة تظهر كاملةً على هذا النموذج."
+          : `تم الحفظ. لن يظهر على هذا النموذج: ${hidden.map((f) => f.label).join("، ")}.`,
+    });
+  },
+);
+
+/** إعادة نموذج إلى الأصل: هوية المؤسسة كاملةً كما في الإعدادات العامة. */
+documentsRouter.delete(
+  "/documents/print-fields/:docKey",
+  requireAuth,
+  requirePermission(PERMISSIONS.settingsManage),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const docKey = String(req.params.docKey ?? "");
+
+    const before = await loadIdentityFields(docKey);
+    if (!before) {
+      res.json({ ok: true, docKey, message: "هذا النموذج على الأصل أساساً." });
+      return;
+    }
+
+    await db
+      .delete(documentIdentityFields)
+      .where(eq(documentIdentityFields.docKey, docKey));
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "documents.print_fields.reset",
+      entityType: "document_identity_fields",
+      entityId: null,
+      before,
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      docKey,
+      message: "أُعيد النموذج إلى هوية المؤسسة الكاملة.",
     });
   },
 );

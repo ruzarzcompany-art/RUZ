@@ -21,6 +21,7 @@ import {
   requirePermission,
 } from "../rbac.js";
 import { safeTimeZone } from "../time.js";
+import { loadIdentityFieldMap } from "../printIdentity.js";
 import { asBool, asEnum, asId, asNumber, asString } from "../validate.js";
 
 export const settingsRouter = Router();
@@ -86,6 +87,10 @@ const TEXT_FIELDS: Array<[keyof typeof companySettings.$inferInsert, number]> = 
 /**
  * إعدادات المطبوعات يقرأها كل موظف مسجَّل (صفحة الطباعة تحتاجها)،
  * أما التعديل فيحتاج صلاحية `settings.manage`.
+ *
+ * `printFields` هو تخصيص الهوية لكل نموذج على حدة؛ يأتي مع الإعدادات لأن
+ * صفحة الطباعة تقرأ هذا النداء أصلاً في كل مسار طباعة (حزمة النماذج والمسارات
+ * المباشرة معاً)، فتُطبَّق التخصيصات في مكان واحد.
  */
 settingsRouter.get(
   "/settings/company",
@@ -95,6 +100,7 @@ settingsRouter.get(
     res.json({
       ok: true,
       settings,
+      printFields: await loadIdentityFieldMap(),
       meta: {
         paperSizes: PAPER_SIZES,
         orientations: ORIENTATIONS,

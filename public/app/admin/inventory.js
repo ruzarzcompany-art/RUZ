@@ -18,6 +18,12 @@ import {
   todayIso,
 } from "../api.js";
 import { createPager } from "../pagination.js";
+import {
+  conversionFactor,
+  fillWeightUnitPicker,
+  setUnitTable,
+  unitLabel,
+} from "../units.js";
 
 const MOVEMENT_LABELS = {
   in: "إدخال",
@@ -296,9 +302,12 @@ async function loadItems() {
   }
 
   state.items = result.items ?? [];
+  // جدول الوحدات يأتي مع الأصناف كي يحسب المتصفح التحويل أثناء الكتابة
+  setUnitTable(result.meta?.units);
   fillItemPickers();
   renderItems();
   applyItemPriceMode();
+  applyManufacturingFields();
 }
 
 /* ── ورقة الجرد اليومي ─────────────────────────────────────────── */
@@ -420,13 +429,16 @@ function applyItemPriceMode() {
         : "سعر هذا الصنف ثابت كما هو مُعرَّف في الإعدادات.";
 }
 
-/* ── التصنيع: الكمية الخام ÷ عدد الوحدات = وزن الوحدة ──────────── */
+/* ── التصنيع: وزن الوحدة × عدد الوحدات = الكمية الخام ──────────── */
 
 const MANUFACTURE_INPUTS = {
   raw: "inventory-quantity",
   units: "inventory-produced-units",
   weight: "inventory-unit-weight",
 };
+
+/** قائمة وحدة قياس وزن الوحدة المنتجة (جرام مقابل كيلوجرام للخام). */
+const WEIGHT_UNIT_SELECT = "inventory-weight-unit";
 
 /**
  * ترتيب آخر ما حرّره المستخدم من الحقول الثلاثة. الحقل الأقدم في الترتيب هو
@@ -461,6 +473,19 @@ function selectedProducedItem() {
   return state.items.find((entry) => entry.id === Number(value)) ?? null;
 }
 
+/** الوحدة المختارة لوزن الوحدة المنتجة، أو الافتراضية إن لم تُملأ القائمة. */
+function selectedWeightUnit() {
+  const value = el(WEIGHT_UNIT_SELECT)?.value ?? "";
+  if (value !== "") return value;
+  const rawItem = selectedRawItem();
+  return rawItem?.defaultWeightUnit ?? rawItem?.unit ?? "";
+}
+
+/** كم من وحدة الخام في وحدة وزن واحدة (جرام ← كجم = 0.001). */
+function weightToRawFactor() {
+  return conversionFactor(selectedWeightUnit(), selectedRawItem()?.unit ?? "");
+}
+
 /** سطر يشرح العلاقة الحالية بين الأرقام الثلاثة كما ستُحفظ. */
 function renderManufactureHint() {
   const hint = el("inventory-manufacture-hint");
@@ -479,11 +504,14 @@ function renderManufactureHint() {
   const producedItem = selectedProducedItem();
   const rawUnit = rawItem?.unit ?? "";
   const producedUnit = producedItem?.unit ?? "وحدة";
+  const weightUnit = selectedWeightUnit();
 
   if (raw === null && units === null && weight === null) {
     hint.hidden = false;
     hint.textContent =
-      "أدخل أي رقمين من الثلاثة ويُحسب الثالث، أو اكتفِ بالكمية الخام وسجّل العدد لاحقاً.";
+      `المعادلة: وزن الوحدة (${weightUnit || "وحدة الوزن"}) × عدد الوحدات = الكمية الخام` +
+      `${rawUnit ? ` (${rawUnit})` : ""}. أدخل أي رقمين من الثلاثة ويُحسب الثالث،` +
+      " أو اكتفِ بالكمية الخام وسجّل العدد لاحقاً.";
     return;
   }
 
@@ -495,9 +523,11 @@ function renderManufactureHint() {
     parts.push("ولم يُسجَّل عدد الوحدات بعد — يمكن تسجيله لاحقاً");
   }
   if (weight !== null) {
-    // الكيلوجرام يُعرض بما يعادله بالجرام لأن وزن السيخ يُقاس بالجرامات عادةً
-    const grams = /كجم|كيلو|kg/i.test(rawUnit) ? ` (≈ ${roundTo(weight * 1000, 1)} جرام)` : "";
-    parts.push(`بوزن ${weight} ${rawUnit} للوحدة${grams}`);
+    // ما يعادله بوحدة الخام يُعرض صريحاً كي تظهر صحة التحويل بين الوحدتين
+    const factor = weightToRawFactor();
+    const converted =
+      factor !== 1 && rawUnit !== "" ? ` (= ${roundTo(weight * factor, 4)} ${rawUnit})` : "";
+    parts.push(`بوزن ${weight} ${weightUnit} للوحدة${converted}`);
   }
 
   hint.hidden = false;
@@ -505,8 +535,9 @@ function renderManufactureHint() {
 }
 
 /**
- * يُكمل الحقل الثالث من الحقلين اللذين حُرِّرا أخيراً. لا يمنع الحفظ في أي
- * حالة: الكمية الخام وحدها كافية لتسجيل العملية.
+ * يُكمل الحقل الثالث من الحقلين اللذين حُرِّرا أخيراً، بعد تحويل وزن الوحدة
+ * من وحدته إلى وحدة الخام. لا يمنع الحفظ في أي حالة: الكمية الخام وحدها
+ * كافية لتسجيل العملية.
  */
 function recomputeManufacturing(edited) {
   if (!isManufacture()) return;
@@ -521,12 +552,13 @@ function recomputeManufacturing(edited) {
     units: positiveValue(MANUFACTURE_INPUTS.units),
     weight: positiveValue(MANUFACTURE_INPUTS.weight),
   };
+  const factor = weightToRawFactor();
 
   if (values[first] !== null && values[second] !== null) {
     let next = null;
-    if (target === "raw") next = roundTo(values.units * values.weight, 2);
-    else if (target === "units") next = roundTo(values.raw / values.weight, 2);
-    else next = roundTo(values.raw / values.units, 4);
+    if (target === "raw") next = roundTo(values.units * values.weight * factor, 2);
+    else if (target === "units") next = roundTo(values.raw / (values.weight * factor), 2);
+    else next = roundTo(values.raw / values.units / factor, 4);
 
     if (Number.isFinite(next) && next > 0) {
       el(MANUFACTURE_INPUTS[target]).value = String(next);
@@ -536,7 +568,10 @@ function recomputeManufacturing(edited) {
   renderManufactureHint();
 }
 
-/** يُظهر حقول التصنيع الثلاثة ويضبط عناوينها على وحدة المادة الخام. */
+/**
+ * يُظهر حقول التصنيع ويضبط عناوينها: وزن الوحدة يُقاس بوحدة المنتج المختارة
+ * من القائمة (جرام افتراضياً لخام بالكيلوجرام) لا بوحدة الخام.
+ */
 function applyManufacturingFields() {
   const manufacture = isManufacture();
   const rawItem = selectedRawItem();
@@ -544,21 +579,23 @@ function applyManufacturingFields() {
   el("inventory-produced-field").hidden = !manufacture;
   el("inventory-units-field").hidden = !manufacture;
   el("inventory-weight-field").hidden = !manufacture;
+  el("inventory-weight-unit-field").hidden = !manufacture;
   el("inventory-produced-item").required = manufacture;
 
   el("inventory-quantity-label").textContent = manufacture
-    ? "الكمية الخام"
+    ? `الكمية الخام${rawItem ? ` (${rawItem.unit})` : ""}`
     : el("inventory-type").value === "count"
       ? "الكمية المعدودة"
       : "الكمية";
 
-  // وزن الوحدة يُقاس بوحدة المادة الخام لكل وحدة منتجة (كجم لكل سيخ مثلاً)
-  el("inventory-weight-label").textContent = rawItem
-    ? `وزن الوحدة (${rawItem.unit} لكل وحدة)`
-    : "وزن الوحدة";
+  const weightUnit = fillWeightUnitPicker(el(WEIGHT_UNIT_SELECT), rawItem);
+  el("inventory-weight-label").textContent = weightUnit
+    ? `وزن الوحدة المنتجة (${weightUnit})`
+    : "وزن الوحدة المنتجة";
 
   if (manufacture) fillProducedItemPicker();
-  renderManufactureHint();
+  // تغيير الصنف قد يغيّر وحدة الوزن ومعامل التحويل، فيُعاد الحساب لا العرض فقط
+  recomputeManufacturing(null);
 }
 
 async function submitMovement(event) {
@@ -581,10 +618,11 @@ async function submitMovement(event) {
       reason: el("inventory-reason").value,
       reference: el("inventory-reference").value.trim(),
       notes: el("inventory-notes").value.trim(),
-      // حقول التصنيع الثلاثة — الخادم يُكمل الناقص منها بالعلاقة نفسها
+      // حقول التصنيع — الخادم يُكمل الناقص منها بالمعادلة والوحدة نفسها
       producedItemId: manufacture ? Number(el("inventory-produced-item").value) || undefined : undefined,
       producedUnits: manufacture ? positiveValue(MANUFACTURE_INPUTS.units) ?? undefined : undefined,
       unitWeight: manufacture ? positiveValue(MANUFACTURE_INPUTS.weight) ?? undefined : undefined,
+      unitWeightUnit: manufacture ? selectedWeightUnit() || undefined : undefined,
     },
   });
 
@@ -641,9 +679,14 @@ async function completeProduction(movement) {
   const producedUnits = Number(answer);
   let unitWeight = null;
 
+  // وزن الوحدة يُدخل بوحدة المنتج (جرام عادةً) ويُحوّله الخادم إلى وحدة الخام
+  const rawItem = state.items.find((entry) => entry.id === movement.itemId);
+  const weightUnit =
+    movement.unitWeightUnit || rawItem?.defaultWeightUnit || unitLabel(movement.unit ?? "");
+
   if (!(Number.isFinite(producedUnits) && producedUnits > 0)) {
     const weightAnswer = window.prompt(
-      `وزن الوحدة الواحدة بوحدة الخام (${movement.unit ?? ""} لكل وحدة):`,
+      `وزن الوحدة المنتجة الواحدة (${weightUnit}):`,
       "",
     );
     if (weightAnswer === null) return;
@@ -659,6 +702,7 @@ async function completeProduction(movement) {
     body: {
       producedUnits: unitWeight === null ? producedUnits : undefined,
       unitWeight: unitWeight ?? undefined,
+      unitWeightUnit: weightUnit || undefined,
     },
   });
 
@@ -671,7 +715,7 @@ async function completeProduction(movement) {
   if (result.ok) await Promise.all([loadItems(), loadMovements(), loadDaily()]);
 }
 
-/** نص عمود الكمية: التصنيع يُظهر الخام المخصوم وما نتج عنه. */
+/** نص عمود الكمية: التصنيع يُظهر الخام المخصوم وما نتج عنه ووزن وحدته. */
 function manufactureQuantityText(movement) {
   const base = `${movement.quantity} ${movement.unit ?? ""}`;
   if (movement.movementType !== "manufacture") return base;
@@ -679,7 +723,11 @@ function manufactureQuantityText(movement) {
   const produced = state.items.find((entry) => entry.id === movement.producedItemId);
   if (!(movement.producedUnits > 0)) return `${base} ← بانتظار العدد`;
 
-  return `${base} ← ${movement.producedUnits} ${produced?.unit ?? "وحدة"}`;
+  const weight =
+    movement.unitWeight > 0
+      ? ` (${movement.unitWeight} ${movement.unitWeightUnit || movement.unit || ""} للوحدة)`
+      : "";
+  return `${base} ← ${movement.producedUnits} ${produced?.unit ?? "وحدة"}${weight}`;
 }
 
 function movementRow(movement) {
@@ -811,6 +859,12 @@ export function initInventoryModule({ can }) {
   for (const [key, id] of Object.entries(MANUFACTURE_INPUTS)) {
     el(id).addEventListener("input", () => recomputeManufacturing(key));
   }
+
+  // تغيير وحدة وزن الوحدة يُعيد الحساب بمعامل التحويل الجديد
+  el(WEIGHT_UNIT_SELECT).addEventListener("change", () => {
+    el("inventory-weight-label").textContent = `وزن الوحدة المنتجة (${selectedWeightUnit()})`;
+    recomputeManufacturing(null);
+  });
 }
 
 export async function refreshInventoryPanel() {

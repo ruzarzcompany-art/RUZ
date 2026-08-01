@@ -30,6 +30,7 @@ import {
   documentFooter,
   documentHeader,
   documentMeta,
+  identityForDoc,
   loadIdentity,
   paperNote,
   PAPER_CHOICES,
@@ -228,9 +229,18 @@ async function renderPackaged(company) {
 
   // إعدادات المؤسسة القادمة مع البيانات أحدث من النسخة المخزَّنة محلياً،
   // ويبقى اختيار المستخدم للورق فوقها لأنه يطابق الطابعة الفعلية.
-  const identity = withPaper({ ...company, ...(result.company ?? {}) }, readPaperPreference());
+  // تُعاد التنقية بعد الدمج لأن النسخة الأحدث تُرجع الهوية كاملة.
+  const identity = withPaper(
+    identityForDoc({ ...company, ...(result.company ?? {}) }, docKey),
+    readPaperPreference(),
+  );
   applyDesign(identity);
   setupPaperControls(identity);
+
+  // القوالب تقرأ `data.company` في متن بعض المستندات (أطراف العقد مثلاً)،
+  // فتأخذ النسخة المُنقّاة نفسها: البند المخفي يختفي عن الورقة كلها لا عن
+  // ترويستها وحدها.
+  result.company = identity;
 
   const subtitleParts = [
     result.employee ? `${result.employee.fullName} — ${result.employee.employeeCode}` : "",
@@ -496,7 +506,12 @@ async function boot() {
     return;
   }
 
-  const company = withPaper(await loadIdentity(), readPaperPreference());
+  // هوية المؤسسة تُنقّى مرة واحدة بحسب النموذج المطلوب، فتسري على مسار حزمة
+  // النماذج والمسارات المباشرة (المسير/العقد/السند) معاً
+  const company = withPaper(
+    identityForDoc(await loadIdentity(), docKey),
+    readPaperPreference(),
+  );
   applyDesign(company);
   setupPaperControls(company);
 

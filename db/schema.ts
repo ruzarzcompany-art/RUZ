@@ -809,6 +809,45 @@ export const companySettings = pgTable("company_settings", {
 });
 
 /**
+ * document_identity_fields — أي بيانات المؤسسة تظهر على مطبوعات كل نموذج.
+ *
+ * الأصل أن كل مطبوعة تحمل هوية المؤسسة كاملةً كما هي في `company_settings`،
+ * لكن بعض النماذج لا يُناسبها ذلك (طلب إجازة داخلي لا يحتاج الرقم الضريبي
+ * مثلاً). فيُسجَّل هنا صفٌّ واحد لكل نموذج يُستثنى فيه ما لا يُراد ظهوره،
+ * وغياب الصف يعني ظهور الهوية كاملةً — فلا يتغيّر سلوك أي نموذج لم يُخصَّص.
+ *
+ * هذه المفاتيح تُقيّد الإظهار ولا تُنشئه: مفتاح المؤسسة العام في
+ * `company_settings` (الشعار، التذييل، التوقيعات، العلامة المائية) يبقى
+ * الأعلى، فإن أُغلق هناك لا يفتحه تخصيص نموذج.
+ */
+export const documentIdentityFields = pgTable("document_identity_fields", {
+  id: serial().primaryKey(),
+  /** مفتاح النموذج في حزمة النماذج (advance، leave، payroll_slip ...) */
+  docKey: text("doc_key").notNull().unique(),
+  showLogo: boolean("show_logo").notNull().default(true),
+  showCompanyName: boolean("show_company_name").notNull().default(true),
+  showCompanyNameEn: boolean("show_company_name_en").notNull().default(true),
+  showCommercialRegister: boolean("show_commercial_register").notNull().default(true),
+  showTaxNumber: boolean("show_tax_number").notNull().default(true),
+  showAddress: boolean("show_address").notNull().default(true),
+  showCity: boolean("show_city").notNull().default(true),
+  showCountry: boolean("show_country").notNull().default(true),
+  showPhone: boolean("show_phone").notNull().default(true),
+  showEmail: boolean("show_email").notNull().default(true),
+  showWebsite: boolean("show_website").notNull().default(true),
+  showHeaderNote: boolean("show_header_note").notNull().default(true),
+  showFooter: boolean("show_footer").notNull().default(true),
+  showFooterNote: boolean("show_footer_note").notNull().default(true),
+  showSignatures: boolean("show_signatures").notNull().default(true),
+  showWatermark: boolean("show_watermark").notNull().default(true),
+  updatedByEmployeeId: integer("updated_by_employee_id").references(() => employees.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
  * departments — الأقسام (المطبخ، الكاشير، الصالة ...) لإدارتها من لوحة الإعدادات.
  */
 export const departments = pgTable("departments", {
@@ -1010,8 +1049,16 @@ export const inventoryMovements = pgTable(
     }),
     /** عدد الوحدات المنتجة — صفر يعني أنه لم يُسجَّل بعد ويمكن إكماله لاحقاً */
     producedUnits: doublePrecision("produced_units").notNull().default(0),
-    /** وزن الوحدة الواحدة بوحدة المادة الخام (الخام ÷ عدد الوحدات) */
+    /**
+     * وزن الوحدة المنتجة الواحدة بوحدة `unitWeightUnit` (جرام عادةً):
+     * وزن الوحدة × عدد الوحدات (بعد التحويل إلى وحدة الخام) = الكمية الخام.
+     */
     unitWeight: doublePrecision("unit_weight").notNull().default(0),
+    /**
+     * وحدة قياس `unitWeight` — تُخزَّن صريحةً لأنها تختلف عن وحدة الخام
+     * (جرام للوحدة مقابل كيلوجرام للخام)، فلا يُفسَّر الرقم بوحدة خاطئة لاحقاً.
+     */
+    unitWeightUnit: text("unit_weight_unit").notNull().default(""),
     /**
      * ربط حركتَي التصنيع: حركة خصم الخام ↔ حركة إضافة المنتج. عمود عادي بلا
      * مفتاح أجنبي لأن الجدول يشير إلى نفسه، والحذف يتكفّل بإزالة الطرفين معاً.

@@ -19,6 +19,13 @@ import {
   requirePermission,
 } from "../rbac.js";
 import { isoDateInZone, safeTimeZone } from "../time.js";
+import {
+  conversionFactor,
+  defaultWeightUnit,
+  resolveWeightUnit,
+  unitMeta,
+  weightUnitOptions,
+} from "../units.js";
 import { asDateOnly, asEnum, asId, asNumber, asString, round2 } from "../validate.js";
 
 export const inventoryRouter = Router();
@@ -40,24 +47,47 @@ function round4(value: number): number {
 }
 
 /**
- * التصنيع يربط ثلاثة أرقام: الكمية الخام ÷ عدد الوحدات = وزن الوحدة.
- * إدخال أي رقمين يُكمل الثالث، وإدخال الخام وحده يمرّ كما هو (عدد الوحدات
- * يُسجَّل لاحقاً) — لا يتوقف النظام في أي من الحالتين.
+ * التصنيع يربط ثلاثة أرقام بوحدتين مختلفتين:
+ *
+ *   وزن الوحدة (بوحدة المنتج، جرام مثلاً) × عدد الوحدات المنتجة
+ *     = الكمية الخام (بوحدة الخام، كيلوجرام مثلاً)
+ *
+ * فيُحوَّل وزن الوحدة إلى وحدة الخام بمعامل ثابت قبل الضرب: 50 جرام × 20 وحدة
+ * = 1 كجم. وإدخال أي رقمين يُكمل الثالث، وإدخال الخام وحده يمرّ كما هو (عدد
+ * الوحدات يُسجَّل لاحقاً) — لا يتوقف النظام في أي من الحالتين.
  */
 export function resolveManufacturing(input: {
   rawQuantity: number | null;
   producedUnits: number | null;
   unitWeight: number | null;
-}): { rawQuantity: number; producedUnits: number; unitWeight: number } {
+  rawUnit: string;
+  weightUnit?: unknown;
+}): {
+  rawQuantity: number;
+  producedUnits: number;
+  unitWeight: number;
+  unitWeightUnit: string;
+  rawUnit: string;
+} {
+  const unitWeightUnit = resolveWeightUnit(input.rawUnit, input.weightUnit);
+  // كم من وحدة الخام في وحدة وزن واحدة (جرام ← كجم = 0.001)
+  const toRaw = conversionFactor(unitWeightUnit, input.rawUnit);
+
   let raw = input.rawQuantity !== null && input.rawQuantity > 0 ? input.rawQuantity : 0;
   let units = input.producedUnits !== null && input.producedUnits > 0 ? input.producedUnits : 0;
   let weight = input.unitWeight !== null && input.unitWeight > 0 ? input.unitWeight : 0;
 
-  if (raw > 0 && units > 0) weight = round4(raw / units);
-  else if (raw > 0 && weight > 0) units = round2(raw / weight);
-  else if (units > 0 && weight > 0) raw = round2(units * weight);
+  if (raw > 0 && units > 0) weight = round4(raw / units / toRaw);
+  else if (raw > 0 && weight > 0) units = round2(raw / (weight * toRaw));
+  else if (units > 0 && weight > 0) raw = round2(units * weight * toRaw);
 
-  return { rawQuantity: round2(raw), producedUnits: round2(units), unitWeight: round4(weight) };
+  return {
+    rawQuantity: round2(raw),
+    producedUnits: round2(units),
+    unitWeight: round4(weight),
+    unitWeightUnit,
+    rawUnit: input.rawUnit,
+  };
 }
 
 /** أقصى عدد حركات تُقرأ لحساب الأرصدة (حماية من استعلام ضخم). */
@@ -126,6 +156,7 @@ async function createProducedMovement(input: {
   businessDate: string;
   producedUnits: number;
   unitWeight: number;
+  unitWeightUnit: string;
   rawTotalCost: number;
   reference: string;
   notes: string;
@@ -153,6 +184,7 @@ async function createProducedMovement(input: {
       variance: 0,
       producedUnits: 0,
       unitWeight: input.unitWeight,
+      unitWeightUnit: input.unitWeightUnit,
       linkedMovementId: input.rawMovementId,
       notes: input.notes,
       createdByEmployeeId: input.actorId,
@@ -232,9 +264,15 @@ inventoryRouter.get(
           lastCountDate: state?.lastCountDate ?? null,
           belowMinimum: balance < item.minQuantity,
           stockValue: round2(balance * item.unitCost),
+          /**
+           * وحدات وزن الوحدة المنتجة المتاحة إن كان هذا الصنف مادة خام:
+           * الخادم يحسبها من جدول الوحدات فلا تُعرّف في المتصفح مرة ثانية.
+           */
+          weightUnits: weightUnitOptions(item.unit),
+          defaultWeightUnit: defaultWeightUnit(item.unit),
         };
       }),
-      meta: { movementTypes: MOVEMENT_TYPES, reasons: REASONS },
+      meta: { movementTypes: MOVEMENT_TYPES, reasons: REASONS, units: unitMeta() },
     });
   },
 );
@@ -323,6 +361,8 @@ inventoryRouter.post(
           rawQuantity: asNumber(body.quantity),
           producedUnits: asNumber(body.producedUnits),
           unitWeight: asNumber(body.unitWeight),
+          rawUnit: item.unit,
+          weightUnit: body.unitWeightUnit,
         })
       : null;
 
@@ -396,6 +436,7 @@ inventoryRouter.post(
         producedItemId,
         producedUnits: manufacturing?.producedUnits ?? 0,
         unitWeight: manufacturing?.unitWeight ?? 0,
+        unitWeightUnit: manufacturing?.unitWeightUnit ?? "",
         notes,
         createdByEmployeeId: actor.id,
       })
@@ -427,6 +468,7 @@ inventoryRouter.post(
         businessDate,
         producedUnits: manufacturing.producedUnits,
         unitWeight: manufacturing.unitWeight,
+        unitWeightUnit: manufacturing.unitWeightUnit,
         rawTotalCost: totalCost,
         reference,
         notes,
@@ -472,11 +514,15 @@ inventoryRouter.post(
       message = `تم تسجيل الجرد. الفرق عن الرصيد الدفتري: ${variance}`;
     } else if (isManufacture && manufacturing) {
       const consumed = `خُصم ${manufacturing.rawQuantity} ${item.unit} من «${item.name}»`;
+      const weightNote =
+        manufacturing.unitWeight > 0
+          ? ` بوزن ${manufacturing.unitWeight} ${manufacturing.unitWeightUnit} للوحدة`
+          : "";
       message =
         manufacturing.producedUnits > 0
           ? `تم تسجيل التصنيع: ${consumed} وأُضيف ${manufacturing.producedUnits} ${
               producedItem?.unit ?? "وحدة"
-            } إلى «${producedItem?.name ?? ""}»` +
+            } إلى «${producedItem?.name ?? ""}»${weightNote}` +
             (producedCostUpdated ? ` بتكلفة ${producedUnitCost} للوحدة` : "")
           : `${consumed}. لم يُسجَّل عدد الوحدات المنتجة بعد — يمكن تسجيله لاحقاً على الحركة نفسها`;
     } else if (itemCostUpdated) {
@@ -677,11 +723,20 @@ inventoryRouter.patch(
       return;
     }
 
+    // وحدة المادة الخام تُحدّد معامل تحويل وزن الوحدة، فتُقرأ من صنف الحركة
+    const [rawItem] = await db
+      .select({ unit: inventoryItems.unit })
+      .from(inventoryItems)
+      .where(eq(inventoryItems.id, movement.itemId))
+      .limit(1);
+
     // الخام مسجَّل سلفاً، فالمطلوب هنا عدد الوحدات أو وزن الوحدة ليُحسب الآخر
     const resolved = resolveManufacturing({
       rawQuantity: movement.quantity,
       producedUnits: asNumber(body.producedUnits),
       unitWeight: asNumber(body.unitWeight),
+      rawUnit: rawItem?.unit ?? "",
+      weightUnit: body.unitWeightUnit ?? movement.unitWeightUnit,
     });
 
     if (resolved.producedUnits <= 0) {
@@ -696,6 +751,7 @@ inventoryRouter.patch(
       businessDate: movement.businessDate,
       producedUnits: resolved.producedUnits,
       unitWeight: resolved.unitWeight,
+      unitWeightUnit: resolved.unitWeightUnit,
       rawTotalCost: movement.totalCost,
       reference: movement.reference,
       notes: movement.notes,
@@ -709,6 +765,7 @@ inventoryRouter.patch(
         producedItemId,
         producedUnits: resolved.producedUnits,
         unitWeight: resolved.unitWeight,
+        unitWeightUnit: resolved.unitWeightUnit,
         linkedMovementId: created.movement?.id ?? null,
         updatedAt: new Date(),
       })
@@ -730,7 +787,10 @@ inventoryRouter.patch(
       movement: updated,
       producedMovement: created.movement,
       manufacturing: resolved,
-      message: `تم تسجيل ${resolved.producedUnits} ${producedItem.unit} من «${producedItem.name}» وإضافتها للمخزون`,
+      message: `تم تسجيل ${resolved.producedUnits} ${producedItem.unit} من «${producedItem.name}» وإضافتها للمخزون` +
+        (resolved.unitWeight > 0
+          ? ` بوزن ${resolved.unitWeight} ${resolved.unitWeightUnit} للوحدة`
+          : ""),
     });
   },
 );
