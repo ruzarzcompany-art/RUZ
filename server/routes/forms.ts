@@ -18,9 +18,11 @@ import { clientIp, recordAudit } from "../audit.js";
 import { DEMO_EMPLOYEE_CODES } from "../demo.js";
 import {
   hasAnyPermission,
+  hasModuleDelete,
   hasModuleLevel,
   PERMISSIONS,
   requireAnyPermission,
+  requireModuleDelete,
   requireModuleLevel,
   requirePermission,
 } from "../rbac.js";
@@ -947,10 +949,10 @@ for (const resource of RESOURCES) {
       }
 
       const record = before as Record<string, unknown>;
-      // الحذف درجة «إضافة/تعديل/حذف»
+      // الحذف درجة مستقلة: «إضافة/تعديل» وحدها لا تكفي لحذف نموذج
       const canManage =
         (await hasAnyPermission(req, [resource.managePermission])) &&
-        (await hasModuleLevel(req, resource.moduleKey, 3));
+        (await hasModuleDelete(req, resource.moduleKey));
       const isOwner = record.employeeId === actor.id;
       const isPending = resource.decidable && record.status === "pending";
 
@@ -980,7 +982,7 @@ for (const resource of RESOURCES) {
     `/forms/${resource.key}/purge/preview`,
     requireAuth,
     requirePermission(resource.managePermission),
-    requireModuleLevel(resource.moduleKey, 3),
+    requireModuleDelete(resource.moduleKey),
     async (req: AuthedRequest, res: Response) => {
       const db = getDb();
       const scope = asEnum(req.query.scope, PURGE_SCOPES) ?? "before";
@@ -1012,7 +1014,7 @@ for (const resource of RESOURCES) {
     `/forms/${resource.key}/purge`,
     requireAuth,
     requirePermission(resource.managePermission),
-    requireModuleLevel(resource.moduleKey, 3),
+    requireModuleDelete(resource.moduleKey),
     async (req: AuthedRequest, res: Response) => {
       const db = getDb();
       const actor = req.employee!;

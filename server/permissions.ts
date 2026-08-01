@@ -4,8 +4,9 @@
  * ينقسم إلى طبقتين:
  *  1. `PERMISSIONS` — الرموز الذرّية التي تُفحص في كل مسار خادم.
  *  2. `MODULE_CATALOG` — بنود النظام كما يراها المستخدم في شاشة «إدارة
- *     الصلاحيات»، وكل بند له درجات متدرّجة (1..4) وكل درجة تُترجم إلى
- *     مجموعة رموز ذرّية. هذه الطبقة هي ما يُخزَّن في `access_rules`.
+ *     الصلاحيات»، وكل بند له درجات متدرّجة (1..4) ودرجة حذف مستقلة، وكل
+ *     درجة تُترجم إلى مجموعة رموز ذرّية. هذه الطبقة هي ما يُخزَّن في
+ *     `access_rules`، وهي **المصدر النهائي** لدرجة البند حين توجد قاعدة.
  *
  * يُستورد هذا الملف من `rbac.ts` (الذي يعيد تصديره) حتى تبقى نقطة الاستيراد
  * واحدة في بقية الخادم وتُمنع الحلقات الدائرية بين الوحدات.
@@ -300,8 +301,9 @@ export const ACCESS_SCOPES: Array<{
 ];
 
 /**
- * الدرجات الأربع. تراكمية: الدرجة الأعلى تُفعّل ما دونها حتماً، فلا يمكن
- * منح «إضافة/تعديل/حذف» دون «القراءة» و«تسجيل الحركة».
+ * سلّم الدرجات الأربع. تراكمي: الدرجة الأعلى تُفعّل ما دونها حتماً، فلا يمكن
+ * منح «إضافة/تعديل» دون «القراءة» و«تسجيل الحركة». أما **الحذف** فدرجة
+ * مستقلة خارج هذا السلّم — انظر `ACCESS_DELETE_GRADE`.
  */
 export const ACCESS_LEVELS: Array<{
   level: AccessLevel;
@@ -323,9 +325,9 @@ export const ACCESS_LEVELS: Array<{
   },
   {
     level: 3,
-    label: "إضافة / تعديل / حذف",
+    label: "إضافة / تعديل",
     short: "تحكّم",
-    hint: "التحكم الكامل في السجلات بما فيها التعديل والحذف",
+    hint: "إنشاء السجلات وتعديلها — دون الحذف",
   },
   {
     level: 4,
@@ -334,6 +336,18 @@ export const ACCESS_LEVELS: Array<{
     hint: "اعتماد أو رفض ما يرفعه الآخرون — للبنود التي تحتاج موافقة فعلاً",
   },
 ];
+
+/**
+ * درجة الحذف: **مستقلة تماماً** عن سلّم الدرجات 1..4، تُمنح أو تُسحب وحدها.
+ * فقد يملك موظف «إضافة/تعديل» بلا حذف، أو حذفاً بلا موافقات، والعكس.
+ * لا تظهر إلا في البنود التي فيها حذف فعلي في الخادم.
+ */
+export const ACCESS_DELETE_GRADE = {
+  key: "delete",
+  label: "حذف",
+  short: "حذف",
+  hint: "حذف السجلات — تُمنح أو تُسحب باستقلال عن درجة الإضافة والتعديل",
+} as const;
 
 export interface ModuleLevelSpec {
   level: AccessLevel;
@@ -392,7 +406,7 @@ export const MODULE_CATALOG: AccessModule[] = [
       {
         level: 3,
         codes: [P.attendanceManualWrite],
-        hint: "إدخال وتعديل وحذف سجلات الحضور يدوياً",
+        hint: "إدخال وتعديل سجلات الحضور يدوياً",
       },
       {
         level: 4,
@@ -409,7 +423,7 @@ export const MODULE_CATALOG: AccessModule[] = [
     levels: [
       { level: 1, codes: [P.employeesRead, P.sectionEmployeeFile] },
       { level: 2, codes: [P.schedulesManage], hint: "حفظ جدول دوام موظف" },
-      { level: 3, codes: [P.schedulesManage], hint: "تعديل وحذف الجداول" },
+      { level: 3, codes: [P.schedulesManage], hint: "تعديل الجداول" },
     ],
   },
 
@@ -422,7 +436,7 @@ export const MODULE_CATALOG: AccessModule[] = [
     levels: [
       { level: 1, codes: [P.formsReadOwn, P.formsReadAll] },
       { level: 2, codes: [P.formsSubmit], hint: "تقديم طلب إجازة" },
-      { level: 3, codes: [P.formsApprove], hint: "تعديل وحذف طلبات الآخرين" },
+      { level: 3, codes: [P.formsApprove], hint: "تعديل طلبات الآخرين" },
       { level: 4, codes: [P.formsApprove], hint: "اعتماد أو رفض طلبات الإجازة" },
     ],
   },
@@ -434,7 +448,7 @@ export const MODULE_CATALOG: AccessModule[] = [
     levels: [
       { level: 1, codes: [P.formsReadOwn, P.formsReadAll] },
       { level: 2, codes: [P.formsSubmit], hint: "تقديم طلب سلفة" },
-      { level: 3, codes: [P.formsApprove], hint: "تعديل وحذف طلبات الآخرين" },
+      { level: 3, codes: [P.formsApprove], hint: "تعديل طلبات الآخرين" },
       { level: 4, codes: [P.formsApprove], hint: "اعتماد أو رفض طلبات السلف" },
     ],
   },
@@ -446,7 +460,7 @@ export const MODULE_CATALOG: AccessModule[] = [
     levels: [
       { level: 1, codes: [P.formsReadOwn, P.formsReadAll] },
       { level: 2, codes: [P.formsSubmit], hint: "تقديم طلب أوفرتايم" },
-      { level: 3, codes: [P.formsApprove], hint: "تعديل وحذف طلبات الآخرين" },
+      { level: 3, codes: [P.formsApprove], hint: "تعديل طلبات الآخرين" },
       { level: 4, codes: [P.formsApprove], hint: "اعتماد أو رفض الأوفرتايم" },
     ],
   },
@@ -458,7 +472,7 @@ export const MODULE_CATALOG: AccessModule[] = [
     levels: [
       { level: 1, codes: [P.formsReadOwn, P.formsReadAll] },
       { level: 2, codes: [P.bonusesManage], hint: "تسجيل مكافأة جديدة" },
-      { level: 3, codes: [P.bonusesManage], hint: "تعديل وحذف المكافآت" },
+      { level: 3, codes: [P.bonusesManage], hint: "تعديل المكافآت" },
       { level: 4, codes: [P.bonusesManage], hint: "اعتماد أو رفض المكافآت" },
     ],
   },
@@ -470,7 +484,7 @@ export const MODULE_CATALOG: AccessModule[] = [
     levels: [
       { level: 1, codes: [P.formsReadOwn, P.formsReadAll] },
       { level: 2, codes: [P.custodyManage], hint: "تسجيل إخراج عهدة" },
-      { level: 3, codes: [P.custodyManage], hint: "تعديل وحذف سجلات العهد" },
+      { level: 3, codes: [P.custodyManage], hint: "تعديل سجلات العهد" },
     ],
   },
   {
@@ -481,7 +495,7 @@ export const MODULE_CATALOG: AccessModule[] = [
     levels: [
       { level: 1, codes: [P.formsReadOwn, P.formsReadAll] },
       { level: 2, codes: [P.contractsManage], hint: "إنشاء عقد" },
-      { level: 3, codes: [P.contractsManage], hint: "تعديل وحذف العقود" },
+      { level: 3, codes: [P.contractsManage], hint: "تعديل العقود" },
     ],
   },
   {
@@ -492,7 +506,7 @@ export const MODULE_CATALOG: AccessModule[] = [
     levels: [
       { level: 1, codes: [P.documentsReadAll, P.sectionDocuments] },
       { level: 2, codes: [P.disciplinaryManage], hint: "إصدار إنذار" },
-      { level: 3, codes: [P.disciplinaryManage], hint: "تعديل وحذف الإنذارات" },
+      { level: 3, codes: [P.disciplinaryManage], hint: "تعديل الإنذارات" },
     ],
   },
 
@@ -505,7 +519,7 @@ export const MODULE_CATALOG: AccessModule[] = [
     levels: [
       { level: 1, codes: [P.cashierReadAll, P.sectionCashierClosing] },
       { level: 2, codes: [P.cashierSubmit], hint: "رفع تقفيل الوردية" },
-      { level: 3, codes: [P.cashierReview], hint: "تعديل وحذف التقفيلات" },
+      { level: 3, codes: [P.cashierReview], hint: "تعديل التقفيلات" },
       {
         level: 4,
         codes: [P.cashierReview],
@@ -521,7 +535,7 @@ export const MODULE_CATALOG: AccessModule[] = [
     levels: [
       { level: 1, codes: [P.vouchersManage, P.sectionCashierClosing] },
       { level: 2, codes: [P.vouchersManage], hint: "إصدار سند" },
-      { level: 3, codes: [P.vouchersManage], hint: "تعديل وحذف السندات" },
+      { level: 3, codes: [P.vouchersManage], hint: "تعديل السندات" },
     ],
   },
   {
@@ -532,7 +546,7 @@ export const MODULE_CATALOG: AccessModule[] = [
     levels: [
       { level: 1, codes: [P.sectionPayroll] },
       { level: 2, codes: [P.payrollManage], hint: "توليد مسير كمسوّدة" },
-      { level: 3, codes: [P.payrollManage], hint: "حذف المسيّرات وإعادة توليدها" },
+      { level: 3, codes: [P.payrollManage], hint: "تعديل المسيّرات وإعادة توليدها" },
       { level: 4, codes: [P.payrollManage], hint: "اعتماد المسير الشهري" },
     ],
   },
@@ -556,7 +570,7 @@ export const MODULE_CATALOG: AccessModule[] = [
     levels: [
       { level: 1, codes: [P.inventoryRead, P.sectionInventory] },
       { level: 2, codes: [P.inventoryWrite], hint: "تسجيل حركة إدخال/إخراج/جرد" },
-      { level: 3, codes: [P.inventoryItemsManage], hint: "حذف الحركات وتصحيحها" },
+      { level: 3, codes: [P.inventoryItemsManage], hint: "تصحيح الحركات المسجّلة" },
     ],
   },
   {
@@ -569,7 +583,7 @@ export const MODULE_CATALOG: AccessModule[] = [
       {
         level: 3,
         codes: [P.inventoryItemsManage],
-        hint: "إضافة وتعديل وحذف الأصناف",
+        hint: "إضافة وتعديل الأصناف",
       },
     ],
   },
@@ -600,7 +614,7 @@ export const MODULE_CATALOG: AccessModule[] = [
       {
         level: 3,
         codes: [P.documentsReadAll],
-        hint: "حذف سجلات الإصدار وتنظيف السجل",
+        hint: "تعديل سجل الإصدار",
       },
     ],
   },
@@ -633,7 +647,7 @@ export const MODULE_CATALOG: AccessModule[] = [
       {
         level: 3,
         codes: [P.settingsManage],
-        hint: "إضافة وتعديل وحذف الكيانات والإعدادات",
+        hint: "إضافة وتعديل الكيانات والإعدادات",
       },
     ],
   },
@@ -654,13 +668,63 @@ export const MODULE_CATALOG: AccessModule[] = [
       {
         level: 3,
         codes: [P.permissionsManage],
-        hint: "إنشاء وتعديل وحذف قواعد الصلاحيات",
+        hint: "إنشاء وتعديل قواعد الصلاحيات",
       },
     ],
   },
 ];
 
 export const MODULE_INDEX = new Map(MODULE_CATALOG.map((item) => [item.key, item]));
+
+/**
+ * درجة الحذف لكل بند فيه حذف فعلي في الخادم. البنود غير المذكورة هنا لا
+ * تعرض خانة حذف أصلاً (لا يوجد فيها مسار حذف: التقارير، سجل التدقيق،
+ * حضوري الشخصي، جداول الدوام، تعريف الراتب).
+ *
+ * `codes` هي الرموز التي يحتاجها مسار الحذف نفسه. وهي في الغالب الرموز
+ * ذاتها التي يحتاجها التعديل، لأن النظام لا يملك رمزاً ذرّياً منفصلاً
+ * للحذف؛ ولذلك يأتي فحص `requireModuleDelete` في المسار ليفصل الحذف عن
+ * التعديل فصلاً حقيقياً بدل الاعتماد على الرمز.
+ */
+export const MODULE_DELETE_GRADE: Record<string, { codes: string[]; hint: string }> = {
+  attendance_records: { codes: [P.attendanceManualWrite], hint: "حذف سجل حضور" },
+  leaves: { codes: [P.formsApprove], hint: "حذف طلبات الإجازة" },
+  advances: { codes: [P.formsApprove], hint: "حذف طلبات السلف" },
+  overtime: { codes: [P.formsApprove], hint: "حذف طلبات الأوفرتايم" },
+  bonuses: { codes: [P.bonusesManage], hint: "حذف المكافآت" },
+  custody: { codes: [P.custodyManage], hint: "حذف سجلات العهد" },
+  contracts: { codes: [P.contractsManage], hint: "حذف العقود" },
+  disciplinary: { codes: [P.disciplinaryManage], hint: "حذف الإنذارات" },
+  cashier_closing: { codes: [P.cashierReview], hint: "حذف تقفيل مرفوع" },
+  vouchers: { codes: [P.vouchersManage], hint: "حذف السندات" },
+  payroll: { codes: [P.payrollManage], hint: "حذف مسير راتب محفوظ" },
+  inventory_movements: { codes: [P.inventoryItemsManage], hint: "حذف حركة مخزون" },
+  inventory_items: { codes: [P.inventoryItemsManage], hint: "حذف صنف من المخزون" },
+  employees: { codes: [P.employeesWrite], hint: "حذف ملف موظف بالكامل" },
+  documents: { codes: [P.documentsReadAll], hint: "حذف سجلات الإصدار وتنظيف السجل" },
+  branches: { codes: [P.branchesWrite], hint: "حذف فرع" },
+  settings: { codes: [P.settingsManage], hint: "حذف كيان أساسي" },
+  access_control: { codes: [P.permissionsManage], hint: "حذف قواعد الصلاحيات" },
+};
+
+/** هل لهذا البند خانة حذف أصلاً؟ */
+export function isDeleteAvailable(moduleKey: string): boolean {
+  return Object.hasOwn(MODULE_DELETE_GRADE, moduleKey);
+}
+
+/** الرموز التي يحتاجها مسار الحذف في هذا البند. */
+export function deleteCodesForModule(moduleKey: string): string[] {
+  return MODULE_DELETE_GRADE[moduleKey]?.codes ?? [];
+}
+
+/**
+ * هل تُستنتج صلاحية الحذف من رموز يملكها الموظف بدوره؟ تُستخدم كأساس عند
+ * غياب قاعدة صريحة، حتى لا تنكسر الأدوار القائمة قبل هذه الشاشة.
+ */
+export function derivedModuleDelete(moduleKey: string, owned: Set<string>): boolean {
+  const codes = deleteCodesForModule(moduleKey);
+  return codes.length > 0 && codes.some((code) => owned.has(code));
+}
 
 /** الدرجات المتاحة فعلاً لبند ما، مرتّبة تصاعدياً (قد تكون غير متصلة). */
 export function availableLevels(moduleKey: string): AccessLevel[] {
@@ -695,6 +759,25 @@ export function codesForModuleLevel(moduleKey: string, level: number): string[] 
 }
 
 /**
+ * الرموز التي **تتجاوز** درجة ممنوحة في بند: رموز كل درجة أعلى منها، مع
+ * رموز الحذف إن لم يُمنح الحذف. تُستخدم لسحب ما يمنحه الدور فوق سقف القاعدة.
+ */
+export function codesAboveModuleLevel(
+  moduleKey: string,
+  level: number,
+  canDelete: boolean,
+): string[] {
+  const module = MODULE_INDEX.get(moduleKey);
+  if (!module) return [];
+  const codes = new Set<string>();
+  for (const entry of module.levels) {
+    if (entry.level > level) for (const code of entry.codes) codes.add(code);
+  }
+  if (!canDelete) for (const code of deleteCodesForModule(moduleKey)) codes.add(code);
+  return [...codes];
+}
+
+/**
  * الدرجة المستنتجة من مجموعة رموز يملكها الموظف أصلاً (دوره + تخصيصاته
  * الفردية القديمة). تُحتسب كأعلى درجة يملك الموظف رمزاً واحداً على الأقل من
  * رموزها، حتى لا تنكسر الأدوار القائمة التي لا تملك كل رموز الدرجات الأدنى.
@@ -715,6 +798,7 @@ export function accessCatalogPayload() {
   return {
     scopes: ACCESS_SCOPES,
     levels: ACCESS_LEVELS,
+    deleteGrade: ACCESS_DELETE_GRADE,
     modules: MODULE_CATALOG.map((module) => ({
       key: module.key,
       label: module.label,
@@ -724,6 +808,10 @@ export function accessCatalogPayload() {
         level: entry.level,
         hint: entry.hint ?? "",
       })),
+      delete: {
+        available: isDeleteAvailable(module.key),
+        hint: MODULE_DELETE_GRADE[module.key]?.hint ?? "",
+      },
     })),
   };
 }

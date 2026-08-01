@@ -174,6 +174,7 @@ export function createApp() {
       },
       permissions: profile.codes,
       moduleLevels: profile.moduleLevels,
+      moduleDelete: profile.moduleDelete,
     });
   });
 
@@ -228,6 +229,7 @@ export function createApp() {
       branch: branch ? { ...branch, managerName: branchManagerName } : null,
       permissions: profile.codes,
       moduleLevels: profile.moduleLevels,
+      moduleDelete: profile.moduleDelete,
       serverTime: new Date().toISOString(),
     });
   });

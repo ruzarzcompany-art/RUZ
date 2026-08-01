@@ -42,6 +42,8 @@ const state = {
   serverOffsetMs: 0,
   branch: null,
   permissions: [],
+  /** درجة الموظف في كل بند (0..4) كما حسبها الخادم بعد تطبيق قواعد الصلاحيات. */
+  moduleLevels: {},
   nextType: "check_in",
   busy: false,
   lastPunchAt: 0,
@@ -68,6 +70,9 @@ const state = {
   /** هل يستطيع الموقع إرسال رمز الاستعادة بالبريد؟ */
   resetByEmail: false,
 };
+
+/** درجة الموظف في بند معيّن كما حسبها الخادم (0 = ممنوع). */
+const levelOf = (moduleKey) => Number(state.moduleLevels[moduleKey] ?? 0);
 
 /* ── التنقّل بين الشاشات ───────────────────────────────────── */
 
@@ -432,10 +437,12 @@ async function renderMyForm() {
 
 /* ── قائمة الإضافات العلوية ────────────────────────────────── */
 
-/** أقسام القائمة العلوية: الطلبات، الملف الوظيفي، تغيير كلمة المرور. */
+/** أقسام القائمة العلوية: الطلبات، الملف الوظيفي، التقفيل، المخزون، كلمة المرور. */
 const EXTRA_PANELS = [
   { key: "requests", nodeId: "panel-requests" },
   { key: "file", nodeId: "file-card" },
+  { key: "cashier", nodeId: "panel-cashier" },
+  { key: "inventory", nodeId: "panel-inventory" },
   { key: "password", nodeId: "panel-password" },
 ];
 
@@ -460,6 +467,19 @@ async function showPanel(key) {
   paintPanels();
 
   if (key === "file") await refreshMyFile();
+
+  // شاشتا التقفيل والمخزون تُحمَّلان عند أول فتح فقط — أغلب الموظفين لا يفتحونهما
+  if (key === "cashier") {
+    const module = await import("./self-cashier.js");
+    module.initSelfCashier();
+    await module.refreshSelfCashier();
+  }
+
+  if (key === "inventory") {
+    const module = await import("./self-inventory.js");
+    module.initSelfInventory();
+    await module.refreshSelfInventory();
+  }
 }
 
 /* ── ملفي الوظيفي ─────────────────────────────────────────── */
@@ -528,6 +548,7 @@ async function loadProfile() {
 
   state.branch = result.branch;
   state.permissions = result.permissions ?? [];
+  state.moduleLevels = result.moduleLevels ?? {};
   state.fullName = result.employee.fullName;
   state.serverOffsetMs = new Date(result.serverTime).getTime() - Date.now();
 
@@ -540,9 +561,17 @@ async function loadProfile() {
   el("set-branch").hidden = !(state.permissions.includes("branches.write") && state.branch);
   el("admin-link").hidden = !state.permissions.some((code) => ADMIN_PERMISSIONS.includes(code));
 
-  // أقسام القائمة العلوية: الملف الوظيفي قابل للتعطيل لموظف بعينه
+  // أقسام القائمة العلوية: الملف الوظيفي قابل للتعطيل لموظف بعينه، والتقفيل
+  // وحركة المخزون يظهران لمن بلغت درجته في البند «تسجيل» (2) فأعلى — وهي
+  // الدرجة التي يفرضها الخادم نفسه على الرفع، فلا تُعرض شاشة لا تُقبل منها.
   state.allowedPanels = new Set(["requests", "password"]);
   if (state.permissions.includes("sections.employee_file")) state.allowedPanels.add("file");
+  if (levelOf("cashier_closing") >= 2 && state.permissions.includes("cashier.submit")) {
+    state.allowedPanels.add("cashier");
+  }
+  if (levelOf("inventory_movements") >= 2 && state.permissions.includes("inventory.write")) {
+    state.allowedPanels.add("inventory");
+  }
   if (!state.allowedPanels.has(state.panel)) state.panel = "requests";
   paintPanels();
 

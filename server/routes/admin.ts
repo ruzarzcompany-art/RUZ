@@ -16,7 +16,12 @@ import { getMailConfig } from "../config.js";
 import { demoDataStatus, purgeDemoData } from "../demo.js";
 import { DEMO_PURGED_FLAG, isFlagOn, setFlag } from "../flags.js";
 import { issueResetCodeByAdmin, maskEmail } from "../reset.js";
-import { PERMISSIONS, requireAnyPermission, requirePermission } from "../rbac.js";
+import {
+  PERMISSIONS,
+  requireAnyPermission,
+  requireModuleDelete,
+  requirePermission,
+} from "../rbac.js";
 import { reseedNow } from "../seed.js";
 import { CHECK_IN, CHECK_OUT, closeStaleShifts } from "../shifts.js";
 import { isoDateInZone, safeTimeZone } from "../time.js";
@@ -329,6 +334,7 @@ adminRouter.delete(
   "/admin/attendance/:id",
   requireAuth,
   requirePermission(PERMISSIONS.attendanceManualWrite),
+  requireModuleDelete("attendance_records"),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;

@@ -1628,6 +1628,22 @@ select option {
   opacity: 0.55;
 }
 
+/* خانة «قاعدة صريحة»: مفتاح تجاوز الدور في هذا البند */
+.matrix__cell--rule {
+  border-inline-start: 1px solid rgba(217, 161, 59, 0.22);
+  border-inline-end: 1px solid rgba(217, 161, 59, 0.22);
+}
+
+/* خانة الحذف مستقلة عن سلّم الدرجات فتُميَّز بلونها */
+.matrix__cell--delete input {
+  accent-color: #c2543f;
+}
+
+/* الصف الذي تحكمه قاعدة صريحة — يتجاوز ما يمنحه الدور */
+.table--matrix tr.matrix__row--ruled td {
+  background: rgba(217, 161, 59, 0.05);
+}
+
 /* صف عنوان المجموعة داخل الجدول */
 .table tr.table__group th {
   padding: 0.5rem 0.7rem;

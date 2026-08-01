@@ -1,11 +1,15 @@
 /**
- * شاشة «إدارة الصلاحيات»: تمنح درجات الوصول على بنود النظام لنطاق واحد من
+ * شاشة «إدارة الصلاحيات»: تضبط درجات الوصول على بنود النظام لنطاق واحد من
  * ثلاثة — موظف محدّد، قسم كامل، أو مسمى وظيفي.
  *
- * كل بند يُعرض بأربع درجات متدرّجة (قراءة، تسجيل حركة، إضافة/تعديل/حذف،
- * إعطاء الموافقات) والدرجات تراكمية: تفعيل درجة يُفعّل ما تحتها، وإلغاء درجة
- * يُلغي ما فوقها. والدرجة الرابعة لا تظهر إلا في البنود التي تحتاج اعتماداً
- * فعلاً — القاموس القادم من الخادم هو من يحدّد المتاح لكل بند.
+ * الشاشة هي المصدر النهائي للصلاحيات: أي بند تُفعَّل له «قاعدة صريحة» تصبح
+ * درجته المحفوظة هنا هي النافذة، تتجاوز ما يمنحه «الدور» رفعاً أو خفضاً أو
+ * سحباً كاملاً (درجة صفر). والبنود بلا قاعدة صريحة تبقى على تصنيف الدور.
+ *
+ * كل بند يُعرض بثلاث درجات تراكمية (قراءة، تسجيل حركة، إضافة/تعديل) ودرجة
+ * موافقات رابعة لا تظهر إلا حيث يوجد اعتماد فعلي، إضافة إلى درجة «حذف»
+ * مستقلة تماماً تُمنح أو تُسحب وحدها. القاموس القادم من الخادم هو من يحدّد
+ * المتاح لكل بند.
  *
  * الشاشة واجهة تحرير فقط؛ الفحص الحقيقي يجري في الخادم على كل طلب اعتماداً
  * على الجدول `access_rules`، فتعطيل خانة هنا لا يُغني عن ذلك ولا يُخالفه.
@@ -22,12 +26,17 @@ const SCOPE_LABELS = {
 const state = {
   can: () => false,
   /** القاموس القادم من `/access/catalog` */
-  catalog: { scopes: [], levels: [], modules: [] },
+  catalog: { scopes: [], levels: [], modules: [], deleteGrade: null },
   employees: [],
   departments: [],
   jobTitles: [],
-  /** الدرجات المعروضة حالياً في الجدول: `moduleKey → level` */
-  levels: {},
+  /**
+   * القواعد الصريحة المعروضة حالياً: `moduleKey → { level, canDelete }`.
+   * وجود المفتاح يعني قاعدة صريحة تتجاوز الدور، وغيابه يعني «حسب الدور».
+   */
+  rules: {},
+  /** ما يمنحه الدور وحده لهذا الموظف (نطاق الموظف فقط) — للعرض المقارن */
+  baseline: null,
   /** النطاق المحمَّل حالياً (بعد نجاح التحميل) */
   loadedScope: null,
 };
@@ -122,14 +131,86 @@ function availableLevels(module) {
   return module.levels.map((entry) => entry.level);
 }
 
+/** هل لهذا البند درجة حذف أصلاً؟ (بنود القراءة الصِرفة لا حذف فيها) */
+function deleteAvailable(module) {
+  return Boolean(module.delete?.available);
+}
+
+/** القاعدة الصريحة للبند إن وُجدت، وإلا `null` (أي: حسب الدور). */
+function ruleFor(moduleKey) {
+  return state.rules[moduleKey] ?? null;
+}
+
+function levelShort(level) {
+  return state.catalog.levels.find((entry) => entry.level === level)?.short ?? String(level);
+}
+
+/** وصف مختصر لما يمنحه الدور وحده في هذا البند (نطاق الموظف فقط). */
+function baselineText(moduleKey) {
+  if (!state.baseline) return "";
+  const level = state.baseline.levels?.[moduleKey] ?? 0;
+  const canDelete = Boolean(state.baseline.deletes?.[moduleKey]);
+  if (level <= 0 && !canDelete) return "الدور وحده: لا شيء";
+  const parts = [];
+  if (level > 0) parts.push(`${level} — ${levelShort(level)}`);
+  if (canDelete) parts.push("حذف");
+  return `الدور وحده: ${parts.join(" + ")}`;
+}
+
+/** يُنشئ قاعدة صريحة للبند مبدوءة بما يمنحه الدور حالياً (أو صفر). */
+function enableRule(moduleKey) {
+  state.rules[moduleKey] = {
+    level: state.baseline?.levels?.[moduleKey] ?? 0,
+    canDelete: Boolean(state.baseline?.deletes?.[moduleKey]),
+  };
+  renderMatrix();
+}
+
+function disableRule(moduleKey) {
+  delete state.rules[moduleKey];
+  renderMatrix();
+}
+
 /**
- * الدرجة التي تُحفظ عند تفعيل خانة: الدرجات تراكمية، فالمحفوظ هو أعلى خانة
- * مفعّلة. وتفعيل درجة غير متاحة في البند مستحيل لأن خانتها لا تُنشأ أصلاً.
+ * الدرجة التي تُحفظ عند تفعيل خانة: الدرجات 1–3 تراكمية، فالمحفوظ هو أعلى
+ * خانة مفعّلة. والصفر هنا سحبٌ صريح لا إلغاءٌ للقاعدة — القاعدة تبقى قائمة.
  */
 function applyLevel(moduleKey, level) {
-  if (level <= 0) delete state.levels[moduleKey];
-  else state.levels[moduleKey] = level;
+  const rule = ruleFor(moduleKey);
+  if (!rule) return;
+  rule.level = Math.max(0, level);
   renderMatrix();
+}
+
+function applyDelete(moduleKey, canDelete) {
+  const rule = ruleFor(moduleKey);
+  if (!rule) return;
+  rule.canDelete = canDelete;
+  renderMatrix();
+}
+
+/** خانة اختيار داخل خلية جدول، مع خلية «—» حين لا تنطبق الدرجة. */
+function checkboxCell({ checked, disabled, label, onChange, extraClass }) {
+  const cell = document.createElement("td");
+  cell.className = extraClass ? `matrix__cell ${extraClass}` : "matrix__cell";
+
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = checked;
+  box.disabled = disabled;
+  box.setAttribute("aria-label", label);
+  box.addEventListener("change", () => onChange(box.checked));
+
+  cell.append(box);
+  return cell;
+}
+
+function offCell(title) {
+  const cell = document.createElement("td");
+  cell.className = "matrix__cell matrix__cell--off";
+  cell.textContent = "—";
+  cell.title = title;
+  return cell;
 }
 
 function renderMatrix() {
@@ -145,13 +226,15 @@ function renderMatrix() {
       const groupRow = document.createElement("tr");
       groupRow.className = "table__group";
       const cell = document.createElement("th");
-      cell.colSpan = 5;
+      cell.colSpan = 7;
       cell.textContent = module.group;
       groupRow.append(cell);
       body.append(groupRow);
     }
 
+    const rule = ruleFor(module.key);
     const tr = document.createElement("tr");
+    if (rule) tr.classList.add("matrix__row--ruled");
 
     const nameCell = document.createElement("td");
     const name = document.createElement("span");
@@ -161,48 +244,78 @@ function renderMatrix() {
     hint.className = "perm__hint";
     hint.textContent = module.hint;
     nameCell.append(name, hint);
+
+    const baseline = baselineText(module.key);
+    if (baseline) {
+      const base = document.createElement("span");
+      base.className = "perm__hint";
+      base.textContent = baseline;
+      nameCell.append(base);
+    }
+
+    if (rule && rule.level === 0 && !rule.canDelete) {
+      const warn = document.createElement("span");
+      warn.className = "perm__hint";
+      warn.textContent = "مسحوب بالكامل — لا يُتاح هذا البند مهما منح الدور";
+      nameCell.append(warn);
+    }
+
     tr.append(nameCell);
 
+    // عمود «قاعدة صريحة»: وجوده يعني أن هذا الصف يتجاوز الدور
+    tr.append(
+      checkboxCell({
+        checked: Boolean(rule),
+        disabled: !editable,
+        label: `${module.label} — قاعدة صريحة تتجاوز الدور`,
+        extraClass: "matrix__cell--rule",
+        onChange: (checked) =>
+          checked ? enableRule(module.key) : disableRule(module.key),
+      }),
+    );
+
     const allowed = availableLevels(module);
-    const current = state.levels[module.key] ?? 0;
+    const current = rule?.level ?? 0;
 
-    for (const level of [1, 2, 3, 4]) {
-      const cell = document.createElement("td");
-      cell.className = "matrix__cell";
-
+    const levelCell = (level) => {
       if (!allowed.includes(level)) {
-        cell.textContent = "—";
-        cell.classList.add("matrix__cell--off");
-        cell.title = "هذه الدرجة لا تنطبق على هذا البند";
-        tr.append(cell);
-        continue;
+        return offCell("هذه الدرجة لا تنطبق على هذا البند");
       }
-
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.checked = current >= level;
-      box.disabled = !editable;
-      box.dataset.moduleKey = module.key;
-      box.dataset.level = String(level);
-      box.setAttribute(
-        "aria-label",
-        `${module.label} — الدرجة ${level}`,
-      );
-
-      box.addEventListener("change", () => {
-        if (box.checked) {
-          // تفعيل درجة يمنح ما تحتها تلقائياً (المحفوظ أعلى درجة)
-          applyLevel(module.key, level);
-        } else {
-          // إلغاء درجة يُلغي ما فوقها: نهبط إلى أعلى درجة متاحة تحتها
-          const below = allowed.filter((entry) => entry < level);
-          applyLevel(module.key, below.length === 0 ? 0 : Math.max(...below));
-        }
+      return checkboxCell({
+        checked: Boolean(rule) && current >= level,
+        disabled: !editable || !rule,
+        label: `${module.label} — الدرجة ${level}`,
+        onChange: (checked) => {
+          if (checked) {
+            // تفعيل درجة يمنح ما تحتها تلقائياً (المحفوظ أعلى درجة)
+            applyLevel(module.key, level);
+          } else {
+            // إلغاء درجة يُلغي ما فوقها: نهبط إلى أعلى درجة متاحة تحتها
+            const below = allowed.filter((entry) => entry < level);
+            applyLevel(module.key, below.length === 0 ? 0 : Math.max(...below));
+          }
+        },
       });
+    };
 
-      cell.append(box);
-      tr.append(cell);
+    for (const level of [1, 2, 3]) tr.append(levelCell(level));
+
+    // درجة الحذف مستقلة تماماً: لا تتبع الدرجات ولا تتبع الموافقات
+    if (deleteAvailable(module)) {
+      tr.append(
+        checkboxCell({
+          checked: Boolean(rule?.canDelete),
+          disabled: !editable || !rule,
+          label: `${module.label} — ${module.delete.hint ?? "الحذف"}`,
+          extraClass: "matrix__cell--delete",
+          onChange: (checked) => applyDelete(module.key, checked),
+        }),
+      );
+    } else {
+      tr.append(offCell("لا يوجد حذف في هذا البند"));
     }
+
+    tr.append(levelCell(4));
 
     body.append(tr);
   }
@@ -227,12 +340,17 @@ async function refreshRules() {
     state.catalog.levels.find((entry) => entry.level === level)?.short ?? String(level);
 
   for (const item of items) {
+    const marks = [];
+    if (item.withdrawn > 0) marks.push(`${item.withdrawn} مسحوب`);
+    if (item.deletes > 0) marks.push(`${item.deletes} حذف`);
+
     body.append(
       row([
         SCOPE_LABELS[item.scopeType] ?? item.scopeType,
         item.employeeCode ? `${item.employeeCode} — ${item.label}` : item.label,
         `${item.modules} بنداً`,
         `${item.maxLevel} — ${levelLabel(item.maxLevel)}`,
+        marks.length > 0 ? marks.join(" • ") : "—",
         item.updatedAt ? formatDateTime(item.updatedAt) : "—",
         actionsFor(item),
       ]),
@@ -294,7 +412,14 @@ async function loadScope() {
     return;
   }
 
-  state.levels = { ...(result.levels ?? {}) };
+  state.rules = {};
+  for (const [moduleKey, level] of Object.entries(result.levels ?? {})) {
+    state.rules[moduleKey] = {
+      level: Number(level) || 0,
+      canDelete: Boolean(result.deletes?.[moduleKey]),
+    };
+  }
+  state.baseline = result.baseline ?? null;
   state.loadedScope = { scopeType: type, scopeKey: key, label: result.scope?.label ?? key };
   renderMatrix();
 
@@ -302,12 +427,16 @@ async function loadScope() {
   el("access-note").value = notes[0] ?? "";
   el("access-affected").textContent = `تنطبق على ${result.affected ?? 0} موظفاً`;
 
-  const count = Object.keys(state.levels).length;
+  const count = Object.keys(state.rules).length;
+  const withdrawn = Object.values(state.rules).filter(
+    (rule) => rule.level === 0 && !rule.canDelete,
+  ).length;
   setAlert(
     el("access-result"),
     count === 0
-      ? `لا توجد قواعد محفوظة لـ«${state.loadedScope.label}» — يعمل أصحابه بصلاحيات أدوارهم.`
-      : `حُمِّلت ${count} بنداً لـ«${state.loadedScope.label}».`,
+      ? `لا توجد قواعد صريحة لـ«${state.loadedScope.label}» — يعمل أصحابه على تصنيف أدوارهم.`
+      : `حُمِّلت ${count} قاعدة صريحة لـ«${state.loadedScope.label}»` +
+          (withdrawn > 0 ? `، منها ${withdrawn} بنداً مسحوباً بالكامل.` : "."),
     "ok",
   );
 }
@@ -327,6 +456,11 @@ async function saveScope(event) {
     return;
   }
 
+  const rules = {};
+  for (const [moduleKey, rule] of Object.entries(state.rules)) {
+    rules[moduleKey] = { level: rule.level, canDelete: Boolean(rule.canDelete) };
+  }
+
   const submit = el("access-save");
   setBusy(submit, true);
   const result = await api("/access/rules", {
@@ -334,21 +468,23 @@ async function saveScope(event) {
     body: {
       scopeType: type,
       scopeKey: key,
-      levels: state.levels,
+      rules,
       note: el("access-note").value.trim(),
     },
   });
   setBusy(submit, false);
-  setAlert(
-    el("access-result"),
-    result.ok ? result.message : (result.error ?? "تعذّر حفظ القاعدة"),
-    result.ok ? "ok" : "error",
-  );
 
-  if (result.ok) {
-    el("access-affected").textContent = `تنطبق على ${result.affected ?? 0} موظفاً`;
-    await refreshRules();
+  if (!result.ok) {
+    setAlert(el("access-result"), result.error ?? "تعذّر حفظ القاعدة", "error");
+    return;
   }
+
+  el("access-affected").textContent = `تنطبق على ${result.affected ?? 0} موظفاً`;
+  await refreshRules();
+  // إعادة التحميل تُظهر الخلفية والمحصّلة الفعلية بعد الحفظ فوراً
+  if (type === "employee") await loadScope();
+  await previewEffective();
+  setAlert(el("access-result"), result.message, "ok");
 }
 
 async function deleteScope(type, key, label) {
@@ -373,11 +509,12 @@ async function deleteScope(type, key, label) {
       state.loadedScope?.scopeType === type &&
       state.loadedScope?.scopeKey === String(key)
     ) {
-      state.levels = {};
+      state.rules = {};
       renderMatrix();
       el("access-affected").textContent = "لا توجد قاعدة لهذا النطاق";
     }
     await refreshRules();
+    await previewEffective();
   }
 }
 
@@ -401,7 +538,16 @@ async function previewEffective() {
   }
 
   const levels = result.moduleLevels ?? {};
-  const rows = state.catalog.modules.filter((module) => (levels[module.key] ?? 0) > 0);
+  const deletes = result.moduleDelete ?? {};
+  const baseLevels = result.baseline?.levels ?? {};
+  const baseDeletes = result.baseline?.deletes ?? {};
+
+  const rows = state.catalog.modules.filter(
+    (module) =>
+      (levels[module.key] ?? 0) > 0 ||
+      deletes[module.key] ||
+      (baseLevels[module.key] ?? 0) > 0,
+  );
   el("access-preview-empty").hidden = rows.length > 0;
 
   if (rows.length === 0) {
@@ -411,10 +557,29 @@ async function previewEffective() {
   }
 
   for (const module of rows) {
-    const level = levels[module.key];
+    const level = levels[module.key] ?? 0;
     const spec = state.catalog.levels.find((entry) => entry.level === level);
+    const baseLevel = baseLevels[module.key] ?? 0;
+    const baseDelete = Boolean(baseDeletes[module.key]);
+    const changed = level !== baseLevel || Boolean(deletes[module.key]) !== baseDelete;
+
+    // «المصدر» يفصل ما فرضته القاعدة عمّا ورثه من تصنيف الدور
+    let source = "الدور";
+    if (changed) {
+      source =
+        level > baseLevel || (deletes[module.key] && !baseDelete)
+          ? "قاعدة صلاحيات — رفع"
+          : "قاعدة صلاحيات — خفض / سحب";
+    }
+
     body.append(
-      row([module.label, `${level} — ${spec?.label ?? ""}`, spec?.hint ?? "—"]),
+      row([
+        module.label,
+        level > 0 ? `${level} — ${spec?.label ?? ""}` : "٠ — لا وصول",
+        module.delete?.available ? (deletes[module.key] ? "نعم" : "لا") : "—",
+        source,
+        level > 0 ? (spec?.hint ?? "—") : "البند محجوب عن هذا الموظف",
+      ]),
     );
   }
 }
@@ -426,7 +591,8 @@ export function initAccessModule({ can }) {
 
   el("access-scope-type").addEventListener("change", () => {
     syncScopeFields();
-    state.levels = {};
+    state.rules = {};
+    state.baseline = null;
     state.loadedScope = null;
     el("access-affected").textContent = "لم يُحمَّل نطاق بعد";
     renderMatrix();
@@ -439,11 +605,25 @@ export function initAccessModule({ can }) {
   el("access-preview-employee").addEventListener("change", previewEffective);
 
   el("access-clear").addEventListener("click", () => {
-    state.levels = {};
+    state.rules = {};
     renderMatrix();
     setAlert(
       el("access-result"),
-      "أُفرغت الخانات — اضغط «حفظ القاعدة» لإلغاء صلاحيات هذا النطاق فعلياً.",
+      "أُلغيت كل القواعد الصريحة — اضغط «حفظ القاعدة» ليعود أصحاب النطاق إلى تصنيف أدوارهم.",
+      "warn",
+    );
+  });
+
+  el("access-withdraw").addEventListener("click", () => {
+    // سحب كامل: قاعدة صريحة بدرجة صفر على كل بند، تتجاوز أي دور
+    state.rules = {};
+    for (const module of state.catalog.modules) {
+      state.rules[module.key] = { level: 0, canDelete: false };
+    }
+    renderMatrix();
+    setAlert(
+      el("access-result"),
+      "ضُبطت كل البنود على السحب الكامل — اضغط «حفظ القاعدة» لتطبيقها مهما كان الدور.",
       "warn",
     );
   });
@@ -459,7 +639,7 @@ export function initAccessModule({ can }) {
 
   // من لا يملك «إدارة الصلاحيات» يقرأ الشاشة فقط
   const editable = can("permissions.manage");
-  for (const id of ["access-save", "access-clear", "access-delete"]) {
+  for (const id of ["access-save", "access-clear", "access-withdraw", "access-delete"]) {
     el(id).disabled = !editable;
   }
 }
@@ -475,6 +655,7 @@ export async function refreshAccessPanel() {
     scopes: result.scopes ?? [],
     levels: result.levels ?? [],
     modules: result.modules ?? [],
+    deleteGrade: result.deleteGrade ?? null,
   };
   state.employees = result.employees ?? [];
   state.departments = result.departments ?? [];

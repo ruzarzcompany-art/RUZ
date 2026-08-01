@@ -1033,7 +1033,12 @@ function cashierClosingsRange(data) {
 
 /* ── 15) المخزون: سند حركة، ورقة جرد، كشف حركات ─────────────────── */
 
-const MOVEMENT_LABELS = { in: "إدخال", out: "إخراج", count: "جرد" };
+const MOVEMENT_LABELS = {
+  in: "إدخال",
+  out: "إخراج",
+  count: "جرد",
+  manufacture: "تصنيع",
+};
 
 const MOVEMENT_REASON_LABELS = {
   purchase: "شراء",
@@ -1041,6 +1046,7 @@ const MOVEMENT_REASON_LABELS = {
   waste: "هالك",
   transfer: "تحويل",
   stocktake: "جرد",
+  manufacture: "تصنيع",
   other: "أخرى",
 };
 
@@ -1049,6 +1055,7 @@ function inventoryMovement(data) {
   const movement = data.inventory?.movement ?? {};
   const currency = data.company?.currency || "SAR";
   const isCount = movement.movementType === "count";
+  const isManufacture = movement.movementType === "manufacture";
 
   const nodes = [
     pairs([
@@ -1061,9 +1068,23 @@ function inventoryMovement(data) {
     ]),
     pairs([
       [
-        isCount ? "الكمية المعدودة" : "الكمية",
+        isCount ? "الكمية المعدودة" : isManufacture ? "الكمية الخام" : "الكمية",
         `${movement.quantity ?? 0} ${movement.unit ?? ""}`,
       ],
+      ...(isManufacture
+        ? [
+            [
+              "عدد الوحدات المنتجة",
+              movement.producedUnits > 0 ? movement.producedUnits : "لم يُسجَّل بعد",
+            ],
+            [
+              "وزن الوحدة",
+              movement.unitWeight > 0
+                ? `${movement.unitWeight} ${movement.unit ?? ""} لكل وحدة`
+                : "—",
+            ],
+          ]
+        : []),
       [
         "سعر الوحدة",
         movement.unitCost === null || movement.unitCost === undefined

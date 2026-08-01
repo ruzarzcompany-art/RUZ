@@ -13,19 +13,26 @@ import {
   accessCatalogPayload,
   accessProfile,
   accessRuleScopeSummary,
+  accessRulesForEmployee,
   ACCESS_LEVELS,
   deleteScopeModules,
+  derivedModuleDelete,
+  derivedModuleLevel,
   isAccessScopeType,
+  isDeleteAvailable,
   isLevelAvailable,
   MODULE_CATALOG,
   MODULE_INDEX,
   PERMISSIONS,
   permissionCodesForRole,
   permissionOverridesForEmployee,
+  requireModuleDelete,
   requireModuleLevel,
   requirePermission,
+  resolveRuleDecisions,
   rulesForScope,
   type AccessScopeType,
+  type RuleDecision,
 } from "../rbac.js";
 import { asId, asString, badRequest } from "../validate.js";
 
@@ -33,9 +40,13 @@ export const accessRouter = Router();
 
 /* ── شاشة «إدارة الصلاحيات» ──────────────────────────────────────
  * تمنح الصلاحيات على ثلاثة نطاقات (موظف محدّد، قسم كامل، مسمى وظيفي)
- * بأربع درجات متدرّجة لكل بند من بنود النظام. القواعد تُخزَّن في
+ * بأربع درجات متدرّجة لكل بند، ودرجة حذف مستقلة عنها. القواعد تُخزَّن في
  * `access_rules` ويُترجمها `rbac.ts` إلى رموز صلاحيات ودرجات تُفحص في
  * الخادم عند كل طلب — فالإخفاء في الواجهة مكمّل للفحص لا بديل عنه.
+ *
+ * هذه الشاشة **المصدر النهائي**: أي بند تُحفظ له قاعدة تحسم درجته رفعاً أو
+ * خفضاً مهما كان دور الموظف، والدرجة 0 تعني سحب البند كاملاً. البنود التي
+ * لا قاعدة لها تبقى على ما يمنحه الدور كتصنيف ابتدائي.
  */
 
 const MODULE_KEYS = new Set(MODULE_CATALOG.map((module) => module.key));
@@ -206,6 +217,67 @@ async function scopeCoversActor(
     : actor.jobTitle === target.scopeKey;
 }
 
+/**
+ * محاكاة أثر الحفظ على المنفّذ نفسه قبل تنفيذه: بما أن القاعدة صارت تسحب
+ * لا تمنح فقط، صار بإمكان مسؤول أن يقفل الشاشة على نفسه بقاعدة قسم أو
+ * مسمى. نُعيد بناء قواعد المنفّذ بعد استبدال قواعد هذا النطاق بالمطلوبة،
+ * ونتحقق أنه يبقى عند الدرجة 3 في «إدارة الصلاحيات».
+ */
+async function actorKeepsAccessControl(
+  target: ScopeTarget,
+  actor: { id: number; roleId: number | null },
+  pending: Map<string, RuleDecision>,
+): Promise<boolean> {
+  if (!(await scopeCoversActor(target, actor.id))) return true;
+
+  const matched = await accessRulesForEmployee(actor.id);
+  const simulated = matched.filter(
+    (rule) =>
+      !(rule.scopeType === target.scopeType && rule.scopeKey === target.scopeKey),
+  );
+  const wanted = pending.get("access_control");
+  if (wanted) {
+    simulated.push({
+      scopeType: target.scopeType,
+      scopeKey: target.scopeKey,
+      moduleKey: "access_control",
+      level: wanted.level,
+      canDelete: wanted.canDelete,
+    });
+  }
+
+  const decision = resolveRuleDecisions(simulated)["access_control"];
+  if (decision) return decision.level >= 3;
+  return keepsAccessWithoutRules(actor);
+}
+
+/** الدرجة المبدئية التي يمنحها الدور وحده — تُعرض كخلفية للمقارنة. */
+async function roleBaseline(employee: {
+  id: number;
+  roleId: number | null;
+}): Promise<{ levels: Record<string, number>; deletes: Record<string, boolean> }> {
+  const [roleCodes, overrides] = await Promise.all([
+    permissionCodesForRole(employee.roleId),
+    permissionOverridesForEmployee(employee.id),
+  ]);
+  const codes = new Set(roleCodes);
+  for (const override of overrides) {
+    if (override.effect === "deny") codes.delete(override.permissionCode);
+    else codes.add(override.permissionCode);
+  }
+
+  const levels: Record<string, number> = {};
+  const deletes: Record<string, boolean> = {};
+  for (const module of MODULE_CATALOG) {
+    const level = derivedModuleLevel(module.key, codes);
+    if (level > 0) levels[module.key] = level;
+    if (isDeleteAvailable(module.key) && derivedModuleDelete(module.key, codes)) {
+      deletes[module.key] = true;
+    }
+  }
+  return { levels, deletes };
+}
+
 /* ── القاموس وخيارات النطاقات ────────────────────────────────────── */
 
 accessRouter.get(
@@ -314,10 +386,39 @@ accessRouter.get(
     ]);
 
     const levels: Record<string, number> = {};
+    const deletes: Record<string, boolean> = {};
     const notes: Record<string, string> = {};
     for (const rule of rules) {
       levels[rule.moduleKey] = rule.level;
+      deletes[rule.moduleKey] = rule.canDelete;
       if (rule.note) notes[rule.moduleKey] = rule.note;
+    }
+
+    /**
+     * نطاق «موظف محدّد» يُعرض معه ما يمنحه دوره بلا قاعدة (خلفية المقارنة)
+     * والمحصّلة الفعلية الآن، حتى يرى المسؤول أثر ما يحفظه فوراً.
+     */
+    let baseline: Awaited<ReturnType<typeof roleBaseline>> | null = null;
+    let effective: { moduleLevels: Record<string, number>; moduleDelete: Record<string, boolean> } | null =
+      null;
+    if (scope.target.scopeType === "employee" && scope.target.employeeId !== null) {
+      const db = getDb();
+      const [employee] = await db
+        .select({ id: employees.id, roleId: employees.roleId })
+        .from(employees)
+        .where(eq(employees.id, scope.target.employeeId))
+        .limit(1);
+      if (employee) {
+        const [base, profile] = await Promise.all([
+          roleBaseline(employee),
+          accessProfile({ employeeId: employee.id, roleId: employee.roleId }),
+        ]);
+        baseline = base;
+        effective = {
+          moduleLevels: profile.moduleLevels,
+          moduleDelete: profile.moduleDelete,
+        };
+      }
     }
 
     res.json({
@@ -328,7 +429,10 @@ accessRouter.get(
         label: scope.target.label,
       },
       levels,
+      deletes,
       notes,
+      baseline,
+      effective,
       affected: affected.length,
       affectedEmployees: affected.slice(0, 50),
     });
@@ -336,9 +440,11 @@ accessRouter.get(
 );
 
 /**
- * استبدال قواعد نطاق كامل. `levels` خريطة `moduleKey → level`، والدرجة 0
- * (أو غياب البند) تعني حذف القاعدة. الدرجات تراكمية أصلاً في `rbac.ts`،
- * فيُخزَّن للبند أعلى درجة فقط.
+ * استبدال قواعد نطاق كامل. `rules` خريطة
+ * `moduleKey → { level: 0..4, canDelete: boolean }`؛ وجود البند في الخريطة
+ * يعني **قاعدة صريحة** تحسم البند مهما منح الدور، والدرجة 0 تعني سحبه
+ * كاملاً. البنود الغائبة عن الخريطة تُحذف قاعدتها فيعود أصحابها فيها إلى
+ * درجة دورهم.
  */
 accessRouter.put(
   "/access/rules",
@@ -353,39 +459,51 @@ accessRouter.put(
       return;
     }
 
-    const rawLevels = req.body?.levels;
-    if (rawLevels === null || typeof rawLevels !== "object") {
-      badRequest(res, "قائمة الدرجات مطلوبة (levels).");
+    const rawRules = req.body?.rules;
+    if (rawRules === null || typeof rawRules !== "object") {
+      badRequest(res, "قائمة البنود مطلوبة (rules).");
       return;
     }
 
-    const entries = Object.entries(rawLevels as Record<string, unknown>);
+    const entries = Object.entries(rawRules as Record<string, unknown>);
     if (entries.length > MAX_MODULES_PER_REQUEST) {
       badRequest(res, "عدد البنود أكبر من المتاح.");
       return;
     }
 
-    const wanted = new Map<string, number>();
-    for (const [moduleKey, rawLevel] of entries) {
+    const wanted = new Map<string, RuleDecision>();
+    for (const [moduleKey, rawRule] of entries) {
       if (!MODULE_KEYS.has(moduleKey)) {
         badRequest(res, `بند غير معروف: ${moduleKey}`);
         return;
       }
+      if (rawRule === null || typeof rawRule !== "object") {
+        badRequest(res, `قاعدة غير صالحة للبند ${moduleKey}`);
+        return;
+      }
 
-      const level = Number(rawLevel);
+      const entry = rawRule as Record<string, unknown>;
+      const level = Number(entry.level ?? 0);
       if (!Number.isInteger(level) || level < 0 || level > 4) {
         badRequest(res, `درجة غير صالحة للبند ${moduleKey}`);
         return;
       }
-      if (level === 0) continue;
-      if (!isLevelAvailable(moduleKey, level)) {
-        const label = MODULE_INDEX.get(moduleKey)?.label ?? moduleKey;
+
+      const label = MODULE_INDEX.get(moduleKey)?.label ?? moduleKey;
+      if (level > 0 && !isLevelAvailable(moduleKey, level)) {
         const levelLabel =
-          ACCESS_LEVELS.find((entry) => entry.level === level)?.label ?? level;
+          ACCESS_LEVELS.find((item) => item.level === level)?.label ?? level;
         badRequest(res, `الدرجة «${levelLabel}» غير متاحة لبند «${label}».`);
         return;
       }
-      wanted.set(moduleKey, level);
+
+      const canDelete = entry.canDelete === true;
+      if (canDelete && !isDeleteAvailable(moduleKey)) {
+        badRequest(res, `لا يوجد حذف في بند «${label}».`);
+        return;
+      }
+
+      wanted.set(moduleKey, { level, canDelete });
     }
 
     // حماية من قفل النظام: لا يُسمح للمنفّذ بإسقاط إدارة الصلاحيات عن نفسه
@@ -394,15 +512,7 @@ accessRouter.put(
       scope.target.scopeType,
       scope.target.scopeKey,
     );
-    const currentAccessLevel =
-      currentRules.find((rule) => rule.moduleKey === "access_control")?.level ?? 0;
-    const nextAccessLevel = wanted.get("access_control") ?? 0;
-    if (
-      currentAccessLevel >= 3 &&
-      nextAccessLevel < 3 &&
-      (await scopeCoversActor(scope.target, actor.id)) &&
-      !(await keepsAccessWithoutRules({ id: actor.id, roleId: actor.roleId }))
-    ) {
+    if (!(await actorKeepsAccessControl(scope.target, actor, wanted))) {
       res.status(400).json({
         ok: false,
         error:
@@ -423,7 +533,7 @@ accessRouter.put(
       await deleteScopeModules(scope.target.scopeType, scope.target.scopeKey, removed);
     }
 
-    for (const [moduleKey, level] of wanted) {
+    for (const [moduleKey, decision] of wanted) {
       await db
         .insert(accessRules)
         .values({
@@ -431,7 +541,8 @@ accessRouter.put(
           scopeKey: scope.target.scopeKey,
           employeeId: scope.target.employeeId,
           moduleKey,
-          level,
+          level: decision.level,
+          canDelete: decision.canDelete,
           note,
           grantedByEmployeeId: actor.id,
           updatedAt: now,
@@ -439,7 +550,8 @@ accessRouter.put(
         .onConflictDoUpdate({
           target: [accessRules.scopeType, accessRules.scopeKey, accessRules.moduleKey],
           set: {
-            level,
+            level: decision.level,
+            canDelete: decision.canDelete,
             note,
             employeeId: scope.target.employeeId,
             grantedByEmployeeId: actor.id,
@@ -448,8 +560,10 @@ accessRouter.put(
         });
     }
 
-    const before: Record<string, number> = {};
-    for (const rule of currentRules) before[rule.moduleKey] = rule.level;
+    const before: Record<string, RuleDecision> = {};
+    for (const rule of currentRules) {
+      before[rule.moduleKey] = { level: rule.level, canDelete: rule.canDelete };
+    }
 
     await recordAudit({
       actorEmployeeId: actor.id,
@@ -459,23 +573,26 @@ accessRouter.put(
       before: {
         scopeType: scope.target.scopeType,
         scopeKey: scope.target.scopeKey,
-        levels: before,
+        rules: before,
       },
       after: {
         scopeType: scope.target.scopeType,
         scopeKey: scope.target.scopeKey,
-        levels: Object.fromEntries(wanted),
+        rules: Object.fromEntries(wanted),
       },
       reason: note,
       ipAddress: clientIp(req),
     });
 
     const affected = await employeesInScope(scope.target);
+    const withdrawn = [...wanted.values()].filter((rule) => rule.level === 0).length;
 
     res.json({
       ok: true,
-      message: `تم حفظ صلاحيات «${scope.target.label}» (${wanted.size} بنداً)`,
-      levels: Object.fromEntries(wanted),
+      message: `تم حفظ صلاحيات «${scope.target.label}» (${wanted.size} بنداً${
+        withdrawn > 0 ? `، منها ${withdrawn} مسحوب` : ""
+      })`,
+      rules: Object.fromEntries(wanted),
       affected: affected.length,
     });
   },
@@ -486,7 +603,7 @@ accessRouter.delete(
   "/access/rules",
   requireAuth,
   requirePermission(PERMISSIONS.permissionsManage),
-  requireModuleLevel("access_control", 3),
+  requireModuleDelete("access_control"),
   async (req: AuthedRequest, res: Response) => {
     const actor = req.employee!;
     const scope = await resolveScope(
@@ -508,14 +625,7 @@ accessRouter.delete(
       return;
     }
 
-    const hadAccessControl = currentRules.some(
-      (rule) => rule.moduleKey === "access_control" && rule.level >= 3,
-    );
-    if (
-      hadAccessControl &&
-      (await scopeCoversActor(scope.target, actor.id)) &&
-      !(await keepsAccessWithoutRules({ id: actor.id, roleId: actor.roleId }))
-    ) {
+    if (!(await actorKeepsAccessControl(scope.target, actor, new Map()))) {
       res.status(400).json({
         ok: false,
         error: "لا يمكنك حذف القاعدة التي تمنحك إدارة الصلاحيات.",
@@ -533,8 +643,10 @@ accessRouter.delete(
         ),
       );
 
-    const before: Record<string, number> = {};
-    for (const rule of currentRules) before[rule.moduleKey] = rule.level;
+    const before: Record<string, RuleDecision> = {};
+    for (const rule of currentRules) {
+      before[rule.moduleKey] = { level: rule.level, canDelete: rule.canDelete };
+    }
 
     await recordAudit({
       actorEmployeeId: actor.id,
@@ -544,7 +656,7 @@ accessRouter.delete(
       before: {
         scopeType: scope.target.scopeType,
         scopeKey: scope.target.scopeKey,
-        levels: before,
+        rules: before,
       },
       after: null,
       reason: asString(req.query.reason ?? req.body?.reason, 500) ?? "",
@@ -593,15 +705,17 @@ accessRouter.get(
       return;
     }
 
-    const profile = await accessProfile({
-      employeeId: employee.id,
-      roleId: employee.roleId,
-    });
+    const [profile, baseline] = await Promise.all([
+      accessProfile({ employeeId: employee.id, roleId: employee.roleId }),
+      roleBaseline(employee),
+    ]);
 
     res.json({
       ok: true,
       employee,
       moduleLevels: profile.moduleLevels,
+      moduleDelete: profile.moduleDelete,
+      baseline,
       permissions: profile.codes,
     });
   },

@@ -30,6 +30,7 @@ import { DEMO_EMPLOYEE_CODES } from "../demo.js";
 import {
   PERMISSIONS,
   hasAnyPermission,
+  requireModuleDelete,
   requireModuleLevel,
   requirePermission,
 } from "../rbac.js";
@@ -301,7 +302,8 @@ export const DOC_CATALOG: DocSpec[] = [
     key: "inventory_movement",
     title: "سند حركة مخزون",
     group: "المخزون",
-    description: "طباعة حركة مسجَّلة (إدخال، إخراج، جرد) بكميتها وسببها ومرجعها.",
+    description:
+      "طباعة حركة مسجَّلة (إدخال، إخراج، جرد، تصنيع) بكميتها وسببها ومرجعها.",
     needsEmployee: false,
     refType: null,
     refLabel: "الحركة",
@@ -924,7 +926,11 @@ async function loadInventoryMovements(options: {
   for (const row of rows) {
     if (row.movement.movementType === "in") {
       totals.quantityIn = round2(totals.quantityIn + row.movement.quantity);
-    } else if (row.movement.movementType === "out") {
+    } else if (
+      row.movement.movementType === "out" ||
+      row.movement.movementType === "manufacture"
+    ) {
+      // التصنيع يستهلك الخام، فيُحسب ضمن الصادر في إجماليات الكشف
       totals.quantityOut = round2(totals.quantityOut + row.movement.quantity);
     }
     totals.cost = round2(totals.cost + (row.movement.totalCost ?? 0));
@@ -1200,7 +1206,10 @@ documentsRouter.get(
       inventory = await loadInventoryMovements({
         branchId,
         itemId: asId(req.query.itemId),
-        movementType: asEnum(req.query.movementType, ["in", "out", "count"] as const),
+        movementType: asEnum(
+          req.query.movementType,
+          ["in", "out", "count", "manufacture"] as const,
+        ),
         from,
         to,
       });
@@ -1527,7 +1536,7 @@ documentsRouter.delete(
   "/documents/issues/:id",
   requireAuth,
   requirePermission(PERMISSIONS.documentsReadAll),
-  requireModuleLevel("documents", 3),
+  requireModuleDelete("documents"),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -1573,7 +1582,7 @@ documentsRouter.post(
   "/documents/issues/purge",
   requireAuth,
   requirePermission(PERMISSIONS.documentsReadAll),
-  requireModuleLevel("documents", 3),
+  requireModuleDelete("documents"),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -1834,7 +1843,7 @@ documentsRouter.delete(
   "/disciplinary/:id",
   requireAuth,
   requirePermission(PERMISSIONS.disciplinaryManage),
-  requireModuleLevel("disciplinary", 3),
+  requireModuleDelete("disciplinary"),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;

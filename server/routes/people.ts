@@ -34,6 +34,7 @@ import {
   PERMISSIONS,
   permissionCodesForRole,
   requireAnyPermission,
+  requireModuleDelete,
   requireModuleLevel,
   requirePermission,
   SECTION_CATALOG,
@@ -463,6 +464,7 @@ peopleRouter.delete(
   "/employees/:id",
   requireAuth,
   requirePermission(PERMISSIONS.employeesWrite),
+  requireModuleDelete("employees"),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;

@@ -70,6 +70,8 @@ const state = {
   permissions: [],
   /** درجة كل بند كما حسبها الخادم: `moduleKey → 0..4` */
   moduleLevels: {},
+  /** درجة الحذف المستقلة لكل بند: `moduleKey → true/false` */
+  moduleDelete: {},
   employees: [],
   branches: [],
   schema: null,
@@ -87,6 +89,12 @@ const can = (code) => state.permissions.includes(code);
  * (مثل `forms.approve` في درجتي التعديل والاعتماد).
  */
 const levelOf = (moduleKey) => state.moduleLevels[moduleKey] ?? 0;
+
+/**
+ * درجة الحذف مستقلة تماماً عن درجة الإضافة والتعديل: تُمنح أو تُسحب وحدها
+ * من شاشة «إدارة الصلاحيات»، فلا يكفي أن يكون للمستخدم الدرجة الثالثة.
+ */
+const canDeleteIn = (moduleKey) => state.moduleDelete[moduleKey] === true;
 
 /* ── تعبئة القوائم المنسدلة ───────────────────────────────── */
 
@@ -170,13 +178,16 @@ function logActions(log) {
   }
 
   if (can("attendance.manual_write")) {
-    wrap.append(
-      button("تعديل", { onClick: () => startEdit(log) }),
-      button("حذف", {
-        className: "btn btn--danger btn--xs",
-        onClick: () => deleteLog(log),
-      }),
-    );
+    wrap.append(button("تعديل", { onClick: () => startEdit(log) }));
+    // الحذف درجة مستقلة: قد يملك التعديل ولا يملكه
+    if (canDeleteIn("attendance_records")) {
+      wrap.append(
+        button("حذف", {
+          className: "btn btn--danger btn--xs",
+          onClick: () => deleteLog(log),
+        }),
+      );
+    }
   }
 
   return wrap;
@@ -397,8 +408,8 @@ function formActions(resource, item) {
   const wrap = document.createElement("div");
   wrap.className = "row row--tight";
 
-  // القرار يحتاج الدرجة الرابعة في البند، والحذف يحتاج الثالثة — نخفي ما
-  // سيرفضه الخادم بدلاً من إظهار زر ينتهي برسالة رفض.
+  // القرار يحتاج الدرجة الرابعة في البند، والحذف يحتاج درجة الحذف المستقلة —
+  // نخفي ما سيرفضه الخادم بدلاً من إظهار زر ينتهي برسالة رفض.
   if (resource.decidable && item.status === "pending" && levelOf(resource.key) >= 4) {
     wrap.append(
       button("اعتماد", {
@@ -419,7 +430,7 @@ function formActions(resource, item) {
     wrap.append(button("طباعة", { onClick: () => openPrint("contract", item.id) }));
   }
 
-  if (levelOf(resource.key) >= 3) {
+  if (canDeleteIn(resource.key)) {
     wrap.append(
       button("حذف", {
         className: "btn btn--danger btn--xs",
@@ -520,8 +531,9 @@ function applyPurgeScope() {
   const scopeSelect = el("forms-purge-scope");
   const decided = scopeSelect.querySelector('option[value="decided"]');
 
-  // بطاقة التنظيف لا تظهر إلا لمن يملك صلاحية إدارة هذا النموذج
-  el("forms-purge-card").hidden = !resource || !can(resource.managePermission);
+  // بطاقة التنظيف حذفٌ جماعي، فتحتاج درجة الحذف في البند لا مجرد إدارته
+  el("forms-purge-card").hidden =
+    !resource || !can(resource.managePermission) || !canDeleteIn(state.formsResource);
 
   if (decided) {
     decided.disabled = !resource?.decidable;
@@ -689,7 +701,7 @@ async function refreshSavedSlips() {
     actions.className = "row-actions";
     actions.append(button("طباعة", { onClick: () => openPrint("payroll", slip.id) }));
 
-    if (canManage) {
+    if (canManage && canDeleteIn("payroll")) {
       actions.append(
         button("حذف", {
           className: "btn btn--danger btn--xs",
@@ -1340,6 +1352,7 @@ async function boot() {
 
   state.permissions = me.permissions ?? [];
   state.moduleLevels = me.moduleLevels ?? {};
+  state.moduleDelete = me.moduleDelete ?? {};
   el("admin-who").textContent = [
     me.employee.fullName,
     me.employee.employeeCode,
@@ -1380,12 +1393,12 @@ async function boot() {
     if (tab) tab.hidden = !allowedTabs.includes(panel);
   }
 
-  initPeopleModule({ state, can, levelOf, refreshPeople });
+  initPeopleModule({ state, can, levelOf, canDeleteIn, refreshPeople });
   initReportsModule();
   initSettingsModule({ can, employees: state.employees });
-  initCashierModule({ can, levelOf });
-  initInventoryModule({ can });
-  initDocumentsModule({ can, levelOf });
+  initCashierModule({ can, levelOf, canDeleteIn });
+  initInventoryModule({ can, levelOf, canDeleteIn });
+  initDocumentsModule({ can, levelOf, canDeleteIn });
   initAccessModule({ can });
   await loadPeopleMeta();
 

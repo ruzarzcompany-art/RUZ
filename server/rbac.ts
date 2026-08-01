@@ -11,8 +11,12 @@ import {
 import type { AuthedRequest } from "./auth.js";
 import {
   ACCESS_SCOPE_TYPES,
+  codesAboveModuleLevel,
   codesForModuleLevel,
+  deleteCodesForModule,
+  derivedModuleDelete,
   derivedModuleLevel,
+  isDeleteAvailable,
   MODULE_CATALOG,
   type AccessLevel,
   type AccessScopeType,
@@ -24,16 +28,22 @@ import {
  * لبقية الخادم.
  */
 export {
+  ACCESS_DELETE_GRADE,
   ACCESS_LEVELS,
   ACCESS_SCOPE_TYPES,
   ACCESS_SCOPES,
   availableLevels,
   accessCatalogPayload,
+  codesAboveModuleLevel,
   codesForModuleLevel,
+  deleteCodesForModule,
+  derivedModuleDelete,
   derivedModuleLevel,
+  isDeleteAvailable,
   isLevelAvailable,
   maxAvailableLevel,
   MODULE_CATALOG,
+  MODULE_DELETE_GRADE,
   MODULE_INDEX,
   PERMISSION_CATALOG,
   PERMISSIONS,
@@ -90,6 +100,7 @@ export interface MatchedAccessRule {
   scopeKey: string;
   moduleKey: string;
   level: number;
+  canDelete: boolean;
 }
 
 /**
@@ -108,6 +119,7 @@ export async function accessRulesForEmployee(
       scopeKey: accessRules.scopeKey,
       moduleKey: accessRules.moduleKey,
       level: accessRules.level,
+      canDelete: accessRules.canDelete,
     })
     .from(accessRules)
     .innerJoin(employees, eq(employees.id, employeeId))
@@ -139,42 +151,56 @@ const SCOPE_PRECEDENCE: Record<string, number> = {
   job_title: 1,
 };
 
+/** قرار قاعدة واحدة في بند واحد بعد حسم تعارض النطاقات. */
+export interface RuleDecision {
+  level: number;
+  canDelete: boolean;
+}
+
 /**
- * درجة كل بند بعد حسم التعارض بين النطاقات: تُختار القاعدة الأخصّ لا الأعلى
+ * قرار كل بند بعد حسم التعارض بين النطاقات: تُختار القاعدة الأخصّ لا الأعلى
  * درجة، حتى يستطيع المسؤول تخفيض موظف بعينه دون تفكيك قاعدة قسمه.
  */
-export function resolveRuleLevels(
+export function resolveRuleDecisions(
   rules: MatchedAccessRule[],
-): Record<string, number> {
-  const winners = new Map<string, { rank: number; level: number }>();
+): Record<string, RuleDecision> {
+  const winners = new Map<string, { rank: number; decision: RuleDecision }>();
   for (const rule of rules) {
     const rank = SCOPE_PRECEDENCE[rule.scopeType] ?? 0;
     const current = winners.get(rule.moduleKey);
     if (current && current.rank >= rank) continue;
-    winners.set(rule.moduleKey, { rank, level: rule.level });
+    winners.set(rule.moduleKey, {
+      rank,
+      decision: { level: rule.level, canDelete: rule.canDelete },
+    });
   }
-  const levels: Record<string, number> = {};
-  for (const [moduleKey, entry] of winners) levels[moduleKey] = entry.level;
-  return levels;
+  const decisions: Record<string, RuleDecision> = {};
+  for (const [moduleKey, entry] of winners) decisions[moduleKey] = entry.decision;
+  return decisions;
 }
 
 export interface AccessProfile {
-  /** الرموز الذرّية الفعلية: الدور + التخصيصات + قواعد الصلاحيات − المحظور */
+  /** الرموز الذرّية الفعلية بعد تطبيق القواعد سحباً ومنحاً ثم الحظر الصريح */
   codes: string[];
   /** درجة كل بند (1..4) — البنود غير الممنوحة لا تظهر */
   moduleLevels: Record<string, number>;
+  /** بنود يملك فيها الموظف الحذف — درجة مستقلة عن السلّم */
+  moduleDelete: Record<string, boolean>;
 }
 
 /**
- * الصورة الكاملة لصلاحيات موظف:
- *   • رموز دوره + ما مُنح له فردياً (النظام القديم)
- *   • ما تمنحه قواعد `access_rules` بشكل تراكمي (الدرجة الأعلى تُفعّل ما دونها)
- *   • ثم تُحسم عنه الرموز المحظورة صراحةً (deny) كفيتو نهائي
+ * الصورة الكاملة لصلاحيات موظف. شاشة «إدارة الصلاحيات» هي المصدر النهائي:
  *
- * درجة البند = الأعلى بين الدرجة المستنتجة من رموز دوره والدرجة الممنوحة له
- * بقاعدة. تُحتسب الدرجة المستنتجة من **رموز الدور والتخصيصات فقط** ولا تُحتسب
- * من الرموز التي منحتها القواعد، وإلا لَورث صاحب الدرجة 3 صلاحية الموافقات
- * في البنود التي يتشارك فيها رمز التعديل مع رمز الاعتماد.
+ *   • الدور تصنيف ابتدائي فقط، يُترجم إلى درجة **مبدئية** لكل بند
+ *     (`derivedModuleLevel`) ورموزه الذرّية.
+ *   • أي قاعدة في `access_rules` على البند **تحسم** درجته: ترفعها أو
+ *     تخفضها أو تسحبها كاملاً (درجة 0) مهما كان الدور — حتى «مدير الفرع».
+ *   • الحذف درجة مستقلة: القاعدة تمنحه أو تسحبه بمعزل عن درجة التعديل.
+ *   • ما تحظره التخصيصات الفردية (deny) يبقى فيتو نهائياً فوق كل ذلك.
+ *
+ * سحب الرموز يراعي أن الرمز الذرّي الواحد قد يخدم أكثر من بند (مثل
+ * `forms.approve` في الإجازات والسلف والأوفرتايم)، فلا يُسحب رمز ما دام بند
+ * آخر يبرّره بدرجته الفعلية — وإلا لأدّى تخفيض «الإجازات» إلى تعطيل «السلف».
  */
 export async function accessProfile(options: {
   employeeId: number | null;
@@ -197,23 +223,58 @@ export async function accessProfile(options: {
     }
   }
 
-  const ruleLevels = resolveRuleLevels(rules);
+  const decisions = resolveRuleDecisions(rules);
+
+  // الدرجة الفعلية لكل بند: القاعدة إن وُجدت، وإلا الدرجة المستنتجة من الدور
+  const levels: Record<string, number> = {};
+  const deletes: Record<string, boolean> = {};
+  for (const module of MODULE_CATALOG) {
+    const rule = decisions[module.key];
+    levels[module.key] = rule ? rule.level : derivedModuleLevel(module.key, baseCodes);
+    deletes[module.key] = isDeleteAvailable(module.key)
+      ? rule
+        ? rule.canDelete
+        : derivedModuleDelete(module.key, baseCodes)
+      : false;
+  }
+
+  // الرموز التي تبرّرها الدرجات الفعلية — لا تُسحب ولو قيّدها بند آخر
+  const justified = new Set<string>();
+  for (const module of MODULE_CATALOG) {
+    for (const code of codesForModuleLevel(module.key, levels[module.key])) {
+      justified.add(code);
+    }
+    if (deletes[module.key]) {
+      for (const code of deleteCodesForModule(module.key)) justified.add(code);
+    }
+  }
+
   const codes = new Set(baseCodes);
-  for (const [moduleKey, level] of Object.entries(ruleLevels)) {
-    for (const code of codesForModuleLevel(moduleKey, level)) codes.add(code);
+  for (const moduleKey of Object.keys(decisions)) {
+    // منح: ما تفتحه القاعدة فوق ما يملكه الدور
+    for (const code of codesForModuleLevel(moduleKey, levels[moduleKey])) codes.add(code);
+    if (deletes[moduleKey]) {
+      for (const code of deleteCodesForModule(moduleKey)) codes.add(code);
+    }
+    // سحب: ما يتجاوز سقف القاعدة، ما لم يبرّره بند آخر
+    for (const code of codesAboveModuleLevel(
+      moduleKey,
+      levels[moduleKey],
+      deletes[moduleKey],
+    )) {
+      if (!justified.has(code)) codes.delete(code);
+    }
   }
   for (const code of denied) codes.delete(code);
 
   const moduleLevels: Record<string, number> = {};
+  const moduleDelete: Record<string, boolean> = {};
   for (const module of MODULE_CATALOG) {
-    const level = Math.max(
-      derivedModuleLevel(module.key, baseCodes),
-      ruleLevels[module.key] ?? 0,
-    );
-    if (level > 0) moduleLevels[module.key] = level;
+    if (levels[module.key] > 0) moduleLevels[module.key] = levels[module.key];
+    if (deletes[module.key]) moduleDelete[module.key] = true;
   }
 
-  return { codes: [...codes], moduleLevels };
+  return { codes: [...codes], moduleLevels, moduleDelete };
 }
 
 /**
@@ -278,10 +339,19 @@ export async function hasModuleLevel(
   return (await moduleLevelForRequest(req, moduleKey)) >= level;
 }
 
+/** هل يملك الموظف درجة الحذف في هذا البند؟ (مستقلة عن درجة التعديل) */
+export async function hasModuleDelete(
+  req: AuthedRequest,
+  moduleKey: string,
+): Promise<boolean> {
+  const profile = await profileForRequest(req);
+  return profile.moduleDelete[moduleKey] === true;
+}
+
 const LEVEL_DENIAL: Record<number, string> = {
   1: "لا تملك صلاحية عرض هذا البند",
   2: "لا تملك صلاحية تسجيل حركة في هذا البند",
-  3: "لا تملك صلاحية الإضافة أو التعديل أو الحذف في هذا البند",
+  3: "لا تملك صلاحية الإضافة أو التعديل في هذا البند",
   4: "لا تملك صلاحية إعطاء الموافقات في هذا البند",
 };
 
@@ -329,6 +399,27 @@ export function requireModuleLevel(moduleKey: string, level: AccessLevel) {
 
 /* ── إدارة القواعد (تستخدمها شاشة «إدارة الصلاحيات») ──────────────── */
 
+/**
+ * وسيط الحذف: درجة مستقلة، فامتلاك «إضافة/تعديل» لا يكفي لحذف سجل. يُركَّب
+ * على كل مسار حذف (فردي أو جماعي) فوق فحص الرمز الذرّي.
+ */
+export function requireModuleDelete(moduleKey: string) {
+  return async (
+    req: AuthedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    if (await hasModuleDelete(req, moduleKey)) {
+      next();
+      return;
+    }
+    res.status(403).json({
+      ok: false,
+      error: "لا تملك صلاحية الحذف في هذا البند",
+    });
+  };
+}
+
 export interface AccessRuleRecord {
   id: number;
   scopeType: string;
@@ -336,6 +427,7 @@ export interface AccessRuleRecord {
   employeeId: number | null;
   moduleKey: string;
   level: number;
+  canDelete: boolean;
   note: string;
   updatedAt: Date;
 }
@@ -358,6 +450,7 @@ export async function rulesForScope(
       employeeId: accessRules.employeeId,
       moduleKey: accessRules.moduleKey,
       level: accessRules.level,
+      canDelete: accessRules.canDelete,
       note: accessRules.note,
       updatedAt: accessRules.updatedAt,
     })
@@ -373,6 +466,10 @@ export interface AccessScopeSummary {
   employeeId: number | null;
   modules: number;
   maxLevel: number;
+  /** عدد البنود المسحوبة كاملاً (درجة 0) — يُظهر أن القاعدة تسحب لا تمنح فقط */
+  withdrawn: number;
+  /** عدد البنود الممنوح فيها الحذف */
+  deletes: number;
   updatedAt: Date | null;
 }
 
@@ -388,6 +485,7 @@ export async function accessRuleScopeSummary(): Promise<AccessScopeSummary[]> {
       scopeKey: accessRules.scopeKey,
       employeeId: accessRules.employeeId,
       level: accessRules.level,
+      canDelete: accessRules.canDelete,
       updatedAt: accessRules.updatedAt,
     })
     .from(accessRules);
@@ -403,12 +501,16 @@ export async function accessRuleScopeSummary(): Promise<AccessScopeSummary[]> {
         employeeId: row.employeeId,
         modules: 1,
         maxLevel: row.level,
+        withdrawn: row.level === 0 ? 1 : 0,
+        deletes: row.canDelete ? 1 : 0,
         updatedAt: row.updatedAt,
       });
       continue;
     }
     current.modules += 1;
     current.maxLevel = Math.max(current.maxLevel, row.level);
+    if (row.level === 0) current.withdrawn += 1;
+    if (row.canDelete) current.deletes += 1;
     current.employeeId = current.employeeId ?? row.employeeId;
     if (
       row.updatedAt &&

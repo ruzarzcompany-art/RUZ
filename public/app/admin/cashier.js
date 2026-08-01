@@ -70,6 +70,8 @@ const state = {
   can: () => false,
   /** درجة المستخدم في بند «تقفيل الكاشير» (0..4) كما حسبها الخادم. */
   levelOf: () => 0,
+  /** درجة الحذف المستقلة في البند نفسه. */
+  canDeleteIn: () => false,
   canReview: false,
   closings: [],
   editingId: null,
@@ -377,8 +379,8 @@ function renderClosings() {
       }),
     );
 
-    // الاعتماد/الاعتراض إجراء موافقة (الدرجة الرابعة)، والتعديل والحذف
-    // يحتاجان الثالثة — والخادم يفرض الدرجتين على كل حال.
+    // الاعتماد/الاعتراض إجراء موافقة (الدرجة الرابعة)، والتعديل يحتاج
+    // الثالثة، والحذف درجته المستقلة — والخادم يفرضها جميعاً على كل حال.
     if (state.canReview && state.levelOf("cashier_closing") >= 4) {
       actions.append(
         button("اعتماد", { onClick: () => review(closing.id, "reviewed") }),
@@ -386,7 +388,7 @@ function renderClosings() {
       );
     }
 
-    if (state.canReview && state.levelOf("cashier_closing") >= 3) {
+    if (state.canReview && state.canDeleteIn("cashier_closing")) {
       actions.append(
         button("حذف", {
           className: "btn btn--danger btn--xs",
@@ -521,9 +523,10 @@ function printRange() {
 
 /* ── التهيئة ───────────────────────────────────────────────────── */
 
-export function initCashierModule({ can, levelOf }) {
+export function initCashierModule({ can, levelOf, canDeleteIn }) {
   state.can = can;
   if (levelOf) state.levelOf = levelOf;
+  if (canDeleteIn) state.canDeleteIn = canDeleteIn;
   state.canReview = can("cashier.review");
 
   el("cashier-form").addEventListener("submit", submitClosing);

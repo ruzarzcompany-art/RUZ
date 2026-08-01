@@ -352,8 +352,13 @@ export const accessRules = pgTable(
     scopeKey: text("scope_key").notNull(),
     /** رمز البند كما في `MODULE_CATALOG` (مثال: cashier_closing) */
     moduleKey: text("module_key").notNull(),
-    /** 1..4 — أعلى درجة ممنوحة لهذا البند في هذا النطاق */
+    /**
+     * 0..4 — الدرجة النهائية لهذا البند في هذا النطاق. القاعدة **تحسم**
+     * الدرجة ولا تُضاف فقط: الصفر يعني سحب البند كاملاً مهما منح الدور.
+     */
     level: integer().notNull().default(1),
+    /** درجة الحذف المستقلة — تُمنح أو تُسحب بمعزل عن درجة الإضافة والتعديل */
+    canDelete: boolean("can_delete").notNull().default(false),
     note: text().notNull().default(""),
     grantedByEmployeeId: integer("granted_by_employee_id").references(
       () => employees.id,
@@ -974,8 +979,9 @@ export const inventoryItems = pgTable("inventory_items", {
 
 /**
  * inventory_movements — حركة المخزون اليومية لكل فرع:
- * `in` إدخال، `out` إخراج/استهلاك، `count` جرد (الكمية المعدودة فعلياً).
- * الرصيد = آخر جرد + الإدخالات − الإخراجات بعد تاريخ ذلك الجرد.
+ * `in` إدخال، `out` إخراج/استهلاك، `count` جرد (الكمية المعدودة فعلياً)،
+ * `manufacture` تصنيع (خصم المادة الخام مقابل إضافة المنتج النهائي).
+ * الرصيد = آخر جرد + الإدخالات − الإخراجات والتصنيع بعد تاريخ ذلك الجرد.
  */
 export const inventoryMovements = pgTable(
   "inventory_movements",
@@ -987,17 +993,30 @@ export const inventoryMovements = pgTable(
     itemId: integer("item_id")
       .notNull()
       .references(() => inventoryItems.id, { onDelete: "cascade" }),
-    /** in | out | count */
+    /** in | out | count | manufacture */
     movementType: text("movement_type").notNull().default("in"),
     businessDate: date("business_date").notNull(),
     quantity: doublePrecision().notNull().default(0),
     unitCost: money("unit_cost"),
     totalCost: money("total_cost"),
-    /** purchase | consumption | waste | transfer | stocktake | other */
+    /** purchase | consumption | waste | transfer | stocktake | manufacture | other */
     reason: text().notNull().default("other"),
     reference: text().notNull().default(""),
     /** فرق الجرد عن الرصيد الدفتري (يُحسب في الخادم لحركات الجرد) */
     variance: doublePrecision().notNull().default(0),
+    /** التصنيع: الصنف النهائي الناتج عن استهلاك هذا الخام */
+    producedItemId: integer("produced_item_id").references(() => inventoryItems.id, {
+      onDelete: "set null",
+    }),
+    /** عدد الوحدات المنتجة — صفر يعني أنه لم يُسجَّل بعد ويمكن إكماله لاحقاً */
+    producedUnits: doublePrecision("produced_units").notNull().default(0),
+    /** وزن الوحدة الواحدة بوحدة المادة الخام (الخام ÷ عدد الوحدات) */
+    unitWeight: doublePrecision("unit_weight").notNull().default(0),
+    /**
+     * ربط حركتَي التصنيع: حركة خصم الخام ↔ حركة إضافة المنتج. عمود عادي بلا
+     * مفتاح أجنبي لأن الجدول يشير إلى نفسه، والحذف يتكفّل بإزالة الطرفين معاً.
+     */
+    linkedMovementId: integer("linked_movement_id"),
     notes: text().notNull().default(""),
     createdByEmployeeId: integer("created_by_employee_id").references(
       () => employees.id,

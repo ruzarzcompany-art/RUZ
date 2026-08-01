@@ -13,7 +13,13 @@ import {
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
-import { PERMISSIONS, hasAnyPermission, requireAnyPermission, requirePermission } from "../rbac.js";
+import {
+  PERMISSIONS,
+  hasAnyPermission,
+  hasModuleDelete,
+  requireAnyPermission,
+  requirePermission,
+} from "../rbac.js";
 import { safeTimeZone } from "../time.js";
 import { asBool, asEnum, asId, asNumber, asString } from "../validate.js";
 
@@ -507,6 +513,16 @@ const ENTITY_SPECS: EntitySpec[] = [
 
 const SPEC_BY_KEY = new Map(ENTITY_SPECS.map((spec) => [spec.key, spec]));
 
+/**
+ * بند شاشة «إدارة الصلاحيات» الذي يحكم حذف كل كيان: الفروع وأصناف المخزون
+ * لها بنودها الخاصة، وما عداها يتبع بند «الإعدادات والكيانات الأساسية».
+ */
+function entityModuleKey(spec: EntitySpec): string {
+  if (spec.key === "branches") return "branches";
+  if (spec.key === "inventoryItems") return "inventory_items";
+  return "settings";
+}
+
 /** يبني قيم الإدراج/التحديث من الجسم المُرسل بعد التحقّق من كل حقل. */
 function buildValues(
   spec: EntitySpec,
@@ -754,6 +770,12 @@ settingsRouter.delete(
     const allowed = await requireEntityAccess(req, spec, "manage");
     if (!allowed) {
       res.status(403).json({ ok: false, error: "لا تملك صلاحية تعديل هذا الكيان" });
+      return;
+    }
+
+    // الحذف درجة مستقلة عن التعديل: من يعدّل الكيان لا يحذفه بالضرورة
+    if (!(await hasModuleDelete(req, entityModuleKey(spec)))) {
+      res.status(403).json({ ok: false, error: "لا تملك صلاحية حذف هذا الكيان" });
       return;
     }
 

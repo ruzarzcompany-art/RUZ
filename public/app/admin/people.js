@@ -2,7 +2,8 @@
  * شاشات ملف الموظف: إضافة/تعديل بياناته الكاملة، جدول دوامه، تخصيص صلاحيات
  * العرض له بعينه، وتعيين المدير المسؤول عن كل فرع.
  *
- * الوحدة تُهيَّأ من `admin.js` عبر `initPeopleModule({ state, can, levelOf, refreshPeople })`
+ * الوحدة تُهيَّأ من `admin.js` عبر
+ * `initPeopleModule({ state, can, levelOf, canDeleteIn, refreshPeople })`
  * فتشترك معه في نفس قوائم الموظفين والفروع بلا استعلامات مكرّرة.
  */
 
@@ -42,6 +43,9 @@ const can = (code) => ctx?.can(code) ?? false;
  * الرمز، فنُخفي البطاقة على من سيرفضه الخادم.
  */
 const levelOf = (moduleKey) => ctx?.levelOf?.(moduleKey) ?? 0;
+
+/** درجة الحذف المستقلة في بند من بنود النظام. */
+const canDeleteIn = (moduleKey) => ctx?.canDeleteIn?.(moduleKey) === true;
 
 /** هل يستطيع المستخدم تخصيص صلاحيات موظف بعينه؟ */
 const canEditPermissions = () =>
@@ -124,7 +128,10 @@ export function editEmployee(employee) {
   editingEmployee = employee ?? null;
 
   const deleteButton = el("employee-delete");
-  if (deleteButton) deleteButton.hidden = !employee || !can("employees.write");
+  if (deleteButton) {
+    deleteButton.hidden =
+      !employee || !can("employees.write") || !canDeleteIn("employees");
+  }
 
   el("employee-target").textContent = employee
     ? `تعديل: ${employee.employeeCode} — ${employee.fullName}`
@@ -280,7 +287,8 @@ export function employeeRowActions(employee) {
     );
   }
 
-  if (can("employees.write")) {
+  // حذف ملف الموظف درجة مستقلة عن تعديله
+  if (can("employees.write") && canDeleteIn("employees")) {
     actions.append(
       button("حذف", {
         className: "btn btn--danger btn--xs",

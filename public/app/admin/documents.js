@@ -43,6 +43,8 @@ const state = {
   can: () => false,
   /** درجة المستخدم في بنود «المستندات» و«الجزاءات» (0..4) من الخادم. */
   levelOf: () => 0,
+  /** درجة الحذف المستقلة في هذين البندين. */
+  canDeleteIn: () => false,
   documents: [],
   current: null,
   actions: [],
@@ -222,8 +224,9 @@ async function removeAction(action) {
 
 function renderActions() {
   const canManage = state.can("disciplinary.manage");
-  // التعديل والحذف يحتاجان الدرجة الثالثة، أما التسجيل فيكفيه الثانية
+  // التعديل يحتاج الدرجة الثالثة والتسجيل يكفيه الثانية، والحذف درجة مستقلة
   const canEdit = canManage && state.levelOf("disciplinary") >= 3;
+  const canRemove = canManage && state.canDeleteIn("disciplinary");
 
   actionsPager.render(state.actions, (action) => {
     const actions = document.createElement("span");
@@ -244,6 +247,11 @@ function renderActions() {
             el("disc-form").scrollIntoView({ behavior: "smooth", block: "center" });
           },
         }),
+      );
+    }
+
+    if (canRemove) {
+      actions.append(
         button("حذف", {
           className: "btn btn--danger btn--xs",
           onClick: () => removeAction(action),
@@ -285,8 +293,8 @@ export async function loadActions() {
 /* ── سجل النماذج المُصدرة ──────────────────────────────────────── */
 
 function renderIssues() {
-  // حذف سجلّات الإصدار وتنظيفها من الدرجة الثالثة في بند «المستندات»
-  const canClean = state.can("documents.read_all") && state.levelOf("documents") >= 3;
+  // حذف سجلّات الإصدار وتنظيفها من درجة الحذف المستقلة في بند «المستندات»
+  const canClean = state.can("documents.read_all") && state.canDeleteIn("documents");
 
   issuesPager.render(state.issues, (issue) =>
     row([
@@ -407,9 +415,10 @@ function fillIssuesKindPicker() {
 
 /* ── التهيئة ───────────────────────────────────────────────────── */
 
-export function initDocumentsModule({ can, levelOf }) {
+export function initDocumentsModule({ can, levelOf, canDeleteIn }) {
   state.can = can;
   if (levelOf) state.levelOf = levelOf;
+  if (canDeleteIn) state.canDeleteIn = canDeleteIn;
 
   el("doc-kind").addEventListener("change", onDocChange);
   el("doc-employee").addEventListener("change", loadReferences);

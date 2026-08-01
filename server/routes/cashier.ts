@@ -12,6 +12,7 @@ import { clientIp, recordAudit } from "../audit.js";
 import {
   PERMISSIONS,
   hasAnyPermission,
+  requireModuleDelete,
   requireModuleLevel,
   requirePermission,
 } from "../rbac.js";
@@ -624,7 +625,7 @@ cashierRouter.delete(
   "/cashier/closings/:id",
   requireAuth,
   requirePermission(PERMISSIONS.cashierReview),
-  requireModuleLevel("cashier_closing", 3),
+  requireModuleDelete("cashier_closing"),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;

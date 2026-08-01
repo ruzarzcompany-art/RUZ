@@ -18,6 +18,7 @@ import {
   hasModuleLevel,
   PERMISSIONS,
   requireAnyPermission,
+  requireModuleDelete,
   requireModuleLevel,
 } from "../rbac.js";
 import {
@@ -702,7 +703,7 @@ payrollRouter.delete(
   "/payroll/slips/:id",
   requireAuth,
   requireAnyPermission(PERMISSIONS.payrollManage),
-  requireModuleLevel("payroll", 3),
+  requireModuleDelete("payroll"),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
