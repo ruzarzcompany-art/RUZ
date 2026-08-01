@@ -809,16 +809,20 @@ export const companySettings = pgTable("company_settings", {
 });
 
 /**
- * document_identity_fields — أي بيانات المؤسسة تظهر على مطبوعات كل نموذج.
+ * document_identity_fields — أي البيانات تظهر على مطبوعات كل نموذج.
  *
- * الأصل أن كل مطبوعة تحمل هوية المؤسسة كاملةً كما هي في `company_settings`،
- * لكن بعض النماذج لا يُناسبها ذلك (طلب إجازة داخلي لا يحتاج الرقم الضريبي
- * مثلاً). فيُسجَّل هنا صفٌّ واحد لكل نموذج يُستثنى فيه ما لا يُراد ظهوره،
- * وغياب الصف يعني ظهور الهوية كاملةً — فلا يتغيّر سلوك أي نموذج لم يُخصَّص.
+ * الأصل أن كل مطبوعة تحمل هوية المؤسسة كاملةً كما هي في `company_settings`
+ * وجدول تعريف الموظف كاملاً، لكن بعض النماذج لا يُناسبها ذلك (طلب إجازة
+ * داخلي لا يحتاج الرقم الضريبي ولا المدير المسؤول مثلاً). فيُسجَّل هنا صفٌّ
+ * واحد لكل نموذج يُستثنى فيه ما لا يُراد ظهوره، وغياب الصف يعني الظهور
+ * الافتراضي الكامل — فلا يتغيّر سلوك أي نموذج لم يُخصَّص.
  *
  * هذه المفاتيح تُقيّد الإظهار ولا تُنشئه: مفتاح المؤسسة العام في
  * `company_settings` (الشعار، التذييل، التوقيعات، العلامة المائية) يبقى
  * الأعلى، فإن أُغلق هناك لا يفتحه تخصيص نموذج.
+ *
+ * حقول لا تُعطَّل أصلاً فلا عمود لها هنا: تاريخ المستند، اسم الموظف، الرقم
+ * الوظيفي، الجنسية، ورقم الهوية/الإقامة — لأنها تعريف المستند وصاحبه.
  */
 export const documentIdentityFields = pgTable("document_identity_fields", {
   id: serial().primaryKey(),
@@ -840,6 +844,18 @@ export const documentIdentityFields = pgTable("document_identity_fields", {
   showFooterNote: boolean("show_footer_note").notNull().default(true),
   showSignatures: boolean("show_signatures").notNull().default(true),
   showWatermark: boolean("show_watermark").notNull().default(true),
+  /**
+   * بيانات الموظف في جدول تعريف المستند. تُطبع اليوم في كل النماذج، فالأصل
+   * `true` كي لا يتغيّر شكل مطبوعة قائمة.
+   */
+  showJobTitle: boolean("show_job_title").notNull().default(true),
+  showDepartment: boolean("show_department").notNull().default(true),
+  showBranch: boolean("show_branch").notNull().default(true),
+  showManager: boolean("show_manager").notNull().default(true),
+  showHiredAt: boolean("show_hired_at").notNull().default(true),
+  /** بيانات اتصال الموظف: تظهر في النماذج التي تعرضها أصلاً (نموذج التعيين). */
+  showEmployeeEmail: boolean("show_employee_email").notNull().default(true),
+  showEmployeePhone: boolean("show_employee_phone").notNull().default(true),
   updatedByEmployeeId: integer("updated_by_employee_id").references(() => employees.id, {
     onDelete: "set null",
   }),

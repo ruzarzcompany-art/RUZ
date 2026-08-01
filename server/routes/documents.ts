@@ -54,7 +54,8 @@ import {
 } from "../validate.js";
 import { getOffDates, monthBounds, offScheduleLabel } from "../schedule.js";
 import {
-  IDENTITY_FIELDS,
+  FIXED_FIELDS,
+  PRINT_FIELDS,
   loadIdentityFieldMap,
   loadIdentityFields,
   readIdentityFields,
@@ -982,7 +983,7 @@ documentsRouter.get(
   },
 );
 
-/* ── هوية المؤسسة على مطبوعات كل نموذج ─────────────────────────── */
+/* ── البيانات الظاهرة على مطبوعات كل نموذج ─────────────────────── */
 
 /**
  * مطبوعات لها مسار طباعة مباشر بلا مدخل في حزمة النماذج (مسير الراتب والسند
@@ -1019,7 +1020,8 @@ documentsRouter.get(
     res.json({
       ok: true,
       documents: PRINTABLE_DOCS,
-      fields: IDENTITY_FIELDS,
+      fields: PRINT_FIELDS,
+      fixedFields: FIXED_FIELDS,
       overrides: await loadIdentityFieldMap(),
     });
   },
@@ -1070,20 +1072,20 @@ documentsRouter.put(
       ipAddress: clientIp(req),
     });
 
-    const hidden = IDENTITY_FIELDS.filter((field) => !fields[field.key]);
+    const hidden = PRINT_FIELDS.filter((field) => !fields[field.key]);
     res.json({
       ok: true,
       docKey,
       fields,
       message:
         hidden.length === 0
-          ? "هوية المؤسسة تظهر كاملةً على هذا النموذج."
+          ? "كل البيانات تظهر على هذا النموذج."
           : `تم الحفظ. لن يظهر على هذا النموذج: ${hidden.map((f) => f.label).join("، ")}.`,
     });
   },
 );
 
-/** إعادة نموذج إلى الأصل: هوية المؤسسة كاملةً كما في الإعدادات العامة. */
+/** إعادة نموذج إلى الأصل: كل بيانات المؤسسة والموظف كما في الإعدادات العامة. */
 documentsRouter.delete(
   "/documents/print-fields/:docKey",
   requireAuth,
@@ -1115,7 +1117,7 @@ documentsRouter.delete(
     res.json({
       ok: true,
       docKey,
-      message: "أُعيد النموذج إلى هوية المؤسسة الكاملة.",
+      message: "أُعيد النموذج إلى إظهار كل البيانات.",
     });
   },
 );

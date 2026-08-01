@@ -222,13 +222,15 @@ async function saveCompany() {
 /* ── البيانات الظاهرة على مطبوعات كل نموذج ─────────────────────── */
 
 /**
- * تخصيص هوية المؤسسة لكل نموذج على حدة: الدليل والحقول والتخصيصات المحفوظة
- * تأتي من `GET /documents/print-fields`، والحفظ يُثبّت الصورة الكاملة التي
- * تراها الشاشة لنموذج واحد.
+ * تخصيص بيانات المطبوعات لكل نموذج على حدة: الدليل والحقول والحقول الثابتة
+ * والتخصيصات المحفوظة تأتي من `GET /documents/print-fields`، والحفظ يُثبّت
+ * الصورة الكاملة التي تراها الشاشة لنموذج واحد.
  */
 const printFields = {
   documents: [],
   fields: [],
+  /** بيانات لا تُعطَّل في أي نموذج — تُعرض للعلم فقط */
+  fixedFields: [],
   /** `{ docKey: { showTaxNumber: false, ... } }` — النماذج المخصَّصة فقط */
   overrides: {},
   docKey: "",
@@ -272,6 +274,15 @@ function renderPrintFieldsDocs() {
   picker.value = printFields.docKey;
 }
 
+function renderPrintFieldsFixed() {
+  const line = el("print-fields-fixed");
+  if (!line) return;
+  // الحقول الثابتة لا مفتاح لها أصلاً، فتُذكر كي لا يُبحث عنها في الشبكة
+  line.textContent = printFields.fixedFields.length
+    ? `تظهر دائماً في كل نموذج ولا يمكن إخفاؤها: ${printFields.fixedFields.join("، ")}.`
+    : "";
+}
+
 function renderPrintFieldsGrid() {
   const grid = el("print-fields-grid");
   grid.textContent = "";
@@ -312,7 +323,7 @@ function renderPrintFieldsGrid() {
   const doc = printFields.documents.find((entry) => entry.key === printFields.docKey);
   if (!active) {
     status.textContent = doc
-      ? `«${doc.title}» يحمل هوية المؤسسة كاملة (لم يُخصَّص).`
+      ? `«${doc.title}» يحمل كل بيانات المؤسسة والموظف (لم يُخصَّص).`
       : "";
   } else {
     const hidden = printFields.fields
@@ -339,12 +350,14 @@ async function loadPrintFields() {
 
   printFields.documents = result.documents ?? [];
   printFields.fields = result.fields ?? [];
+  printFields.fixedFields = result.fixedFields ?? [];
   printFields.overrides = result.overrides ?? {};
   if (!printFields.documents.some((doc) => doc.key === printFields.docKey)) {
     printFields.docKey = printFields.documents[0]?.key ?? "";
   }
 
   renderPrintFieldsDocs();
+  renderPrintFieldsFixed();
   renderPrintFieldsGrid();
 }
 
