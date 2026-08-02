@@ -47,9 +47,6 @@ const levelOf = (moduleKey) => ctx?.levelOf?.(moduleKey) ?? 0;
 /** درجة الحذف المستقلة في بند من بنود النظام. */
 const canDeleteIn = (moduleKey) => ctx?.canDeleteIn?.(moduleKey) === true;
 
-/** هل يستطيع المستخدم تخصيص صلاحيات موظف بعينه؟ */
-const canEditPermissions = () =>
-  can("permissions.manage") && levelOf("access_control") >= 3;
 
 /* ── قوائم مساعدة ─────────────────────────────────────────── */
 
@@ -95,7 +92,6 @@ export function fillPeopleSelects() {
     { placeholder: "بدون دور" },
   );
   fillSelect(el("schedule-employee"), employeeOptions());
-  fillSelect(el("perm-employee"), employeeOptions());
   fillSelect(el("report-branch"), branchOptions(), { placeholder: "الكل" });
   fillSelect(el("report-employee"), employeeOptions(), { placeholder: "الكل" });
 }
@@ -275,17 +271,6 @@ export function employeeRowActions(employee) {
     );
   }
 
-  if (canEditPermissions()) {
-    actions.append(
-      button("الصلاحيات", {
-        className: "btn btn--ghost btn--xs",
-        onClick: () => {
-          el("perm-employee").value = String(employee.id);
-          loadPermissions();
-        },
-      }),
-    );
-  }
 
   // حذف ملف الموظف درجة مستقلة عن تعديله
   if (can("employees.write") && canDeleteIn("employees")) {
@@ -553,79 +538,6 @@ export async function refreshSchedules() {
   );
 }
 
-/* ── تخصيص الصلاحيات ──────────────────────────────────────── */
-
-async function loadPermissions() {
-  const employeeId = el("perm-employee").value;
-  if (!employeeId) return;
-
-  const result = await api(`/employees/${employeeId}/permissions`);
-  const host = el("perm-sections");
-  host.textContent = "";
-
-  if (!result.ok) {
-    setAlert(el("perm-result"), result.error ?? "تعذّر قراءة الصلاحيات", "error");
-    return;
-  }
-
-  const roleCodes = new Set(result.roleCodes ?? []);
-  const overrideByCode = new Map(
-    (result.overrides ?? []).map((item) => [item.permissionCode, item.effect]),
-  );
-
-  // البنود تُجمَّع حسب `group` القادم من الخادم لتسهيل قراءة القائمة الطويلة
-  const groups = new Map();
-  for (const section of result.sections ?? []) {
-    const key = section.group ?? "أخرى";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(section);
-  }
-
-  for (const [groupName, sections] of groups) {
-    const heading = document.createElement("h4");
-    heading.className = "perm__group";
-    heading.textContent = groupName;
-    host.append(heading);
-
-    for (const section of sections) {
-      const wrap = document.createElement("div");
-      wrap.className = "perm";
-
-      const text = document.createElement("div");
-      const title = document.createElement("span");
-      title.className = "perm__label";
-      title.textContent = section.label;
-      const hint = document.createElement("span");
-      hint.className = "perm__hint";
-      hint.textContent = `${section.hint} — دوره ${roleCodes.has(section.code) ? "يمنحه" : "لا يمنحه"} هذا البند`;
-      text.append(title, hint);
-
-      const select = document.createElement("select");
-      select.dataset.permissionCode = section.code;
-      for (const [value, optionLabel] of [
-        ["", "افتراضي الدور"],
-        ["allow", "مسموح"],
-        ["deny", "ممنوع"],
-      ]) {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = optionLabel;
-        select.append(option);
-      }
-      select.value = overrideByCode.get(section.code) ?? "";
-
-      wrap.append(text, select);
-      host.append(wrap);
-    }
-  }
-
-  setAlert(
-    el("perm-result"),
-    `الصلاحيات الفعلية الحالية: ${(result.effective ?? []).length} صلاحية.`,
-    "ok",
-  );
-}
-
 /* ── الفروع ومديروها ──────────────────────────────────────── */
 
 export async function refreshBranchesPanel() {
@@ -714,7 +626,6 @@ export function initPeopleModule(context) {
 
   el("employee-card").hidden = !can("employees.write");
   el("schedule-card").hidden = !(can("schedules.manage") || can("employees.write"));
-  el("perm-card").hidden = !canEditPermissions();
 
   el("employee-reset").addEventListener("click", () => editEmployee(null));
 
@@ -829,33 +740,6 @@ export function initPeopleModule(context) {
 
     setAlert(el("schedule-result"), message, "ok");
     await refreshSchedules();
-  });
-
-  el("perm-load").addEventListener("click", loadPermissions);
-  el("perm-employee").addEventListener("change", loadPermissions);
-
-  el("perm-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const employeeId = el("perm-employee").value;
-    if (!employeeId) return;
-
-    const overrides = [...document.querySelectorAll("[data-permission-code]")]
-      .filter((select) => select.value)
-      .map((select) => ({
-        permissionCode: select.dataset.permissionCode,
-        effect: select.value,
-      }));
-
-    const result = await api(`/employees/${employeeId}/permissions`, {
-      method: "PUT",
-      body: { overrides, reason: el("perm-reason").value.trim() },
-    });
-
-    setAlert(
-      el("perm-result"),
-      result.ok ? result.message : (result.error ?? "تعذّر حفظ التخصيص"),
-      result.ok ? "ok" : "error",
-    );
   });
 
   el("branches-refresh").addEventListener("click", refreshBranchesPanel);
