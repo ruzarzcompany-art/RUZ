@@ -25,7 +25,6 @@ import {
   MODULE_INDEX,
   PERMISSIONS,
   permissionCodesForRole,
-  permissionOverridesForEmployee,
   requireModuleDelete,
   requireModuleLevel,
   requirePermission,
@@ -184,17 +183,8 @@ async function keepsAccessWithoutRules(employee: {
   id: number;
   roleId: number | null;
 }): Promise<boolean> {
-  const [roleCodes, overrides] = await Promise.all([
-    permissionCodesForRole(employee.roleId),
-    permissionOverridesForEmployee(employee.id),
-  ]);
-  const codes = new Set(roleCodes);
-  for (const override of overrides) {
-    if (override.effect === "deny") codes.delete(override.permissionCode);
-    else codes.add(override.permissionCode);
-  }
-  return codes.has(PERMISSIONS.permissionsManage);
-}
+    const roleCodes = await permissionCodesForRole(employee.roleId);
+    return roleCodes.includes(PERMISSIONS.permissionsManage);
 
 /** هل تنطبق قاعدة هذا النطاق على الموظف المنفّذ نفسه؟ */
 async function scopeCoversActor(
@@ -256,16 +246,8 @@ async function roleBaseline(employee: {
   id: number;
   roleId: number | null;
 }): Promise<{ levels: Record<string, number>; deletes: Record<string, boolean> }> {
-  const [roleCodes, overrides] = await Promise.all([
-    permissionCodesForRole(employee.roleId),
-    permissionOverridesForEmployee(employee.id),
-  ]);
-  const codes = new Set(roleCodes);
-  for (const override of overrides) {
-    if (override.effect === "deny") codes.delete(override.permissionCode);
-    else codes.add(override.permissionCode);
-  }
-
+  const roleCodes = await permissionCodesForRole(employee.roleId);
+    const codes = new Set(roleCodes);
   const levels: Record<string, number> = {};
   const deletes: Record<string, boolean> = {};
   for (const module of MODULE_CATALOG) {
