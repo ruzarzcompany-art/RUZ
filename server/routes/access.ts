@@ -185,6 +185,7 @@ async function keepsAccessWithoutRules(employee: {
 }): Promise<boolean> {
     const roleCodes = await permissionCodesForRole(employee.roleId);
     return roleCodes.includes(PERMISSIONS.permissionsManage);
+}
 
 /** هل تنطبق قاعدة هذا النطاق على الموظف المنفّذ نفسه؟ */
 async function scopeCoversActor(
