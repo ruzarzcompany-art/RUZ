@@ -1055,14 +1055,14 @@ peopleRouter.put(
   },
 );
 
-/* ── الصلاحيات الفردية ────────────────────────────────────────── */
+/* ── مدير الفرع ───────────────────────────────────────────────── */
 
+/** الموظفون المؤهّلون لإدارة فرع (بدور مدير فرع). */
 peopleRouter.get(
-  "/employees/:id/permissions",
-  requireAuth,
-  requireAuth,
-  requirePermission(PERMISSIONS.branchesRead),
-  async (_req: AuthedRequest, res: Response) => {
+    "/branches/manager-candidates",
+    requireAuth,
+      requirePermission(PERMISSIONS.branchesRead),
+    async (_req: AuthedRequest, res: Response) => {
     const db = getDb();
     const rows = await db
       .select({
