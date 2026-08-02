@@ -13,7 +13,6 @@ import { and, asc, eq, gte, lte, ne } from "drizzle-orm";
 import { getDb } from "../../db/index.js";
 import {
   branches,
-  employeePermissionOverrides,
   employees,
   faceTemplates,
   permissions as permissionsTable,
@@ -28,16 +27,11 @@ import { clientIp, recordAudit } from "../audit.js";
 import { getSeedPassword } from "../config.js";
 import { hashPassword } from "../passwords.js";
 import {
-  effectivePermissionCodes,
-  hasAnyPermission,
-  PERMISSION_CATALOG,
-  PERMISSIONS,
-  permissionCodesForRole,
-  requireAnyPermission,
-  requireModuleDelete,
-  requireModuleLevel,
-  requirePermission,
-  SECTION_CATALOG,
+    hasAnyPermission,
+    PERMISSIONS,
+    requireAnyPermission,
+    requireModuleDelete,
+      requirePermission,
 } from "../rbac.js";
 import {
   ALLOWED_DAYS_OFF,
@@ -1066,154 +1060,6 @@ peopleRouter.put(
 peopleRouter.get(
   "/employees/:id/permissions",
   requireAuth,
-  requireAnyPermission(PERMISSIONS.permissionsManage, PERMISSIONS.employeesRead),
-  async (req: AuthedRequest, res: Response) => {
-    const db = getDb();
-    const employeeId = asId(req.params.id);
-
-    if (employeeId === null) {
-      res.status(400).json({ ok: false, error: "معرّف الموظف غير صالح" });
-      return;
-    }
-
-    const [employee] = await db
-      .select({ id: employees.id, roleId: employees.roleId, fullName: employees.fullName })
-      .from(employees)
-      .where(eq(employees.id, employeeId))
-      .limit(1);
-
-    if (!employee) {
-      res.status(404).json({ ok: false, error: "الموظف غير موجود" });
-      return;
-    }
-
-    const [roleCodes, overrides, effective] = await Promise.all([
-      permissionCodesForRole(employee.roleId),
-      db
-        .select()
-        .from(employeePermissionOverrides)
-        .where(eq(employeePermissionOverrides.employeeId, employeeId)),
-      effectivePermissionCodes({ employeeId, roleId: employee.roleId }),
-    ]);
-
-    res.json({
-      ok: true,
-      employeeId,
-      fullName: employee.fullName,
-      roleCodes,
-      overrides,
-      effective,
-      sections: SECTION_CATALOG,
-      catalog: PERMISSION_CATALOG,
-    });
-  },
-);
-
-/**
- * استبدال تخصيصات موظف بالكامل. كل عنصر: `{ permissionCode, effect }`
- * حيث `effect` إما `allow` (يمنح فوق الدور) أو `deny` (يسحب من الدور).
- */
-peopleRouter.put(
-  "/employees/:id/permissions",
-  requireAuth,
-  requirePermission(PERMISSIONS.permissionsManage),
-  requireModuleLevel("access_control", 3),
-  async (req: AuthedRequest, res: Response) => {
-    const db = getDb();
-    const actor = req.employee!;
-    const employeeId = asId(req.params.id);
-
-    if (employeeId === null) {
-      res.status(400).json({ ok: false, error: "معرّف الموظف غير صالح" });
-      return;
-    }
-
-    const [employee] = await db
-      .select({ id: employees.id, roleId: employees.roleId, fullName: employees.fullName })
-      .from(employees)
-      .where(eq(employees.id, employeeId))
-      .limit(1);
-
-    if (!employee) {
-      res.status(404).json({ ok: false, error: "الموظف غير موجود" });
-      return;
-    }
-
-    const knownCodes = new Set(PERMISSION_CATALOG.map((item) => item.code));
-    const incoming = Array.isArray(req.body?.overrides) ? req.body.overrides : [];
-    const rows: Array<{
-      employeeId: number;
-      permissionCode: string;
-      effect: string;
-      note: string;
-      grantedByEmployeeId: number;
-    }> = [];
-    const seen = new Set<string>();
-
-    for (const item of incoming as Array<Record<string, unknown>>) {
-      const permissionCode = asString(item?.permissionCode, 100);
-      const effect = asEnum(item?.effect, ["allow", "deny"] as const);
-
-      if (!permissionCode || effect === null) continue;
-      if (!knownCodes.has(permissionCode)) {
-        res.status(400).json({ ok: false, error: `صلاحية غير معروفة: ${permissionCode}` });
-        return;
-      }
-      if (seen.has(permissionCode)) continue;
-      seen.add(permissionCode);
-
-      rows.push({
-        employeeId,
-        permissionCode,
-        effect,
-        note: asString(item?.note, 300) ?? "",
-        grantedByEmployeeId: actor.id,
-      });
-    }
-
-    const before = await db
-      .select()
-      .from(employeePermissionOverrides)
-      .where(eq(employeePermissionOverrides.employeeId, employeeId));
-
-    await db
-      .delete(employeePermissionOverrides)
-      .where(eq(employeePermissionOverrides.employeeId, employeeId));
-
-    if (rows.length > 0) {
-      await db.insert(employeePermissionOverrides).values(rows);
-    }
-
-    const effective = await effectivePermissionCodes({
-      employeeId,
-      roleId: employee.roleId,
-    });
-
-    await recordAudit({
-      actorEmployeeId: actor.id,
-      action: "permissions.override",
-      entityType: "employee_permission_overrides",
-      entityId: employeeId,
-      before: { overrides: before },
-      after: { overrides: rows, effective },
-      reason: asString(req.body?.reason, 500) ?? "تخصيص صلاحيات موظف",
-      ipAddress: clientIp(req),
-    });
-
-    res.json({
-      ok: true,
-      message: `تم حفظ ${rows.length} تخصيصاً لـ${employee.fullName}`,
-      overrides: rows,
-      effective,
-    });
-  },
-);
-
-/* ── مدير الفرع ───────────────────────────────────────────────── */
-
-/** الموظفون المؤهّلون لإدارة فرع (بدور مدير فرع). */
-peopleRouter.get(
-  "/branches/manager-candidates",
   requireAuth,
   requirePermission(PERMISSIONS.branchesRead),
   async (_req: AuthedRequest, res: Response) => {
