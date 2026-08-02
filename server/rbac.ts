@@ -3,7 +3,6 @@ import { and, eq, inArray, ne, or } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import {
   accessRules,
-  employeePermissionOverrides,
   employees,
   permissions as permissionsTable,
   rolePermissions,
@@ -73,27 +72,6 @@ export async function permissionCodesForRole(
   return rows.map((row) => row.code);
 }
 
-export interface PermissionOverride {
-  permissionCode: string;
-  effect: string;
-  note: string;
-}
-
-/** التخصيصات الفردية لموظف بعينه (allow/deny) فوق صلاحيات دوره. */
-export async function permissionOverridesForEmployee(
-  employeeId: number | null,
-): Promise<PermissionOverride[]> {
-  if (employeeId === null) return [];
-  const db = getDb();
-  return db
-    .select({
-      permissionCode: employeePermissionOverrides.permissionCode,
-      effect: employeePermissionOverrides.effect,
-      note: employeePermissionOverrides.note,
-    })
-    .from(employeePermissionOverrides)
-    .where(eq(employeePermissionOverrides.employeeId, employeeId));
-}
 
 export interface MatchedAccessRule {
   scopeType: string;
