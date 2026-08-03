@@ -961,9 +961,156 @@ el("logout").addEventListener("click", async () => {
   showLogin("");
 });
 
+    /* ── التحضير / الانصراف السريع (كشك بلا تسجيل دخول) ───────────── */
+
+const kioskState = {
+    attempts: 0,
+    busy: false,
+};
+
+function showKioskCard(show) {
+    el("kiosk-card").hidden = !show;
+    el("login-form").hidden = show;
+    el("reset-card").hidden = true;
+
+    if (!show) return;
+
+    kioskState.attempts = 0;
+    kioskState.busy = false;
+    el("kiosk-pin-form").hidden = true;
+    el("kiosk-start").hidden = false;
+    setAlert(el("kiosk-result"), "");
+    el("kiosk-status").textContent = "—";
+    el("kiosk-pin-code").value = "";
+    el("kiosk-pin-value").value = "";
+}
+
 /* ── الإقلاع ───────────────────────────────────────────────── */
 
 setInterval(tickClock, 1000);
+
+               el("kiosk-open").addEventListener("click", () => {
+                   setAlert(el("login-error"), "");
+                   showKioskCard(true);
+               });
+
+el("kiosk-close").addEventListener("click", () => showKioskCard(false));
+
+                                   function finishKioskSuccess(message) {
+                                       setAlert(el("kiosk-result"), message, "ok");
+                                       el("kiosk-start").hidden = false;
+                                       el("kiosk-pin-form").hidden = true;
+                                       kioskState.attempts = 0;
+                                       if (navigator.vibrate) navigator.vibrate(28);
+                                       setTimeout(() => showKioskCard(false), 2500);
+                                   }
+
+el("kiosk-start").addEventListener("click", async () => {
+    if (kioskState.busy) return;
+    kioskState.busy = true;
+
+    const button = el("kiosk-start");
+    setBusy(button, true);
+    setAlert(el("kiosk-result"), "");
+
+    try {
+          el("kiosk-status").textContent = "جارٍ فتح الكاميرا ومطابقة وجهك…";
+          const video = el("kiosk-video");
+          let capture;
+          try {
+                  capture = await captureFaceDescriptor(video, (text) => {
+                            el("kiosk-status").textContent = text;
+                  });
+          } catch (error) {
+                  kioskState.attempts += 1;
+                  setAlert(el("kiosk-result"), error.message, "error");
+                  if (kioskState.attempts >= 2) {
+                            el("kiosk-start").hidden = true;
+                            el("kiosk-pin-form").hidden = false;
+                  }
+                  return;
+          }
+
+          el("kiosk-status").textContent = "جارٍ تحديد موقعك…";
+          const position = await requestPosition();
+
+          el("kiosk-status").textContent = "جارٍ تسجيل الحركة…";
+          const response = await api("/kiosk/punch-face", {
+                  method: "POST",
+                  body: {
+                            descriptor: capture.descriptor,
+                            latitude: position.coords.latitude,
+                            longitude: position.coords.longitude,
+                            accuracyMeters: position.coords.accuracy,
+                            deviceInfo: navigator.userAgent,
+                  },
+          });
+
+                if (response.ok) {
+                        finishKioskSuccess(`${response.message} — ${response.attendance.localTime}`);
+                        return;
+                }
+
+                      if (response.matched === false) {
+                              kioskState.attempts += 1;
+                              setAlert(el("kiosk-result"), response.error, "error");
+                              if (kioskState.attempts >= 2) {
+                                        el("kiosk-start").hidden = true;
+                                        el("kiosk-pin-form").hidden = false;
+                              }
+                              return;
+                      }
+
+          setAlert(el("kiosk-result"), response.error ?? "تعذّر تسجيل الحركة", "error");
+    } catch (error) {
+          setAlert(el("kiosk-result"), error.message, "error");
+    } finally {
+          el("kiosk-status").textContent = "—";
+          setBusy(button, false);
+          kioskState.busy = false;
+    }
+});
+
+el("kiosk-pin-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (kioskState.busy) return;
+    kioskState.busy = true;
+
+    const button = el("kiosk-pin-submit");
+    setBusy(button, true);
+    setAlert(el("kiosk-result"), "");
+
+    try {
+          el("kiosk-status").textContent = "جارٍ تحديد موقعك…";
+          const position = await requestPosition();
+
+          el("kiosk-status").textContent = "جارٍ تسجيل الحركة…";
+          const response = await api("/kiosk/punch-pin", {
+                  method: "POST",
+                  body: {
+                            employeeCode: el("kiosk-pin-code").value.trim(),
+                            pin: el("kiosk-pin-value").value.trim(),
+                            latitude: position.coords.latitude,
+                            longitude: position.coords.longitude,
+                            accuracyMeters: position.coords.accuracy,
+                            deviceInfo: navigator.userAgent,
+                  },
+          });
+
+          if (response.ok) {
+                  finishKioskSuccess(`${response.message} — ${response.attendance.localTime}`);
+                  return;
+          }
+
+          setAlert(el("kiosk-result"), response.error ?? "تعذّر تسجيل الحركة", "error");
+    } catch (error) {
+          setAlert(el("kiosk-result"), error.message, "error");
+    } finally {
+          el("kiosk-status").textContent = "—";
+          setBusy(button, false);
+          kioskState.busy = false;
+    }
+});
 
 /**
  * إقلاع الشاشة: من عاد بعد انقضاء فترة الخمول (أو أُخرج من لوحة الإدارة)
