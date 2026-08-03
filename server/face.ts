@@ -420,4 +420,3 @@ return {
   matched: true,
 };
 }
-}
