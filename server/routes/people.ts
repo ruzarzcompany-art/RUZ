@@ -1194,3 +1194,81 @@ peopleRouter.get(
     res.json({ ok: true, salary: salary ?? null });
   },
 );
+
+
+/* ── PIN الكشك (التحضير / الانصراف السريع) ────────────────────── */
+
+/**
+ * تعيين أو مسح رمز PIN محطة الكشك لموظف - يُستخدم فقط حين يتعذّر التعرّف
+ * على وجهه في محطة "التحضير / الانصراف السريع" (بعد محاولتين فاشلتين).
+ * العمود kiosk_pin_hash موجود مسبقاً في الجدول، وهذا أول مسار يكتب فيه.
+ */
+peopleRouter.patch(
+    "/employees/:id/kiosk-pin",
+    requireAuth,
+    requirePermission(PERMISSIONS.employeesWrite),
+    async (req: AuthedRequest, res: Response) => {
+          const db = getDb();
+          const actor = req.employee!;
+          const employeeId = asId(req.params.id);
+
+      if (employeeId === null) {
+              res.status(400).json({ ok: false, error: "معرّف الموظف غير صالح" });
+              return;
+      }
+
+      const [before] = await db
+            .select({ id: employees.id, fullName: employees.fullName })
+            .from(employees)
+            .where(eq(employees.id, employeeId))
+            .limit(1);
+
+      if (!before) {
+              res.status(404).json({ ok: false, error: "الموظف غير موجود" });
+              return;
+      }
+
+      const rawPin = req.body?.pin;
+
+      if (rawPin === null || rawPin === "" || rawPin === undefined) {
+              await db
+                .update(employees)
+                .set({ kioskPinHash: null, updatedAt: new Date() })
+                .where(eq(employees.id, employeeId));
+
+            await recordAudit({
+                      actorEmployeeId: actor.id,
+                      action: "kiosk_pin.clear",
+                      entityType: "employees",
+                      entityId: employeeId,
+                      reason: asString(req.body?.reason, 500) ?? "مسح PIN الكشك",
+                      ipAddress: clientIp(req),
+            });
+
+            res.json({ ok: true, message: `تم مسح PIN الكشك لـ${before.fullName}` });
+              return;
+      }
+
+      const pin = String(rawPin).trim();
+          if (!/^\d{4,12}$/.test(pin)) {
+                  res.status(400).json({ ok: false, error: "رمز PIN يجب أن يكون أرقاماً من 4 إلى 12 خانة." });
+                  return;
+          }
+
+      await db
+            .update(employees)
+            .set({ kioskPinHash: hashPassword(pin), updatedAt: new Date() })
+            .where(eq(employees.id, employeeId));
+
+      await recordAudit({
+              actorEmployeeId: actor.id,
+              action: "kiosk_pin.set",
+              entityType: "employees",
+              entityId: employeeId,
+              reason: asString(req.body?.reason, 500) ?? "تعيين PIN الكشك",
+              ipAddress: clientIp(req),
+      });
+
+      res.json({ ok: true, message: `تم تعيين PIN الكشك لـ${before.fullName}` });
+    },
+  );
