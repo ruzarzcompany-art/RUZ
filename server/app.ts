@@ -156,10 +156,7 @@ export function createApp() {
 
     // الرموز الذرّية ودرجات البنود معاً — الواجهة تخفي بناءً عليها، والخادم
     // يعيد حسابها في كل طلب فلا تُغني عن الفحص هناك.
-    const profile = await accessProfile({
-      employeeId: employee.id,
-      roleId: employee.roleId,
-    });
+    const profile = await accessProfile({ employeeId: employee.id });
 
     res.json({
       ok: true,
@@ -212,10 +209,7 @@ export function createApp() {
       branchManagerName = manager?.fullName ?? null;
     }
 
-    const profile = await accessProfile({
-      employeeId: employee.id,
-      roleId: employee.roleId,
-    });
+    const profile = await accessProfile({ employeeId: employee.id });
 
     res.json({
       ok: true,
@@ -224,7 +218,6 @@ export function createApp() {
         employeeCode: employee.employeeCode,
         fullName: employee.fullName,
         jobTitle: employee.jobTitle,
-        role: employee.roleName,
       },
       branch: branch ? { ...branch, managerName: branchManagerName } : null,
       permissions: profile.codes,

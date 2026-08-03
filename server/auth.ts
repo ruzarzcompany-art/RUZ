@@ -3,7 +3,7 @@ import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "../db/index.js";
-import { employees, roles, sessions } from "../db/schema.js";
+import { employees, sessions } from "../db/schema.js";
 import { getJwtSecret, getSessionIdleSeconds, getTokenTtlSeconds } from "./config.js";
 
 export interface AuthenticatedEmployee {
@@ -12,8 +12,6 @@ export interface AuthenticatedEmployee {
   fullName: string;
   jobTitle: string;
   branchId: number | null;
-  roleId: number | null;
-  roleName: string | null;
   tokenId: string;
   /** هل بصمة الوجه مُفعّلة لهذا الموظف؟ */
   faceEnabled: boolean;
@@ -159,13 +157,10 @@ export async function requireAuth(
       fullName: employees.fullName,
       jobTitle: employees.jobTitle,
       branchId: employees.branchId,
-      roleId: employees.roleId,
       isActive: employees.isActive,
       faceEnabled: employees.faceEnabled,
-      roleName: roles.name,
     })
     .from(employees)
-    .leftJoin(roles, eq(employees.roleId, roles.id))
     .where(eq(employees.id, Number(payload.sub)))
     .limit(1);
 
@@ -187,8 +182,6 @@ export async function requireAuth(
     fullName: row.fullName,
     jobTitle: row.jobTitle,
     branchId: row.branchId,
-    roleId: row.roleId,
-    roleName: row.roleName ?? null,
     tokenId: payload.jti,
     faceEnabled: row.faceEnabled,
   };

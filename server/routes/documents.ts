@@ -20,7 +20,6 @@ import {
   leaveRequests,
   overtimeRequests,
   payrollSlips,
-  roles,
   salaryDefinitions,
   vouchers,
   workSchedules,
@@ -364,13 +363,11 @@ async function loadEmployeeBundle(employeeId: number) {
   const [row] = await db
     .select({
       employee: employees,
-      roleName: roles.nameAr,
       branch: branches,
       managerName: manager.fullName,
       managerJobTitle: manager.jobTitle,
     })
     .from(employees)
-    .leftJoin(roles, eq(employees.roleId, roles.id))
     .leftJoin(branches, eq(employees.branchId, branches.id))
     .leftJoin(manager, eq(branches.managerEmployeeId, manager.id))
     .where(eq(employees.id, employeeId))
@@ -419,7 +416,6 @@ async function loadEmployeeBundle(employeeId: number) {
       nationalId: row.employee.nationalId,
       department: department?.name ?? row.employee.department,
       jobTitle: row.employee.jobTitle,
-      roleName: row.roleName,
       hiredAt: row.employee.hiredAt,
       isActive: row.employee.isActive,
     },

@@ -1,22 +1,15 @@
 import type { NextFunction, Response } from "express";
 import { and, eq, inArray, ne, or } from "drizzle-orm";
 import { getDb } from "../db/index.js";
-import {
-  accessRules,
-  employees,
-  permissions as permissionsTable,
-  rolePermissions,
-} from "../db/schema.js";
+import { accessRules, employees } from "../db/schema.js";
 import type { AuthedRequest } from "./auth.js";
 import {
   ACCESS_SCOPE_TYPES,
-  codesAboveModuleLevel,
   codesForModuleLevel,
   deleteCodesForModule,
-  derivedModuleDelete,
-  derivedModuleLevel,
   isDeleteAvailable,
   MODULE_CATALOG,
+  PERMISSIONS,
   type AccessLevel,
   type AccessScopeType,
 } from "./permissions.js";
@@ -54,24 +47,6 @@ export type {
   AccessScopeType,
   ModuleLevelSpec,
 } from "./permissions.js";
-
-/** صلاحيات الدور — تُقرأ من قاعدة البيانات لكل طلب. */
-export async function permissionCodesForRole(
-  roleId: number | null,
-): Promise<string[]> {
-  if (roleId === null) return [];
-  const db = getDb();
-  const rows = await db
-    .select({ code: permissionsTable.code })
-    .from(rolePermissions)
-    .innerJoin(
-      permissionsTable,
-      eq(rolePermissions.permissionId, permissionsTable.id),
-    )
-    .where(eq(rolePermissions.roleId, roleId));
-  return rows.map((row) => row.code);
-}
-
 
 export interface MatchedAccessRule {
   scopeType: string;
@@ -122,6 +97,55 @@ export async function accessRulesForEmployee(
     );
 }
 
+/**
+ * نفس الحساب السابق لكن لكل الموظفين بقراءة جماعية واحدة. تستخدمه أداة
+ * التدقيق التي تمرّ على النظام كاملاً، فلا تُصدر استعلاماً لكل موظف.
+ */
+export async function accessRulesByEmployee(): Promise<
+  Map<number, MatchedAccessRule[]>
+> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      employeeId: employees.id,
+      scopeType: accessRules.scopeType,
+      scopeKey: accessRules.scopeKey,
+      moduleKey: accessRules.moduleKey,
+      level: accessRules.level,
+      canDelete: accessRules.canDelete,
+    })
+    .from(employees)
+    .innerJoin(
+      accessRules,
+      and(
+        ne(accessRules.scopeKey, ""),
+        or(
+          and(
+            eq(accessRules.scopeType, "employee"),
+            eq(accessRules.employeeId, employees.id),
+          ),
+          and(
+            eq(accessRules.scopeType, "department"),
+            eq(accessRules.scopeKey, employees.department),
+          ),
+          and(
+            eq(accessRules.scopeType, "job_title"),
+            eq(accessRules.scopeKey, employees.jobTitle),
+          ),
+        ),
+      ),
+    );
+
+  const byEmployee = new Map<number, MatchedAccessRule[]>();
+  for (const row of rows) {
+    const { employeeId, ...rule } = row;
+    const bucket = byEmployee.get(employeeId);
+    if (bucket) bucket.push(rule);
+    else byEmployee.set(employeeId, [rule]);
+  }
+  return byEmployee;
+}
+
 /** الأخصّ يفوز: قاعدة الموظف ثم قاعدة قسمه ثم قاعدة مسماه الوظيفي. */
 const SCOPE_PRECEDENCE: Record<string, number> = {
   employee: 3,
@@ -166,73 +190,84 @@ export interface AccessProfile {
   moduleDelete: Record<string, boolean>;
 }
 
-/**
- * الصورة الكاملة لصلاحيات موظف. شاشة «إدارة الصلاحيات» هي المصدر النهائي:
+/* ── أرضية تطبيق الجوال ───────────────────────────────────────────
+ * ثلاث صلاحيات مضمونة **في الكود** لكل موظف مهما قالت قواعده أو لم تقل،
+ * وبلا أي اعتماد على قاعدة بيانات أو دور: بها يفتح تطبيق الجوال شاشاته
+ * الثلاث التي لا تُحجب عن أحد (البصمة، الطلبات، تغيير الرقم السري).
  *
- *   • الدور تصنيف ابتدائي فقط، يُترجم إلى درجة **مبدئية** لكل بند
- *     (`derivedModuleLevel`) ورموزه الذرّية.
- *   • أي قاعدة في `access_rules` على البند **تحسم** درجته: ترفعها أو
- *     تخفضها أو تسحبها كاملاً (درجة 0) مهما كان الدور — حتى «مدير الفرع».
- *   • الحذف درجة مستقلة: القاعدة تمنحه أو تسحبه بمعزل عن درجة التعديل.
- *   • ما تحظره التخصيصات الفردية (deny) يبقى فيتو نهائياً فوق كل ذلك.
- *
- * سحب الرموز يراعي أن الرمز الذرّي الواحد قد يخدم أكثر من بند (مثل
- * `forms.approve` في الإجازات والسلف والأوفرتايم)، فلا يُسحب رمز ما دام بند
- * آخر يبرّره بدرجته الفعلية — وإلا لأدّى تخفيض «الإجازات» إلى تعطيل «السلف».
+ * وجودها هنا — لا في `access_rules` — مقصود: قاعدة يمكن حذفها من شاشة
+ * إدارة الصلاحيات، وهذه لا. فأسوأ خطأ في القواعد لا يمنع موظفاً من تسجيل
+ * حضوره ولا من رفع طلب.
  */
-export async function accessProfile(options: {
-  employeeId: number | null;
-  roleId: number | null;
-}): Promise<AccessProfile> {
-    const [roleCodes, rules] = await Promise.all([
-    permissionCodesForRole(options.roleId),
-    accessRulesForEmployee(options.employeeId),
-  ]);
+export const MOBILE_APP_FLOOR_CODES: string[] = [
+  PERMISSIONS.attendanceCheckIn,
+  PERMISSIONS.attendanceReadOwn,
+  PERMISSIONS.formsSubmit,
+];
 
-    const baseCodes = new Set(roleCodes);
+/**
+ * بند «حضوري وانصرافي» يُرفع إلى درجة «تسجيل حركة» مع الأرضية، لأن رموز
+ * درجتيه (1 و2) هي بعينها رمزا الحضور في الأرضية — فلا يفتح هذا الرفع أي
+ * بيانات لموظف آخر. أما `forms.submit` فيُمنح رمزاً مفرداً بلا رفع درجة أي
+ * بند نماذج، حتى لا يرى أحدٌ طلبات غيره (`forms.read_all`) بحجّة الأرضية.
+ */
+const MOBILE_APP_FLOOR_MODULE = "attendance_self";
+const MOBILE_APP_FLOOR_LEVEL = 2;
+
+/** يفرض أرضية الجوال على صورة صلاحيات محسوبة — آخر خطوة دائماً. */
+function applyMobileAppFloor(profile: AccessProfile): AccessProfile {
+  const codes = new Set(profile.codes);
+  for (const code of MOBILE_APP_FLOOR_CODES) codes.add(code);
+  const moduleLevels = { ...profile.moduleLevels };
+  if ((moduleLevels[MOBILE_APP_FLOOR_MODULE] ?? 0) < MOBILE_APP_FLOOR_LEVEL) {
+    moduleLevels[MOBILE_APP_FLOOR_MODULE] = MOBILE_APP_FLOOR_LEVEL;
+  }
+  return { codes: [...codes], moduleLevels, moduleDelete: profile.moduleDelete };
+}
+
+/**
+ * هل تحقّقت أرضية الجوال في هذه الصورة؟ تُستخدمها أداة التدقيق للتأكيد أن
+ * الضمان قائم فعلاً لا مجرد نيّة.
+ */
+export function satisfiesMobileAppFloor(profile: AccessProfile): boolean {
+  const owned = new Set(profile.codes);
+  return MOBILE_APP_FLOOR_CODES.every((code) => owned.has(code));
+}
+
+/**
+ * الحساب الخالص لصورة الصلاحيات: يأخذ القواعد المنطبقة جاهزة فلا يلمس قاعدة
+ * البيانات. تستدعيه `accessProfile` لطلب واحد، وتستدعيه أداة التدقيق لكل
+ * الموظفين بعد قراءة جماعية واحدة.
+ *
+ *   • القاعدة في `access_rules` هي وحدها ما يمنح البند درجته؛ والبند بلا
+ *     قاعدة درجته صفر — لا استنتاج من دور ولا من أي حقل آخر.
+ *   • الحذف درجة مستقلة: القاعدة تمنحه أو تمنعه بمعزل عن درجة التعديل.
+ *   • الدرجات تراكمية: درجة 3 تفتح رموز 1 و2 معها.
+ *   • أرضية الجوال الثلاثية تُفرض في الختام بلا شرط.
+ */
+export function buildAccessProfile(rules: MatchedAccessRule[]): AccessProfile {
   const decisions = resolveRuleDecisions(rules);
 
-  // الدرجة الفعلية لكل بند: القاعدة إن وُجدت، وإلا الدرجة المستنتجة من الدور
   const levels: Record<string, number> = {};
   const deletes: Record<string, boolean> = {};
   for (const module of MODULE_CATALOG) {
     const rule = decisions[module.key];
-    levels[module.key] = rule ? rule.level : derivedModuleLevel(module.key, baseCodes);
-    deletes[module.key] = isDeleteAvailable(module.key)
-      ? rule
-        ? rule.canDelete
-        : derivedModuleDelete(module.key, baseCodes)
-      : false;
+    levels[module.key] = rule ? rule.level : 0;
+    deletes[module.key] =
+      isDeleteAvailable(module.key) && rule !== undefined && rule.canDelete;
   }
 
-  // الرموز التي تبرّرها الدرجات الفعلية — لا تُسحب ولو قيّدها بند آخر
-  const justified = new Set<string>();
+  // الرموز الذرّية التي تبرّرها هذه الدرجات — وهي كل ما يملكه الموظف
+  const codes = new Set<string>();
   for (const module of MODULE_CATALOG) {
     for (const code of codesForModuleLevel(module.key, levels[module.key])) {
-      justified.add(code);
+      codes.add(code);
     }
     if (deletes[module.key]) {
-      for (const code of deleteCodesForModule(module.key)) justified.add(code);
+      for (const code of deleteCodesForModule(module.key)) codes.add(code);
     }
   }
 
-  const codes = new Set(baseCodes);
-  for (const moduleKey of Object.keys(decisions)) {
-    // منح: ما تفتحه القاعدة فوق ما يملكه الدور
-    for (const code of codesForModuleLevel(moduleKey, levels[moduleKey])) codes.add(code);
-    if (deletes[moduleKey]) {
-      for (const code of deleteCodesForModule(moduleKey)) codes.add(code);
-    }
-    // سحب: ما يتجاوز سقف القاعدة، ما لم يبرّره بند آخر
-    for (const code of codesAboveModuleLevel(
-      moduleKey,
-      levels[moduleKey],
-      deletes[moduleKey],
-    )) {
-      if (!justified.has(code)) codes.delete(code);
-    }
-  }
-  
   const moduleLevels: Record<string, number> = {};
   const moduleDelete: Record<string, boolean> = {};
   for (const module of MODULE_CATALOG) {
@@ -240,17 +275,29 @@ export async function accessProfile(options: {
     if (deletes[module.key]) moduleDelete[module.key] = true;
   }
 
-  return { codes: [...codes], moduleLevels, moduleDelete };
+  return applyMobileAppFloor({ codes: [...codes], moduleLevels, moduleDelete });
 }
 
 /**
- * الصلاحية الفعلية للموظف = صلاحيات دوره + ما مُنح له فردياً أو بقاعدة
- * صلاحيات − ما سُحب منه. تُستخدم في كل فحوص الصلاحيات وفي الرد على
- * `/auth/me` حتى تتوافق الواجهة مع ما يفرضه الخادم فعلياً.
+ * الصورة الكاملة لصلاحيات موظف. `access_rules` هي المصدر **الوحيد**: لا
+ * يُستنتج شيء من دور ولا من أي حقل آخر، وما لا قاعدة له درجته صفر.
+ *
+ * ويبقى فوق ذلك ضمان واحد لا تملكه قاعدة البيانات: أرضية تطبيق الجوال
+ * الثلاثية تُفرض في الكود على كل صورة، فحتى الموظف الذي لا قاعدة له إطلاقاً
+ * يسجّل حضوره ويرفع طلبه ويغيّر كلمة مروره.
+ */
+export async function accessProfile(options: {
+  employeeId: number | null;
+}): Promise<AccessProfile> {
+  return buildAccessProfile(await accessRulesForEmployee(options.employeeId));
+}
+
+/**
+ * الرموز الذرّية الفعلية للموظف كما تنتجها قواعده الصريحة وأرضية الجوال.
+ * تُستخدم في الرد على `/auth/me` حتى تتوافق الواجهة مع ما يفرضه الخادم.
  */
 export async function effectivePermissionCodes(options: {
   employeeId: number | null;
-  roleId: number | null;
 }): Promise<string[]> {
   return (await accessProfile(options)).codes;
 }
@@ -264,10 +311,7 @@ const requestProfiles = new WeakMap<object, Promise<AccessProfile>>();
 function profileForRequest(req: AuthedRequest): Promise<AccessProfile> {
   const cached = requestProfiles.get(req);
   if (cached) return cached;
-  const pending = accessProfile({
-    employeeId: req.employee?.id ?? null,
-    roleId: req.employee?.roleId ?? null,
-  });
+  const pending = accessProfile({ employeeId: req.employee?.id ?? null });
   requestProfiles.set(req, pending);
   return pending;
 }
@@ -321,7 +365,7 @@ const LEVEL_DENIAL: Record<number, string> = {
   4: "لا تملك صلاحية إعطاء الموافقات في هذا البند",
 };
 
-/** وسيط يتحقق من امتلاك الموظف صلاحية مُحدّدة عبر دوره. */
+/** وسيط يتحقق من امتلاك الموظف صلاحية مُحدّدة. */
 export function requirePermission(code: string) {
   return requireAnyPermission(code);
 }

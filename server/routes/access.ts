@@ -8,6 +8,7 @@ import {
   jobTitles,
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
+import { computeAccessAudit } from "../accessAudit.js";
 import { clientIp, recordAudit } from "../audit.js";
 import {
   accessCatalogPayload,
@@ -15,16 +16,14 @@ import {
   accessRuleScopeSummary,
   accessRulesForEmployee,
   ACCESS_LEVELS,
+  buildAccessProfile,
   deleteScopeModules,
-  derivedModuleDelete,
-  derivedModuleLevel,
   isAccessScopeType,
   isDeleteAvailable,
   isLevelAvailable,
   MODULE_CATALOG,
   MODULE_INDEX,
   PERMISSIONS,
-  permissionCodesForRole,
   requireModuleDelete,
   requireModuleLevel,
   requirePermission,
@@ -43,9 +42,10 @@ export const accessRouter = Router();
  * `access_rules` ويُترجمها `rbac.ts` إلى رموز صلاحيات ودرجات تُفحص في
  * الخادم عند كل طلب — فالإخفاء في الواجهة مكمّل للفحص لا بديل عنه.
  *
- * هذه الشاشة **المصدر النهائي**: أي بند تُحفظ له قاعدة تحسم درجته رفعاً أو
- * خفضاً مهما كان دور الموظف، والدرجة 0 تعني سحب البند كاملاً. البنود التي
- * لا قاعدة لها تبقى على ما يمنحه الدور كتصنيف ابتدائي.
+ * هذه الشاشة **المصدر الوحيد**: البند الذي له قاعدة تحسم درجته القاعدة،
+ * والدرجة 0 تعني سحبه كاملاً، والبند بلا قاعدة درجته صفر — لا استنتاج من
+ * دور ولا من غيره. ويبقى فوق الجميع ضمان واحد مكتوب في الكود لا في قاعدة
+ * البيانات: أرضية تطبيق الجوال الثلاثية.
  */
 
 const MODULE_KEYS = new Set(MODULE_CATALOG.map((module) => module.key));
@@ -175,18 +175,6 @@ async function employeesInScope(
     .limit(500);
 }
 
-/**
- * هل يملك الموظف إدارة الصلاحيات من دوره أو من تخصيصاته الفردية (أي بلا
- * حاجة إلى قاعدة)؟ يُستخدم لمنع قفل النظام على نفسه.
- */
-async function keepsAccessWithoutRules(employee: {
-  id: number;
-  roleId: number | null;
-}): Promise<boolean> {
-    const roleCodes = await permissionCodesForRole(employee.roleId);
-    return roleCodes.includes(PERMISSIONS.permissionsManage);
-}
-
 /** هل تنطبق قاعدة هذا النطاق على الموظف المنفّذ نفسه؟ */
 async function scopeCoversActor(
   target: ScopeTarget,
@@ -209,14 +197,17 @@ async function scopeCoversActor(
 }
 
 /**
- * محاكاة أثر الحفظ على المنفّذ نفسه قبل تنفيذه: بما أن القاعدة صارت تسحب
- * لا تمنح فقط، صار بإمكان مسؤول أن يقفل الشاشة على نفسه بقاعدة قسم أو
- * مسمى. نُعيد بناء قواعد المنفّذ بعد استبدال قواعد هذا النطاق بالمطلوبة،
- * ونتحقق أنه يبقى عند الدرجة 3 في «إدارة الصلاحيات».
+ * هل يبقى للمنفّذ إدارة الصلاحيات بعد هذا الحفظ؟ محاكاة أثره عليه قبل
+ * تنفيذه: القاعدة تسحب كما تمنح، فقد يقفل مسؤول الشاشة على نفسه بقاعدة قسم
+ * أو مسمى. ونعيد بناء قواعده بعد استبدال قواعد هذا النطاق بالمطلوبة.
+ *
+ * و`access_rules` هي مصدر الصلاحيات الوحيد، فلا شيء يمنح «إدارة الصلاحيات»
+ * خارج قاعدة محفوظة: من لا قاعدة تبلغه الدرجة 3 في هذا البند لا يملكه،
+ * فيُرفض الحفظ الذي يُسقطه.
  */
 async function actorKeepsAccessControl(
   target: ScopeTarget,
-  actor: { id: number; roleId: number | null },
+  actor: { id: number },
   pending: Map<string, RuleDecision>,
 ): Promise<boolean> {
   if (!(await scopeCoversActor(target, actor.id))) return true;
@@ -238,27 +229,20 @@ async function actorKeepsAccessControl(
   }
 
   const decision = resolveRuleDecisions(simulated)["access_control"];
-  if (decision) return decision.level >= 3;
-  return keepsAccessWithoutRules(actor);
+  return decision !== undefined && decision.level >= 3;
 }
 
-/** الدرجة المبدئية التي يمنحها الدور وحده — تُعرض كخلفية للمقارنة. */
-async function roleBaseline(employee: {
-  id: number;
-  roleId: number | null;
-}): Promise<{ levels: Record<string, number>; deletes: Record<string, boolean> }> {
-  const roleCodes = await permissionCodesForRole(employee.roleId);
-    const codes = new Set(roleCodes);
-  const levels: Record<string, number> = {};
-  const deletes: Record<string, boolean> = {};
-  for (const module of MODULE_CATALOG) {
-    const level = derivedModuleLevel(module.key, codes);
-    if (level > 0) levels[module.key] = level;
-    if (isDeleteAvailable(module.key) && derivedModuleDelete(module.key, codes)) {
-      deletes[module.key] = true;
-    }
-  }
-  return { levels, deletes };
+/**
+ * الأرضية المضمونة في الكود: ما يبقى للموظف وإن لم تكن له قاعدة واحدة
+ * (أرضية تطبيق الجوال). تُعرض خلفيةً للمقارنة في شاشة الصلاحيات حتى يرى
+ * المسؤول الفرق بين ما تمنحه قاعدته وما هو مضمون بلا قاعدة أصلاً.
+ */
+function codeFloorBaseline(): {
+  levels: Record<string, number>;
+  deletes: Record<string, boolean>;
+} {
+  const floor = buildAccessProfile([]);
+  return { levels: floor.moduleLevels, deletes: floor.moduleDelete };
 }
 
 /* ── القاموس وخيارات النطاقات ────────────────────────────────────── */
@@ -378,25 +362,22 @@ accessRouter.get(
     }
 
     /**
-     * نطاق «موظف محدّد» يُعرض معه ما يمنحه دوره بلا قاعدة (خلفية المقارنة)
+     * نطاق «موظف محدّد» يُعرض معه ما هو مضمون له بلا قاعدة (خلفية المقارنة)
      * والمحصّلة الفعلية الآن، حتى يرى المسؤول أثر ما يحفظه فوراً.
      */
-    let baseline: Awaited<ReturnType<typeof roleBaseline>> | null = null;
+    let baseline: ReturnType<typeof codeFloorBaseline> | null = null;
     let effective: { moduleLevels: Record<string, number>; moduleDelete: Record<string, boolean> } | null =
       null;
     if (scope.target.scopeType === "employee" && scope.target.employeeId !== null) {
       const db = getDb();
       const [employee] = await db
-        .select({ id: employees.id, roleId: employees.roleId })
+        .select({ id: employees.id })
         .from(employees)
         .where(eq(employees.id, scope.target.employeeId))
         .limit(1);
       if (employee) {
-        const [base, profile] = await Promise.all([
-          roleBaseline(employee),
-          accessProfile({ employeeId: employee.id, roleId: employee.roleId }),
-        ]);
-        baseline = base;
+        const profile = await accessProfile({ employeeId: employee.id });
+        baseline = codeFloorBaseline();
         effective = {
           moduleLevels: profile.moduleLevels,
           moduleDelete: profile.moduleDelete,
@@ -425,9 +406,9 @@ accessRouter.get(
 /**
  * استبدال قواعد نطاق كامل. `rules` خريطة
  * `moduleKey → { level: 0..4, canDelete: boolean }`؛ وجود البند في الخريطة
- * يعني **قاعدة صريحة** تحسم البند مهما منح الدور، والدرجة 0 تعني سحبه
- * كاملاً. البنود الغائبة عن الخريطة تُحذف قاعدتها فيعود أصحابها فيها إلى
- * درجة دورهم.
+ * يعني قاعدة تحسم درجته، والدرجة 0 تعني سحبه كاملاً. والبنود الغائبة عن
+ * الخريطة تُحذف قاعدتها في هذا النطاق، فيرجع أصحابها فيها إلى ما يمنحه
+ * نطاق أعمّ إن وُجد، وإلا إلى الصفر.
  */
 accessRouter.put(
   "/access/rules",
@@ -677,7 +658,6 @@ accessRouter.get(
         fullName: employees.fullName,
         department: employees.department,
         jobTitle: employees.jobTitle,
-        roleId: employees.roleId,
       })
       .from(employees)
       .where(eq(employees.id, employeeId))
@@ -688,18 +668,36 @@ accessRouter.get(
       return;
     }
 
-    const [profile, baseline] = await Promise.all([
-      accessProfile({ employeeId: employee.id, roleId: employee.roleId }),
-      roleBaseline(employee),
-    ]);
+    const profile = await accessProfile({ employeeId: employee.id });
 
     res.json({
       ok: true,
       employee,
       moduleLevels: profile.moduleLevels,
       moduleDelete: profile.moduleDelete,
-      baseline,
+      baseline: codeFloorBaseline(),
       permissions: profile.codes,
     });
+  },
+);
+
+/* ── أداة التدقيق: هل كل صلاحية نافذة مردودة إلى قاعدة محفوظة؟ ─────
+ *
+ * بعد حذف نظام الأدوار لم يبقَ للصلاحيات مصدر غير `access_rules` وأرضية
+ * الجوال المكتوبة في الكود. تمرّ الأداة على كل موظف وتردّ كل درجة نافذة
+ * وكل رمز ذرّي إلى مصدره، فتُبلّغ عن أي شيء لا يبرّره أحدهما — والنتيجة
+ * السليمة تغطية 100% بلا فجوة واحدة، وأرضية جوال قائمة للجميع.
+ *
+ * `?simulate=explicit-only` يبقى مقبولاً للتوافق مع ما قبل الحذف، ولا يغيّر
+ * شيئاً اليوم: «الوضع الحالي» و«القواعد الصريحة وحدها» صارا شيئاً واحداً.
+ */
+accessRouter.get(
+  "/access/audit",
+  requireAuth,
+  requirePermission(PERMISSIONS.permissionsManage),
+  requireModuleLevel("access_control", 1),
+  async (req: AuthedRequest, res: Response) => {
+    const explicitOnly = String(req.query.simulate ?? "") === "explicit-only";
+    res.json(await computeAccessAudit({ explicitOnly }));
   },
 );

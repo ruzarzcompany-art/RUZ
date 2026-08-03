@@ -13,12 +13,13 @@
  */
 
 /**
- * الصلاحيات الذرّية في النظام. تُمنح للأدوار عبر `role_permissions`،
- * ويُفحص كل مسار بصلاحيته الخاصة.
+ * الصلاحيات الذرّية في النظام. لا تُمنح مباشرةً لأحد: كل رمز يأتي من درجة بند
+ * في `access_rules`، ويُفحص كل مسار بصلاحيته الخاصة.
  *
- * ملاحظة مهمة: `attendanceManualWrite` صلاحية **مدير الموارد البشرية تحديداً**
- * وتسمح بإنشاء/تعديل/حذف أي سجل حضور بكل حقوله. أما مدير الفرع فيملك
- * `attendanceCorrectCheckout` فقط: تصحيح وقت انصراف وردية أُقفلت تلقائياً.
+ * ملاحظة مهمة: `attendanceManualWrite` أقوى ما في بند سجلات الحضور — تسمح
+ * بإنشاء/تعديل/حذف أي سجل حضور بكل حقوله، فهي في أعلى درجة من درجاته. أما
+ * `attendanceCorrectCheckout` فأدنى منها: تصحيح وقت انصراف وردية أُقفلت
+ * تلقائياً فقط.
  */
 export const PERMISSIONS = {
   attendanceCheckIn: "attendance.check_in",
@@ -370,14 +371,23 @@ const P = PERMISSIONS;
 /**
  * بنود النظام القابلة للمنح. الدرجات المذكورة لكل بند هي **المتاحة فقط**:
  * الدرجة 4 (الموافقات) موجودة حصراً في البنود التي فيها قرار اعتماد/رفض
- * حقيقي في الخادم (الحضور، السلف، الأوفرتايم، الإجازات، المكافآت، تقفيل
- * الكاشير، مسير الرواتب)، والدرجة 2 موجودة فقط حيث توجد «حركة تُرفع».
+ * حقيقي في الخادم (الحضور، السلف، الأوفرتايم، الإجازات، المكافآت، تقفيلات
+ * الفريق، مسير الرواتب)، والدرجة 2 موجودة فقط حيث توجد «حركة تُرفع».
  *
  * كل درجة تُترجم إلى رموز صلاحيات قائمة فعلاً في النظام، ولذلك فإن منح قاعدة
- * يُفعّل مسارات الخادم نفسها التي يستخدمها الدور. وحيث لا يملك النظام رمزاً
- * منفصلاً للتعديل عن الاعتماد (مثل `forms.approve` و`cashier.review`) يتكرّر
- * الرمز في الدرجتين 3 و4، ويأتي فحص `requireModuleLevel` في المسار ليمنع
- * صاحب الدرجة 3 من تنفيذ إجراء الموافقة.
+ * يُفعّل مسارات الخادم نفسها. وحيث لا يملك النظام رمزاً منفصلاً للتعديل عن
+ * الاعتماد (مثل `forms.approve` و`cashier.review`) يتكرّر الرمز في الدرجتين 3
+ * و4، ويأتي فحص `requireModuleLevel` في المسار ليمنع صاحب الدرجة 3 من تنفيذ
+ * إجراء الموافقة.
+ *
+ * **شرط لازم في هذا الجدول:** الدرجة تراكمية — من بلغ درجةً نال رموز ما دونها
+ * كلها (`codesForModuleLevel`). فيجب أن تكون رموز كل درجة أضعف مما فوقها وأقوى
+ * مما تحتها، ولا يجوز أن تُجمع في درجة واحدة قدرةٌ شخصية (عرض ما يخصّه، رفع
+ * حركته) مع قدرة على بيانات الآخرين (عرض الكل، الإدارة). ولو اختلط الأمران في
+ * درجة واحدة لصار من يستحق الأدنى نائلاً للأعلى بمجرّد تثبيت درجته في
+ * `access_rules` — وهو اتّساع صامت في الصلاحية. ولهذا فُصلت القدرة الشخصية عن
+ * قدرة الفريق في بندين مستقلّين حيث اجتمعتا: `attendance_self` مقابل
+ * `attendance_records`، و`cashier_self` مقابل `cashier_closing`.
  */
 export const MODULE_CATALOG: AccessModule[] = [
   /* ── الحضور والدوام ─────────────────────────────────────────── */
@@ -405,13 +415,13 @@ export const MODULE_CATALOG: AccessModule[] = [
       },
       {
         level: 3,
-        codes: [P.attendanceManualWrite],
-        hint: "إدخال وتعديل سجلات الحضور يدوياً",
+        codes: [P.attendanceApprove],
+        hint: "اعتماد سجلات الحضور وإقفال الورديات المعلّقة",
       },
       {
         level: 4,
-        codes: [P.attendanceApprove],
-        hint: "اعتماد سجلات الحضور وإقفال الورديات المعلّقة",
+        codes: [P.attendanceManualWrite],
+        hint: "إدخال وتعديل سجلات الحضور يدوياً",
       },
     ],
   },
@@ -421,7 +431,7 @@ export const MODULE_CATALOG: AccessModule[] = [
     hint: "تعريف ورديات الموظفين وأيام العمل",
     group: "الحضور والدوام",
     levels: [
-      { level: 1, codes: [P.employeesRead, P.sectionEmployeeFile] },
+      { level: 1, codes: [P.sectionEmployeeFile], hint: "عرض جدول دوامه" },
       { level: 2, codes: [P.schedulesManage], hint: "حفظ جدول دوام موظف" },
       { level: 3, codes: [P.schedulesManage], hint: "تعديل الجداول" },
     ],
@@ -434,10 +444,14 @@ export const MODULE_CATALOG: AccessModule[] = [
     hint: "طلبات الإجازة السنوية والمرضية وغيرها",
     group: "الطلبات والنماذج",
     levels: [
-      { level: 1, codes: [P.formsReadOwn, P.formsReadAll] },
+      { level: 1, codes: [P.formsReadOwn], hint: "عرض إجازاته" },
       { level: 2, codes: [P.formsSubmit], hint: "تقديم طلب إجازة" },
-      { level: 3, codes: [P.formsApprove], hint: "تعديل طلبات الآخرين" },
-      { level: 4, codes: [P.formsApprove], hint: "اعتماد أو رفض طلبات الإجازة" },
+      { level: 3, codes: [P.formsReadAll], hint: "عرض إجازات بقية الفريق" },
+      {
+        level: 4,
+        codes: [P.formsApprove],
+        hint: "اعتماد أو رفض طلبات الإجازة وتعديلها",
+      },
     ],
   },
   {
@@ -446,10 +460,14 @@ export const MODULE_CATALOG: AccessModule[] = [
     hint: "طلبات السلفة وخصمها من الراتب",
     group: "الطلبات والنماذج",
     levels: [
-      { level: 1, codes: [P.formsReadOwn, P.formsReadAll] },
+      { level: 1, codes: [P.formsReadOwn], hint: "عرض سلفه" },
       { level: 2, codes: [P.formsSubmit], hint: "تقديم طلب سلفة" },
-      { level: 3, codes: [P.formsApprove], hint: "تعديل طلبات الآخرين" },
-      { level: 4, codes: [P.formsApprove], hint: "اعتماد أو رفض طلبات السلف" },
+      { level: 3, codes: [P.formsReadAll], hint: "عرض سلف بقية الفريق" },
+      {
+        level: 4,
+        codes: [P.formsApprove],
+        hint: "اعتماد أو رفض طلبات السلف وتعديلها",
+      },
     ],
   },
   {
@@ -458,10 +476,14 @@ export const MODULE_CATALOG: AccessModule[] = [
     hint: "طلبات ساعات العمل الإضافية",
     group: "الطلبات والنماذج",
     levels: [
-      { level: 1, codes: [P.formsReadOwn, P.formsReadAll] },
+      { level: 1, codes: [P.formsReadOwn], hint: "عرض أوفرتايمه" },
       { level: 2, codes: [P.formsSubmit], hint: "تقديم طلب أوفرتايم" },
-      { level: 3, codes: [P.formsApprove], hint: "تعديل طلبات الآخرين" },
-      { level: 4, codes: [P.formsApprove], hint: "اعتماد أو رفض الأوفرتايم" },
+      { level: 3, codes: [P.formsReadAll], hint: "عرض أوفرتايم بقية الفريق" },
+      {
+        level: 4,
+        codes: [P.formsApprove],
+        hint: "اعتماد أو رفض الأوفرتايم وتعديله",
+      },
     ],
   },
   {
@@ -470,9 +492,9 @@ export const MODULE_CATALOG: AccessModule[] = [
     hint: "منح المكافآت وربطها بمسير الرواتب",
     group: "الطلبات والنماذج",
     levels: [
-      { level: 1, codes: [P.formsReadOwn, P.formsReadAll] },
-      { level: 2, codes: [P.bonusesManage], hint: "تسجيل مكافأة جديدة" },
-      { level: 3, codes: [P.bonusesManage], hint: "تعديل المكافآت" },
+      { level: 1, codes: [P.formsReadOwn], hint: "عرض مكافآته" },
+      { level: 2, codes: [P.formsReadAll], hint: "عرض مكافآت بقية الفريق" },
+      { level: 3, codes: [P.bonusesManage], hint: "تسجيل المكافآت وتعديلها" },
       { level: 4, codes: [P.bonusesManage], hint: "اعتماد أو رفض المكافآت" },
     ],
   },
@@ -482,9 +504,13 @@ export const MODULE_CATALOG: AccessModule[] = [
     hint: "إخراج العهد للموظفين واستلامها",
     group: "الطلبات والنماذج",
     levels: [
-      { level: 1, codes: [P.formsReadOwn, P.formsReadAll] },
-      { level: 2, codes: [P.custodyManage], hint: "تسجيل إخراج عهدة" },
-      { level: 3, codes: [P.custodyManage], hint: "تعديل سجلات العهد" },
+      { level: 1, codes: [P.formsReadOwn], hint: "عرض عهده" },
+      { level: 2, codes: [P.formsReadAll], hint: "عرض عهد بقية الفريق" },
+      {
+        level: 3,
+        codes: [P.custodyManage],
+        hint: "تسجيل إخراج العهد وتعديل سجلاتها",
+      },
     ],
   },
   {
@@ -493,9 +519,9 @@ export const MODULE_CATALOG: AccessModule[] = [
     hint: "إصدار عقود الموظفين وتجديدها",
     group: "الطلبات والنماذج",
     levels: [
-      { level: 1, codes: [P.formsReadOwn, P.formsReadAll] },
-      { level: 2, codes: [P.contractsManage], hint: "إنشاء عقد" },
-      { level: 3, codes: [P.contractsManage], hint: "تعديل العقود" },
+      { level: 1, codes: [P.formsReadOwn], hint: "عرض عقده" },
+      { level: 2, codes: [P.formsReadAll], hint: "عرض عقود بقية الفريق" },
+      { level: 3, codes: [P.contractsManage], hint: "إنشاء العقود وتعديلها" },
     ],
   },
   {
@@ -512,14 +538,24 @@ export const MODULE_CATALOG: AccessModule[] = [
 
   /* ── الكاشير والمالية ───────────────────────────────────────── */
   {
+    key: "cashier_self",
+    label: "تقفيل ورديتي",
+    hint: "التقفيل الذي يرفعه الكاشير عن وردية نفسه",
+    group: "الكاشير والمالية",
+    levels: [{ level: 1, codes: [P.cashierSubmit], hint: "رفع تقفيل ورديته" }],
+  },
+  {
     key: "cashier_closing",
-    label: "تقفيل الكاشير",
-    hint: "التقفيل اليومي للنقدية والشبكة ومراجعته",
+    label: "تقفيلات الفريق",
+    hint: "تقفيلات بقية الكاشيرين ومراجعتها واعتمادها",
     group: "الكاشير والمالية",
     levels: [
-      { level: 1, codes: [P.cashierReadAll, P.sectionCashierClosing] },
-      { level: 2, codes: [P.cashierSubmit], hint: "رفع تقفيل الوردية" },
-      { level: 3, codes: [P.cashierReview], hint: "تعديل التقفيلات" },
+      {
+        level: 1,
+        codes: [P.cashierReadAll, P.sectionCashierClosing],
+        hint: "عرض تقفيلات الفريق",
+      },
+      { level: 3, codes: [P.cashierReview], hint: "تعديل تقفيل مرفوع" },
       {
         level: 4,
         codes: [P.cashierReview],
@@ -533,7 +569,7 @@ export const MODULE_CATALOG: AccessModule[] = [
     hint: "سندات الصرف للمشتريات وسندات القبض",
     group: "الكاشير والمالية",
     levels: [
-      { level: 1, codes: [P.vouchersManage, P.sectionCashierClosing] },
+      { level: 1, codes: [P.sectionCashierClosing], hint: "عرض السندات" },
       { level: 2, codes: [P.vouchersManage], hint: "إصدار سند" },
       { level: 3, codes: [P.vouchersManage], hint: "تعديل السندات" },
     ],
@@ -556,8 +592,8 @@ export const MODULE_CATALOG: AccessModule[] = [
     hint: "الراتب الأساسي والبدلات لكل موظف",
     group: "الكاشير والمالية",
     levels: [
-      { level: 1, codes: [P.salaryManage, P.sectionPayroll] },
-      { level: 3, codes: [P.salaryManage], hint: "تعديل تعريف الراتب" },
+      { level: 1, codes: [P.sectionPayroll], hint: "رؤية قسم الرواتب" },
+      { level: 3, codes: [P.salaryManage], hint: "تعريف الراتب وتعديله" },
     ],
   },
 
@@ -595,7 +631,12 @@ export const MODULE_CATALOG: AccessModule[] = [
     hint: "بيانات الموظف الأساسية وملفه",
     group: "الموظفون والمستندات",
     levels: [
-      { level: 1, codes: [P.employeesRead, P.sectionEmployeeFile] },
+      { level: 1, codes: [P.sectionEmployeeFile], hint: "عرض ملفه الشخصي" },
+      {
+        level: 2,
+        codes: [P.employeesRead],
+        hint: "عرض ملفات بقية الموظفين",
+      },
       {
         level: 3,
         codes: [P.employeesWrite],

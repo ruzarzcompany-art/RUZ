@@ -7,7 +7,6 @@ import {
   boolean,
   doublePrecision,
   date,
-  primaryKey,
   index,
   uniqueIndex,
   type AnyPgColumn,
@@ -19,42 +18,12 @@ import {
  */
 const money = (name: string) => doublePrecision(name).notNull().default(0);
 
-/**
- * roles — وظائف الموظفين (مدير عام، مدير فرع، كاشير، طاهي ...)
+/*
+ * نظام الأدوار القديم (roles / permissions / role_permissions) حُذف بعد ترحيل
+ * صلاحيات كل موظف إلى قواعد صريحة في `access_rules`. لم يبق للصلاحيات مصدر
+ * غير ذلك الجدول، ولا تُستنتج صلاحية من أي دور. أما الرموز الذرّية فقاموسها
+ * ثابت في الكود (`server/permissions.ts`) لا في جدول قاعدة بيانات.
  */
-export const roles = pgTable("roles", {
-  id: serial().primaryKey(),
-  name: text().notNull().unique(),
-  nameAr: text("name_ar").notNull().default(""),
-  description: text().notNull().default(""),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
-
-/**
- * permissions — الصلاحيات الذرّية التي تُمنح للأدوار
- */
-export const permissions = pgTable("permissions", {
-  id: serial().primaryKey(),
-  code: text().notNull().unique(),
-  description: text().notNull().default(""),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
-
-/**
- * role_permissions — ربط الأدوار بالصلاحيات (many-to-many)
- */
-export const rolePermissions = pgTable(
-  "role_permissions",
-  {
-    roleId: integer("role_id")
-      .notNull()
-      .references(() => roles.id, { onDelete: "cascade" }),
-    permissionId: integer("permission_id")
-      .notNull()
-      .references(() => permissions.id, { onDelete: "cascade" }),
-  },
-  (table) => [primaryKey({ columns: [table.roleId, table.permissionId] })],
-);
 
 /**
  * branches — فروع المطعم مع الإحداثيات ونطاق تسجيل الحضور المسموح
@@ -102,9 +71,6 @@ export const employees = pgTable(
     department: text().notNull().default(""),
     /** scrypt hash بصيغة scrypt$<salt-hex>$<hash-hex> */
     passwordHash: text("password_hash").notNull(),
-    roleId: integer("role_id").references(() => roles.id, {
-      onDelete: "set null",
-    }),
     branchId: integer("branch_id").references(() => branches.id, {
       onDelete: "set null",
     }),
@@ -354,7 +320,8 @@ export const accessRules = pgTable(
     moduleKey: text("module_key").notNull(),
     /**
      * 0..4 — الدرجة النهائية لهذا البند في هذا النطاق. القاعدة **تحسم**
-     * الدرجة ولا تُضاف فقط: الصفر يعني سحب البند كاملاً مهما منح الدور.
+     * الدرجة ولا تُضاف فقط: الصفر يعني سحب البند كاملاً، ولا يعلوها نطاق
+     * أعمّ (الموظف يغلب القسم، والقسم يغلب المسمى الوظيفي).
      */
     level: integer().notNull().default(1),
     /** درجة الحذف المستقلة — تُمنح أو تُسحب بمعزل عن درجة الإضافة والتعديل */

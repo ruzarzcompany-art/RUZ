@@ -17,7 +17,6 @@ const branchesPager = createPager("branches-table", { unit: "فرع" });
 let ctx = null;
 
 const meta = {
-  roles: [],
   weekdays: [],
   allowedDaysOff: [2, 4, 6, 8],
   maxDaysOffPerMonth: 15,
@@ -86,24 +85,15 @@ const branchOptions = () =>
 /** تُستدعى بعد كل تحديث لقائمة الموظفين أو الفروع. */
 export function fillPeopleSelects() {
   fillSelect(el("employee-branch"), branchOptions(), { placeholder: "بدون فرع" });
-  fillSelect(
-    el("employee-role"),
-    meta.roles.map((role) => ({ value: role.id, label: role.nameAr || role.name })),
-    { placeholder: "بدون دور" },
-  );
   fillSelect(el("schedule-employee"), employeeOptions());
   fillSelect(el("report-branch"), branchOptions(), { placeholder: "الكل" });
   fillSelect(el("report-employee"), employeeOptions(), { placeholder: "الكل" });
 }
 
-/** يقرأ الأدوار وأيام الأسبوع مرة واحدة عند الإقلاع. */
+/** يقرأ أيام الأسبوع وحدود الإجازات مرة واحدة عند الإقلاع. */
 export async function loadPeopleMeta() {
-  const [rolesResult, scheduleMeta] = await Promise.all([
-    can("employees.read") ? api("/roles") : Promise.resolve({ ok: false }),
-    api("/schedules/meta"),
-  ]);
+  const scheduleMeta = await api("/schedules/meta");
 
-  if (rolesResult.ok) meta.roles = rolesResult.roles ?? [];
   if (scheduleMeta.ok) {
     meta.weekdays = scheduleMeta.weekdays ?? [];
     meta.allowedDaysOff = scheduleMeta.allowedDaysOff ?? [2, 4, 6, 8];
@@ -142,7 +132,6 @@ export function editEmployee(employee) {
   el("employee-title").value = employee?.jobTitle ?? "";
   el("employee-department").value = employee?.department ?? "";
   el("employee-branch").value = employee?.branchId ? String(employee.branchId) : "";
-  el("employee-role").value = employee?.roleId ? String(employee.roleId) : "";
   el("employee-active").value = employee ? String(employee.isActive !== false) : "true";
   el("employee-face").value = employee ? String(employee.faceEnabled !== false) : "true";
   el("employee-password").value = "";
@@ -165,7 +154,6 @@ function readEmployeeForm() {
     jobTitle: el("employee-title").value.trim(),
     department: el("employee-department").value.trim(),
     branchId: el("employee-branch").value ? Number(el("employee-branch").value) : null,
-    roleId: el("employee-role").value ? Number(el("employee-role").value) : null,
     isActive: el("employee-active").value === "true",
     faceEnabled: el("employee-face").value === "true",
     password: el("employee-password").value,
@@ -190,7 +178,6 @@ async function showEmployeeFile(employeeId) {
     `القسم: ${employee.department || "—"} · المسمى: ${employee.jobTitle || "—"}`,
     `تاريخ الانضمام: ${formatDate(employee.joinDate)}`,
     `الفرع: ${employee.branchName ?? "—"} · مدير الفرع: ${employee.branchManagerName ?? "غير محدّد"}`,
-    `الدور: ${employee.roleNameAr ?? employee.roleName ?? "—"}`,
     schedule
       ? `الدوام: ${schedule.shiftStart}–${schedule.shiftEnd} (${schedule.dailyHours} ساعات) · إجازات: ${schedule.daysOffPerMonth}/شهر (${schedule.offDaysLabel})`
       : "الدوام: لا يوجد جدول مُعرَّف",
@@ -613,7 +600,7 @@ export async function refreshBranchesPanel() {
   if (candidates.length === 0 && can("branches.write")) {
     setAlert(
       el("branches-result"),
-      "لا يوجد موظفون بدور «مدير فرع» بعد — أضِف موظفاً بهذا الدور أولاً.",
+      "لا يوجد موظف يملك صلاحية «اعتماد النماذج» بعد — امنحها لمن سيدير الفرع من شاشة الصلاحيات أولاً.",
       "warn",
     );
   }

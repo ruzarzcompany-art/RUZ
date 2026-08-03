@@ -236,7 +236,7 @@ cashierRouter.post(
   "/cashier/closings",
   requireAuth,
   requirePermission(PERMISSIONS.cashierSubmit),
-  requireModuleLevel("cashier_closing", 2),
+  requireModuleLevel("cashier_self", 1),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;

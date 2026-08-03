@@ -572,11 +572,12 @@ async function loadProfile() {
   el("admin-link").hidden = !state.permissions.some((code) => ADMIN_PERMISSIONS.includes(code));
 
   // أقسام القائمة العلوية: الملف الوظيفي قابل للتعطيل لموظف بعينه، والتقفيل
-  // وحركة المخزون يظهران لمن بلغت درجته في البند «تسجيل» (2) فأعلى — وهي
-  // الدرجة التي يفرضها الخادم نفسه على الرفع، فلا تُعرض شاشة لا تُقبل منها.
+  // وحركة المخزون يظهران لمن بلغت درجته في البند الدرجةَ التي يفرضها الخادم
+  // نفسه على الرفع — «رفع تقفيل ورديته» (1) في بند تقفيل ورديتي و«تسجيل حركة»
+  // (2) في المخزون — فلا تُعرض شاشة لا تُقبل منها.
   state.allowedPanels = new Set(["punch", "requests", "password"]);
   if (state.permissions.includes("sections.employee_file")) state.allowedPanels.add("file");
-  if (levelOf("cashier_closing") >= 2 && state.permissions.includes("cashier.submit")) {
+  if (levelOf("cashier_self") >= 1 && state.permissions.includes("cashier.submit")) {
     state.allowedPanels.add("cashier");
   }
   if (levelOf("inventory_movements") >= 2 && state.permissions.includes("inventory.write")) {
