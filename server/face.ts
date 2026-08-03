@@ -318,3 +318,106 @@ export async function evaluateFace(options: {
       "لم يتطابق الوجه مع القالب المسجَّل لحسابك. أعد المحاولة في إضاءة أفضل، أو راجع الموارد البشرية لإعادة تسجيل القالب.",
   };
 }
+
+
+                    export interface IdentifyResult {
+                      employeeId: number | null;
+                      distance: number | null;
+                      secondDistance: number | null;
+                      ambiguous: boolean;
+                      matched: boolean;
+                    }
+
+/**
+* يطابق قالب وجه واحد (كما يصل من محطة الكيوسك) مقابل قوالب كل الموظفين
+* النشِطين المفعَّلة لهم بصمة الوجه (مطابقة 1:N لتحديد الهوية)، بخلاف
+* `evaluateFace` التي تتحقق (1:1) من موظف معروفة هويته مسبقاً بعد تسجيل
+* الدخول. دالة إضافية مستقلة لا تُعدِّل أي سلوك حالي.
+*
+* شرطا المطابقة: (1) مسافة الأقرب ≤ حد المطابقة العام، (2) هامش كافٍ عن
+* ثاني أقرب موظف (`ambiguityMargin`) — غيابه يُعيد `ambiguous: true` ولا
+* يُطابق أحداً، لتفادي الخلط بين موظفين متشابهين شكلاً.
+*/
+export async function identifyFace(
+  rawDescriptor: unknown,
+  options: { ambiguityMargin?: number } = {},
+  ): Promise<IdentifyResult> {
+  const none: IdentifyResult = {
+    employeeId: null,
+    distance: null,
+    secondDistance: null,
+    ambiguous: false,
+    matched: false,
+  };
+
+const descriptor = parseDescriptor(rawDescriptor);
+  if (!descriptor) return none;
+
+const threshold = getFaceMatchThreshold();
+  const margin = options.ambiguityMargin ?? 0.05;
+
+const db = getDb();
+  const rows = await db
+  .select({
+    employeeId: faceTemplates.employeeId,
+    encryptedTemplate: faceTemplates.encryptedTemplate,
+    isActive: employees.isActive,
+    faceEnabled: employees.faceEnabled,
+  })
+  .from(faceTemplates)
+  .innerJoin(employees, eq(employees.id, faceTemplates.employeeId));
+
+// أقرب مسافة لكل موظف (قد يملك حتى ثلاثة قوالب) بين المؤهَّلين فقط
+const bestByEmployee = new Map<number, number>();
+
+for (const row of rows) {
+  if (!row.isActive || !row.faceEnabled) continue;
+
+  let vector: number[] | null = null;
+  try {
+    vector = parseDescriptor(JSON.parse(decryptString(row.encryptedTemplate)));
+  } catch {
+    vector = null;
+  }
+  if (!vector) continue;
+
+  const distance = euclideanDistance(descriptor, vector);
+  const current = bestByEmployee.get(row.employeeId);
+  if (current === undefined || distance < current) {
+    bestByEmployee.set(row.employeeId, distance);
+  }
+}
+
+if (bestByEmployee.size === 0) return none;
+
+const sorted = [...bestByEmployee.entries()].sort((a, b) => a[1] - b[1]);
+  const [bestEmployeeId, bestDistance] = sorted[0];
+  const secondDistance = sorted.length > 1 ? sorted[1][1] : null;
+
+const rounded = Math.round(bestDistance * 10_000) / 10_000;
+  const roundedSecond =
+    secondDistance === null ? null : Math.round(secondDistance * 10_000) / 10_000;
+
+if (bestDistance > threshold) {
+  return { ...none, distance: rounded, secondDistance: roundedSecond };
+}
+
+if (secondDistance !== null && secondDistance - bestDistance < margin) {
+  return {
+    employeeId: null,
+    distance: rounded,
+    secondDistance: roundedSecond,
+    ambiguous: true,
+    matched: false,
+  };
+}
+
+return {
+  employeeId: bestEmployeeId,
+  distance: rounded,
+  secondDistance: roundedSecond,
+  ambiguous: false,
+  matched: true,
+};
+}
+}
