@@ -28,6 +28,7 @@ import { formsRouter } from "./routes/forms.js";
 import { inventoryRouter } from "./routes/inventory.js";
 import { payrollRouter } from "./routes/payroll.js";
 import { peopleRouter } from "./routes/people.js";
+import { kioskRouter } from "./routes/kiosk.js";
 import { reportsRouter } from "./routes/reports.js";
 import { settingsRouter } from "./routes/settings.js";
 import { ensureSeeded } from "./seed.js";
@@ -433,6 +434,7 @@ export function createApp() {
   app.use("/api", formsRouter);
   app.use("/api", payrollRouter);
   app.use("/api", peopleRouter);
+  app.use("/api", kioskRouter);
   app.use("/api", reportsRouter);
   app.use("/api", settingsRouter);
   app.use("/api", cashierRouter);
