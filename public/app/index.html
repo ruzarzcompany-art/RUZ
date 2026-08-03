@@ -74,6 +74,10 @@
           نسيت الرقم السري؟
         </button>
 
+                  <button id="kiosk-open" class="btn btn--ghost btn--sm" type="button">
+                                التحضير / الانصراف السريع
+                  </button>
+
         <p class="hint">
           الحسابات التجريبية (ما لم تُحذف من لوحة الإعدادات):
           <code dir="ltr">EMP-1001</code> (موظف)،
@@ -147,6 +151,49 @@
 
         <p id="reset-result" class="alert" role="status" hidden></p>
       </section>
+
+              <!-- ── التحضير / الانصراف السريع (بلا تسجيل دخول) ────────── -->
+              <section id="kiosk-card" class="card card--form" hidden>
+                          <div class="card__head">
+                                        <h2 class="card__title card__title--sm">التحضير / الانصراف السريع</h2>
+                                        <button id="kiosk-close" class="btn btn--ghost btn--xs" type="button">رجوع للدخول</button>
+                          </div>
+
+                          <p class="hint">
+                                        اضغط "بدء" لفتح الكاميرا ومطابقة وجهك، وتُغلق الكاميرا تلقائياً بعد
+                                        إتمام العملية أو فشلها.
+                          </p>
+
+                          <div class="face__stage">
+                                        <video id="kiosk-video" class="face__video" playsinline muted></video>
+                          </div>
+
+                          <button id="kiosk-start" class="btn btn--primary btn--sm" type="button">
+                                        <span class="btn__label">بدء التحضير / الانصراف</span>
+                                        <span class="btn__spinner" aria-hidden="true"></span>
+                          </button>
+
+                          <p id="kiosk-status" class="hint">—</p>
+                          <p id="kiosk-result" class="alert" role="status" hidden></p>
+
+                          <form id="kiosk-pin-form" class="form-grid" novalidate hidden>
+                                        <p class="hint field--wide">
+                                                        تعذّرت مطابقة الوجه مرّتين. أدخل رقمك الوظيفي ورمز PIN للمتابعة.
+                                        </p>
+
+                                        <label class="field field--sm">
+                                                        <span class="field__label">الرقم الوظيفي</span>
+                                                        <input id="kiosk-pin-code" type="text" inputmode="numeric" dir="ltr" placeholder="EMP-1001" />
+                                        </label>
+
+                                        <label class="field field--sm">
+                                                        <span class="field__label">رمز PIN</span>
+                                                        <input id="kiosk-pin-value" type="password" inputmode="numeric" dir="ltr" maxlength="12" />
+                                        </label>
+                                        <button id="kiosk-pin-submit" class="btn btn--primary btn--sm" type="submit">تأكيد</button>
+                          </form>
+
+              </section>
     </main>
 
     <!-- ── شاشة تسجيل الحضور ─────────────────────────────────────── -->
