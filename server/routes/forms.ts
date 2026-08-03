@@ -534,8 +534,9 @@ formsRouter.get("/forms/schema", requireAuth, (_req: AuthedRequest, res: Respons
 /**
  * سياسة الاعتماد الموحّدة للنماذج القابلة للقرار (أوفرتايم، إجازات،
  * مكافآت، سلف): يعتمدها مدير الفرع لموظفي فرعه، والموارد البشرية لكل
- * الفروع، ولا يعتمد أحد نموذجاً لنفسه — فصل المهام. المالك الأعلى
- * مستثنى من منع الاعتماد الشخصي حتى لا تتوقف المنشأة إن كان المسؤول
+ * الفروع، ولا يعتمد أحد نموذجاً لنفسه — فصل المهام. ويُستثنى من منع
+ * الاعتماد الشخصي من يملك «إدارة الصلاحيات» بدرجة التعديل (3)، فهو من
+ * يستطيع أصلاً أن يمنح نفسه ما يشاء، ولا تتوقف المنشأة إن كان المسؤول
  * الوحيد. تُرجع سبب المنع نصاً، أو `null` إن كان الاعتماد مسموحاً.
  */
 async function approvalBlockReason(
@@ -545,7 +546,7 @@ async function approvalBlockReason(
   const actor = req.employee!;
   if (typeof ownerId !== "number") return null;
 
-  if (ownerId === actor.id && actor.roleName !== "super_admin") {
+  if (ownerId === actor.id && !(await hasModuleLevel(req, "access_control", 3))) {
     return "لا يمكن اعتماد نموذج لنفسك — القرار لمدير الفرع أو الموارد البشرية.";
   }
 

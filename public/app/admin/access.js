@@ -2,9 +2,11 @@
  * شاشة «إدارة الصلاحيات»: تضبط درجات الوصول على بنود النظام لنطاق واحد من
  * ثلاثة — موظف محدّد، قسم كامل، أو مسمى وظيفي.
  *
- * الشاشة هي المصدر النهائي للصلاحيات: أي بند تُفعَّل له «قاعدة صريحة» تصبح
- * درجته المحفوظة هنا هي النافذة، تتجاوز ما يمنحه «الدور» رفعاً أو خفضاً أو
- * سحباً كاملاً (درجة صفر). والبنود بلا قاعدة صريحة تبقى على تصنيف الدور.
+ * الشاشة هي المصدر الوحيد للصلاحيات: البند الذي تُفعَّل له «قاعدة صريحة»
+ * تصبح درجته المحفوظة هنا هي النافذة، والبند بلا قاعدة مسحوب بالكامل. لا
+ * يوجد دور ولا تصنيف ابتدائي يمنح شيئاً خلف هذه الشاشة؛ الاستثناء الوحيد
+ * أرضية تطبيق الجوال (تسجيل الحضور، السجل الشخصي، إرسال النماذج) وهي
+ * مضمونة لكل موظف في كود الخادم لا في قاعدة البيانات.
  *
  * كل بند يُعرض بثلاث درجات تراكمية (قراءة، تسجيل حركة، إضافة/تعديل) ودرجة
  * موافقات رابعة لا تظهر إلا حيث يوجد اعتماد فعلي، إضافة إلى درجة «حذف»
@@ -32,10 +34,10 @@ const state = {
   jobTitles: [],
   /**
    * القواعد الصريحة المعروضة حالياً: `moduleKey → { level, canDelete }`.
-   * وجود المفتاح يعني قاعدة صريحة تتجاوز الدور، وغيابه يعني «حسب الدور».
+   * وجود المفتاح يعني قاعدة محفوظة، وغيابه يعني «بلا قاعدة» أي مسحوب.
    */
   rules: {},
-  /** ما يمنحه الدور وحده لهذا الموظف (نطاق الموظف فقط) — للعرض المقارن */
+  /** الأرضية المضمونة في الكود لكل موظف (أرضية تطبيق الجوال) — للعرض المقارن */
   baseline: null,
   /** النطاق المحمَّل حالياً (بعد نجاح التحميل) */
   loadedScope: null,
@@ -136,7 +138,7 @@ function deleteAvailable(module) {
   return Boolean(module.delete?.available);
 }
 
-/** القاعدة الصريحة للبند إن وُجدت، وإلا `null` (أي: حسب الدور). */
+/** القاعدة الصريحة للبند إن وُجدت، وإلا `null` (أي: بلا قاعدة، مسحوب). */
 function ruleFor(moduleKey) {
   return state.rules[moduleKey] ?? null;
 }
@@ -145,19 +147,22 @@ function levelShort(level) {
   return state.catalog.levels.find((entry) => entry.level === level)?.short ?? String(level);
 }
 
-/** وصف مختصر لما يمنحه الدور وحده في هذا البند (نطاق الموظف فقط). */
+/**
+ * وصف مختصر لما يبقى للموظف في هذا البند إن لم تكن له قاعدة: الأرضية
+ * المضمونة في الكود وحدها، وهي لا شيء في معظم البنود.
+ */
 function baselineText(moduleKey) {
   if (!state.baseline) return "";
   const level = state.baseline.levels?.[moduleKey] ?? 0;
   const canDelete = Boolean(state.baseline.deletes?.[moduleKey]);
-  if (level <= 0 && !canDelete) return "الدور وحده: لا شيء";
+  if (level <= 0 && !canDelete) return "بلا قاعدة: لا شيء";
   const parts = [];
   if (level > 0) parts.push(`${level} — ${levelShort(level)}`);
   if (canDelete) parts.push("حذف");
-  return `الدور وحده: ${parts.join(" + ")}`;
+  return `بلا قاعدة: ${parts.join(" + ")} (مضمونة في الكود)`;
 }
 
-/** يُنشئ قاعدة صريحة للبند مبدوءة بما يمنحه الدور حالياً (أو صفر). */
+/** يُنشئ قاعدة صريحة للبند مبدوءة بالأرضية المضمونة (أو صفر). */
 function enableRule(moduleKey) {
   state.rules[moduleKey] = {
     level: state.baseline?.levels?.[moduleKey] ?? 0,
@@ -256,18 +261,18 @@ function renderMatrix() {
     if (rule && rule.level === 0 && !rule.canDelete) {
       const warn = document.createElement("span");
       warn.className = "perm__hint";
-      warn.textContent = "مسحوب بالكامل — لا يُتاح هذا البند مهما منح الدور";
+      warn.textContent = "مسحوب بالكامل — لا يُتاح هذا البند لهذا النطاق";
       nameCell.append(warn);
     }
 
     tr.append(nameCell);
 
-    // عمود «قاعدة صريحة»: وجوده يعني أن هذا الصف يتجاوز الدور
+    // عمود «قاعدة صريحة»: وجوده يعني أن لهذا الصف قاعدة محفوظة
     tr.append(
       checkboxCell({
         checked: Boolean(rule),
         disabled: !editable,
-        label: `${module.label} — قاعدة صريحة تتجاوز الدور`,
+        label: `${module.label} — قاعدة صريحة محفوظة`,
         extraClass: "matrix__cell--rule",
         onChange: (checked) =>
           checked ? enableRule(module.key) : disableRule(module.key),
@@ -563,8 +568,8 @@ async function previewEffective() {
     const baseDelete = Boolean(baseDeletes[module.key]);
     const changed = level !== baseLevel || Boolean(deletes[module.key]) !== baseDelete;
 
-    // «المصدر» يفصل ما فرضته القاعدة عمّا ورثه من تصنيف الدور
-    let source = "الدور";
+    // «المصدر» يفصل ما فرضته قاعدة محفوظة عن الأرضية المضمونة في الكود
+    let source = "أرضية مضمونة في الكود";
     if (changed) {
       source =
         level > baseLevel || (deletes[module.key] && !baseDelete)
@@ -623,7 +628,7 @@ export function initAccessModule({ can }) {
     renderMatrix();
     setAlert(
       el("access-result"),
-      "ضُبطت كل البنود على السحب الكامل — اضغط «حفظ القاعدة» لتطبيقها مهما كان الدور.",
+      "ضُبطت كل البنود على السحب الكامل — اضغط «حفظ القاعدة» لتطبيقها.",
       "warn",
     );
   });

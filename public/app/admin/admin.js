@@ -870,7 +870,6 @@ async function refreshPeople() {
       employee.joinDate ?? "—",
       employee.branchName ?? "—",
       employee.branchManagerName ?? "—",
-      employee.roleNameAr ?? employee.roleName ?? "—",
       faceEnabledCell(employee),
       face
         ? `مسجّلة (${face.slots ?? 1}/${face.requiredSlots ?? 3} · ${formatDateTime(face.enrolledAt)})`
@@ -1356,7 +1355,7 @@ async function boot() {
   el("admin-who").textContent = [
     me.employee.fullName,
     me.employee.employeeCode,
-    me.employee.role,
+    me.employee.jobTitle,
   ]
     .filter(Boolean)
     .join(" · ");

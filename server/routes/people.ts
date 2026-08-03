@@ -2,10 +2,11 @@
  * ملف الموظف الكامل، جدول دوامه، تخصيص صلاحياته الفردية، ومدير الفرع.
  *
  * - ملف الموظف: كل بيانات التعريف (الاسم، الجنسية، الهوية، الجوال، البريد،
- *   تاريخ الانضمام، القسم، المسمى، الفرع، الدور) + اسم مدير الفرع التابع له.
+ *   تاريخ الانضمام، القسم، المسمى، الفرع) + اسم مدير الفرع التابع له.
  * - جدول الدوام: يُستخدم في حساب التأخير والدوام الإضافي (انظر `server/schedule.ts`).
- * - الصلاحيات الفردية: تخصيص فوق صلاحيات الدور (`allow` / `deny`).
- * - مدير الفرع: يُختار من الموظفين بدور «مدير فرع» ويظهر في ملف كل موظف بالفرع.
+ * - الصلاحيات: تُقرأ من `access_rules` وحدها (انظر `server/rbac.ts`)؛ لا يوجد
+ *   حقل دور في ملف الموظف بعد حذف نظام الأدوار القديم.
+ * - مدير الفرع: يُختار من الموظفين الذين يملكون صلاحية «اعتماد النماذج».
  */
 
 import { Router, type Response } from "express";
@@ -15,9 +16,6 @@ import {
   branches,
   employees,
   faceTemplates,
-  permissions as permissionsTable,
-  rolePermissions,
-  roles,
   salaryDefinitions,
   scheduleOffDates,
   workSchedules,
@@ -27,6 +25,8 @@ import { clientIp, recordAudit } from "../audit.js";
 import { getSeedPassword } from "../config.js";
 import { hashPassword } from "../passwords.js";
 import {
+    accessRulesByEmployee,
+    buildAccessProfile,
     hasAnyPermission,
     PERMISSIONS,
     requireAnyPermission,
@@ -57,12 +57,45 @@ import {
 
 export const peopleRouter = Router();
 
-/** أدوار يُسمح بتعيينها مسؤولة عن فرع. */
-const BRANCH_MANAGER_ROLES = ["branch_manager", "super_admin"];
+/**
+ * من يملك رمزاً صلاحياً معيّناً فعلاً، محسوباً من `access_rules` وحدها
+ * (بقراءة جماعية واحدة لكل الموظفين ثم حساب صورة كل موظف كما يحسبها
+ * الخادم في كل طلب). حلّت هذه الدالة محل الاستعلام القديم على
+ * `role_permissions` بعد حذف نظام الأدوار: الصلاحية صارت تُقاس بما يملكه
+ * الموظف لا بما يُسمّى به.
+ */
+async function employeesHolding(
+  code: string,
+  options?: { activeOnly?: boolean; exclude?: number },
+): Promise<Array<{ id: number; employeeCode: string; fullName: string; branchId: number | null }>> {
+  const db = getDb();
+  const [rows, rulesByEmployee] = await Promise.all([
+    db
+      .select({
+        id: employees.id,
+        employeeCode: employees.employeeCode,
+        fullName: employees.fullName,
+        branchId: employees.branchId,
+        isActive: employees.isActive,
+      })
+      .from(employees)
+      .orderBy(asc(employees.employeeCode))
+      .limit(2000),
+    accessRulesByEmployee(),
+  ]);
+
+  return rows
+    .filter((row) => (options?.activeOnly === false ? true : row.isActive))
+    .filter((row) => row.id !== options?.exclude)
+    .filter((row) =>
+      buildAccessProfile(rulesByEmployee.get(row.id) ?? []).codes.includes(code),
+    )
+    .map(({ isActive: _isActive, ...rest }) => rest);
+}
 
 /* ── قراءة ملف الموظف ─────────────────────────────────────────── */
 
-/** يجمع ملف الموظف الكامل: بياناته + فرعه ومديره + دوره + جدول دوامه. */
+/** يجمع ملف الموظف الكامل: بياناته + فرعه ومديره + جدول دوامه. */
 async function loadEmployeeFile(employeeId: number) {
   const db = getDb();
 
@@ -74,12 +107,9 @@ async function loadEmployeeFile(employeeId: number) {
       branchName: branches.name,
       branchTimezone: branches.timezone,
       branchManagerId: branches.managerEmployeeId,
-      roleName: roles.name,
-      roleNameAr: roles.nameAr,
     })
     .from(employees)
     .leftJoin(branches, eq(employees.branchId, branches.id))
-    .leftJoin(roles, eq(employees.roleId, roles.id))
     .where(eq(employees.id, employeeId))
     .limit(1);
 
@@ -134,8 +164,6 @@ async function loadEmployeeFile(employeeId: number) {
       branchName: row.branchName,
       branchCode: row.branchCode,
       branchTimezone: row.branchTimezone,
-      roleName: row.roleName,
-      roleNameAr: row.roleNameAr,
       branchManagerName: manager?.fullName ?? null,
       branchManagerCode: manager?.employeeCode ?? null,
     },
@@ -203,7 +231,6 @@ interface ProfileInput {
   department?: string;
   jobTitle?: string;
   branchId?: number | null;
-  roleId?: number | null;
   hiredAt?: Date | null;
   isActive?: boolean;
   faceEnabled?: boolean;
@@ -242,7 +269,6 @@ function readProfile(body: unknown): ProfileInput {
   if (jobTitle !== null) profile.jobTitle = jobTitle;
 
   if ("branchId" in source) profile.branchId = asId(source.branchId);
-  if ("roleId" in source) profile.roleId = asId(source.roleId);
 
   if ("joinDate" in source || "hiredAt" in source) {
     const raw = source.joinDate ?? source.hiredAt;
@@ -262,7 +288,7 @@ function readProfile(body: unknown): ProfileInput {
   return profile;
 }
 
-/** يتحقق من وجود الفرع والدور المُشار إليهما. */
+/** يتحقق من وجود الفرع المُشار إليه. */
 async function validateReferences(profile: ProfileInput): Promise<string | null> {
   const db = getDb();
 
@@ -273,15 +299,6 @@ async function validateReferences(profile: ProfileInput): Promise<string | null>
       .where(eq(branches.id, profile.branchId))
       .limit(1);
     if (!branch) return "الفرع المُحدّد غير موجود";
-  }
-
-  if (profile.roleId) {
-    const [role] = await db
-      .select({ id: roles.id })
-      .from(roles)
-      .where(eq(roles.id, profile.roleId))
-      .limit(1);
-    if (!role) return "الدور المُحدّد غير موجود";
   }
 
   return null;
@@ -334,7 +351,6 @@ peopleRouter.post(
         department: profile.department ?? "",
         jobTitle: profile.jobTitle ?? "",
         branchId: profile.branchId ?? null,
-        roleId: profile.roleId ?? null,
         hiredAt: profile.hiredAt ?? new Date(),
         isActive: profile.isActive ?? true,
         faceEnabled: profile.faceEnabled ?? true,
@@ -485,19 +501,14 @@ peopleRouter.delete(
       return;
     }
 
-    // لا نسمح بحذف آخر حساب يملك صلاحية إدارة الموظفين حتى لا يُقفل النظام
-    const managers = await db
-      .select({ id: employees.id })
-      .from(employees)
-      .innerJoin(rolePermissions, eq(rolePermissions.roleId, employees.roleId))
-      .innerJoin(permissionsTable, eq(permissionsTable.id, rolePermissions.permissionId))
-      .where(
-        and(
-          eq(permissionsTable.code, PERMISSIONS.employeesWrite),
-          eq(employees.isActive, true),
-          ne(employees.id, employeeId),
-        ),
-      );
+    /**
+     * لا نسمح بحذف آخر حساب يملك صلاحية إدارة الموظفين حتى لا يُقفل النظام.
+     * والصلاحية تُقاس من `access_rules` بعد حذف نظام الأدوار: من تمنحه
+     * قواعده `employees.write` فعلاً.
+     */
+    const managers = await employeesHolding(PERMISSIONS.employeesWrite, {
+      exclude: employeeId,
+    });
 
     if (managers.length === 0) {
       res.status(409).json({
@@ -1057,30 +1068,19 @@ peopleRouter.put(
 
 /* ── مدير الفرع ───────────────────────────────────────────────── */
 
-/** الموظفون المؤهّلون لإدارة فرع (بدور مدير فرع). */
+/**
+ * الموظفون المؤهّلون لإدارة فرع: من يملك اعتماد النماذج
+ * (`forms.approve`) — وهي الصلاحية التي تُعرّف عمل مدير الفرع فعلاً، إذ
+ * يعتمد طلبات موظفي فرعه. حلّت محلّ قائمة أسماء الأدوار القديمة.
+ */
 peopleRouter.get(
     "/branches/manager-candidates",
     requireAuth,
       requirePermission(PERMISSIONS.branchesRead),
     async (_req: AuthedRequest, res: Response) => {
-    const db = getDb();
-    const rows = await db
-      .select({
-        id: employees.id,
-        employeeCode: employees.employeeCode,
-        fullName: employees.fullName,
-        roleName: roles.name,
-        roleNameAr: roles.nameAr,
-        branchId: employees.branchId,
-      })
-      .from(employees)
-      .innerJoin(roles, eq(employees.roleId, roles.id))
-      .where(eq(employees.isActive, true))
-      .orderBy(asc(employees.employeeCode));
-
     res.json({
       ok: true,
-      candidates: rows.filter((row) => BRANCH_MANAGER_ROLES.includes(row.roleName)),
+      candidates: await employeesHolding(PERMISSIONS.formsApprove),
     });
   },
 );
@@ -1118,11 +1118,9 @@ peopleRouter.patch(
         .select({
           id: employees.id,
           fullName: employees.fullName,
-          roleName: roles.name,
           isActive: employees.isActive,
         })
         .from(employees)
-        .leftJoin(roles, eq(employees.roleId, roles.id))
         .where(eq(employees.id, managerEmployeeId))
         .limit(1);
 
@@ -1134,10 +1132,13 @@ peopleRouter.patch(
         res.status(400).json({ ok: false, error: "لا يمكن تعيين موظف غير مُفعّل مديراً للفرع." });
         return;
       }
-      if (!candidate.roleName || !BRANCH_MANAGER_ROLES.includes(candidate.roleName)) {
+
+      const eligible = await employeesHolding(PERMISSIONS.formsApprove);
+      if (!eligible.some((row) => row.id === candidate.id)) {
         res.status(400).json({
           ok: false,
-          error: "المدير المسؤول يجب أن يكون موظفاً بدور «مدير فرع».",
+          error:
+            "المدير المسؤول يجب أن يملك صلاحية «اعتماد النماذج» — امنحها له من شاشة الصلاحيات أولاً.",
         });
         return;
       }
@@ -1167,26 +1168,6 @@ peopleRouter.patch(
         : "تم إزالة المدير المسؤول عن الفرع",
       branch: updated,
     });
-  },
-);
-
-/** الأدوار المتاحة — تحتاجها شاشة إضافة/تعديل الموظف. */
-peopleRouter.get(
-  "/roles",
-  requireAuth,
-  requirePermission(PERMISSIONS.employeesRead),
-  async (_req: AuthedRequest, res: Response) => {
-    const db = getDb();
-    const rows = await db
-      .select({
-        id: roles.id,
-        name: roles.name,
-        nameAr: roles.nameAr,
-        description: roles.description,
-      })
-      .from(roles)
-      .orderBy(asc(roles.id));
-    res.json({ ok: true, roles: rows });
   },
 );
 

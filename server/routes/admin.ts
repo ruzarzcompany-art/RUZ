@@ -8,7 +8,6 @@ import {
   employees,
   faceTemplates,
   passwordResetRequests,
-  roles,
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
@@ -65,14 +64,10 @@ adminRouter.get(
         branchId: employees.branchId,
         branchName: branches.name,
         branchManagerId: branches.managerEmployeeId,
-        roleId: employees.roleId,
-        roleName: roles.name,
-        roleNameAr: roles.nameAr,
         hiredAt: employees.hiredAt,
       })
       .from(employees)
       .leftJoin(branches, eq(employees.branchId, branches.id))
-      .leftJoin(roles, eq(employees.roleId, roles.id))
       .where(branchFilter === null ? undefined : eq(employees.branchId, branchFilter))
       .orderBy(asc(employees.employeeCode));
 

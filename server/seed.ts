@@ -1,15 +1,13 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import {
+  accessRules,
   branches,
   companySettings,
   departments,
   employees,
   inventoryItems,
   jobTitles,
-  permissions,
-  rolePermissions,
-  roles,
   salaryComponents,
   salaryDefinitions,
   workSchedules,
@@ -17,156 +15,157 @@ import {
 import { env, getSeedPassword } from "./config.js";
 import { DEMO_PURGED_FLAG, isFlagOn } from "./flags.js";
 import { hashPassword } from "./passwords.js";
-import { PERMISSION_CATALOG, PERMISSIONS } from "./rbac.js";
+import {
+  derivedModuleDelete,
+  derivedModuleLevel,
+  isDeleteAvailable,
+  MODULE_CATALOG,
+  PERMISSIONS,
+} from "./rbac.js";
 
 /** يُعاد تصديرها حفاظاً على التوافق مع الاستدعاءات السابقة. */
 export { PERMISSIONS };
 
-const ROLE_SEED: Array<{
-  name: string;
-  nameAr: string;
-  description: string;
-  permissions: string[];
-}> = [
-  {
-    name: "super_admin",
-    nameAr: "مدير النظام",
-    description: "صلاحيات كاملة على النظام",
-    permissions: Object.values(PERMISSIONS),
-  },
-  {
+/**
+ * قوالب بداية للحسابات التجريبية — لا «أدوار».
+ *
+ * لم يعد في النظام جدول أدوار ولا حقل دور: `access_rules` هي مصدر الصلاحيات
+ * الوحيد. وهذه القوائم قوالب في الكود تُترجَم عند البذر إلى **قواعد صريحة
+ * بنطاق «موظف محدّد»** للحسابات التجريبية وحدها، ثم لا يبقى لها أثر: تعديل
+ * القالب بعد ذلك لا يغيّر صلاحية أحد، وتعديل قاعدة الموظف من شاشة الصلاحيات
+ * لا يعود البذر فيكتبه (`ON CONFLICT DO NOTHING`).
+ *
+ * الترجمة تجري بنفس حساب ترحيل البيانات: درجة البند هي أعلى درجة يملك
+ * القالب رمزاً واحداً على الأقل من رموزها، ودرجة الحذف مستقلة.
+ */
+const ACCESS_TEMPLATES: Record<string, string[]> = {
+  /**
+   * مدير الموارد البشرية هو الوحيد (مع من يُمنح مثله) الذي يملك
+   * `attendance.manual_write`: إضافة/تعديل/حذف أي سجل حضور بكل حقوله.
+   */
+  hr_manager: [
+    PERMISSIONS.attendanceCheckIn,
+    PERMISSIONS.attendanceReadOwn,
+    PERMISSIONS.attendanceReadAll,
+    PERMISSIONS.attendanceApprove,
+    PERMISSIONS.attendanceManualWrite,
+    PERMISSIONS.attendanceCorrectCheckout,
+    PERMISSIONS.employeesRead,
+    PERMISSIONS.employeesWrite,
+    PERMISSIONS.branchesRead,
+    PERMISSIONS.branchesWrite,
+    PERMISSIONS.reportsView,
+    PERMISSIONS.auditRead,
+    PERMISSIONS.formsSubmit,
+    PERMISSIONS.formsReadOwn,
+    PERMISSIONS.formsReadAll,
+    PERMISSIONS.formsApprove,
+    PERMISSIONS.bonusesManage,
+    PERMISSIONS.contractsManage,
+    PERMISSIONS.salaryManage,
+    PERMISSIONS.payrollManage,
+    PERMISSIONS.vouchersManage,
+    PERMISSIONS.custodyManage,
+    PERMISSIONS.schedulesManage,
+    PERMISSIONS.permissionsManage,
+    PERMISSIONS.cashierReadAll,
+    PERMISSIONS.cashierReview,
+    PERMISSIONS.inventoryRead,
+    PERMISSIONS.inventoryWrite,
+    PERMISSIONS.inventoryItemsManage,
+    PERMISSIONS.settingsManage,
+    PERMISSIONS.documentsPrint,
+    PERMISSIONS.documentsReadAll,
+    PERMISSIONS.disciplinaryManage,
+    PERMISSIONS.sectionPayroll,
+    PERMISSIONS.sectionCashierClosing,
+    PERMISSIONS.sectionReports,
+    PERMISSIONS.sectionEmployeeFile,
+    PERMISSIONS.sectionInventory,
+    PERMISSIONS.sectionSettings,
+    PERMISSIONS.sectionDocuments,
+  ],
+  /** مدير الفرع: يصحّح انصراف الورديات المُقفلة تلقائياً، لكن بلا إدخال يدوي كامل. */
+  branch_manager: [
+    PERMISSIONS.attendanceCheckIn,
+    PERMISSIONS.attendanceReadOwn,
+    PERMISSIONS.attendanceReadAll,
+    PERMISSIONS.attendanceApprove,
+    PERMISSIONS.attendanceCorrectCheckout,
+    PERMISSIONS.employeesRead,
+    PERMISSIONS.branchesRead,
+    PERMISSIONS.branchesWrite,
+    PERMISSIONS.reportsView,
+    PERMISSIONS.formsSubmit,
+    PERMISSIONS.formsReadOwn,
+    PERMISSIONS.formsReadAll,
+    PERMISSIONS.formsApprove,
+    PERMISSIONS.custodyManage,
+    PERMISSIONS.cashierSubmit,
+    PERMISSIONS.cashierReadAll,
+    PERMISSIONS.cashierReview,
+    PERMISSIONS.inventoryRead,
+    PERMISSIONS.inventoryWrite,
+    PERMISSIONS.inventoryItemsManage,
+    PERMISSIONS.documentsPrint,
+    PERMISSIONS.documentsReadAll,
+    PERMISSIONS.disciplinaryManage,
+    PERMISSIONS.sectionReports,
+    PERMISSIONS.sectionCashierClosing,
+    PERMISSIONS.sectionEmployeeFile,
+    PERMISSIONS.sectionInventory,
+    PERMISSIONS.sectionDocuments,
+  ],
+  staff: [
+    PERMISSIONS.attendanceCheckIn,
+    PERMISSIONS.attendanceReadOwn,
+    PERMISSIONS.branchesRead,
+    PERMISSIONS.formsSubmit,
+    PERMISSIONS.formsReadOwn,
     /**
-     * مدير الموارد البشرية هو الوحيد (مع مدير النظام) الذي يملك
-     * `attendance.manual_write`: إضافة/تعديل/حذف أي سجل حضور بكل حقوله.
+     * الكاشير يرفع تقفيله اليومي بنفسه؛ ولمنع موظف بعينه من ذلك تُسحب قاعدة
+     * «تقفيل ورديتي» في شاشة الصلاحيات (درجة 0).
      */
-    name: "hr_manager",
-    nameAr: "مدير الموارد البشرية",
-    description: "إدارة الموظفين والحضور والنماذج والرواتب",
-    permissions: [
-      PERMISSIONS.attendanceCheckIn,
-      PERMISSIONS.attendanceReadOwn,
-      PERMISSIONS.attendanceReadAll,
-      PERMISSIONS.attendanceApprove,
-      PERMISSIONS.attendanceManualWrite,
-      PERMISSIONS.attendanceCorrectCheckout,
-      PERMISSIONS.employeesRead,
-      PERMISSIONS.employeesWrite,
-      PERMISSIONS.branchesRead,
-      PERMISSIONS.branchesWrite,
-      PERMISSIONS.reportsView,
-      PERMISSIONS.auditRead,
-      PERMISSIONS.formsSubmit,
-      PERMISSIONS.formsReadOwn,
-      PERMISSIONS.formsReadAll,
-      PERMISSIONS.formsApprove,
-      PERMISSIONS.bonusesManage,
-      PERMISSIONS.contractsManage,
-      PERMISSIONS.salaryManage,
-      PERMISSIONS.payrollManage,
-      PERMISSIONS.vouchersManage,
-      PERMISSIONS.custodyManage,
-      PERMISSIONS.schedulesManage,
-      PERMISSIONS.permissionsManage,
-      PERMISSIONS.cashierReadAll,
-      PERMISSIONS.cashierReview,
-      PERMISSIONS.inventoryRead,
-      PERMISSIONS.inventoryWrite,
-      PERMISSIONS.inventoryItemsManage,
-      PERMISSIONS.settingsManage,
-      PERMISSIONS.documentsPrint,
-      PERMISSIONS.documentsReadAll,
-      PERMISSIONS.disciplinaryManage,
-      PERMISSIONS.sectionPayroll,
-      PERMISSIONS.sectionCashierClosing,
-      PERMISSIONS.sectionReports,
-      PERMISSIONS.sectionEmployeeFile,
-      PERMISSIONS.sectionInventory,
-      PERMISSIONS.sectionSettings,
-      PERMISSIONS.sectionDocuments,
-    ],
-  },
-  {
-    /** مدير الفرع: يصحّح انصراف الورديات المُقفلة تلقائياً، لكن بلا إدخال يدوي كامل. */
-    name: "branch_manager",
-    nameAr: "مدير فرع",
-    description: "إدارة موظفي الفرع وحضورهم واعتماد طلباتهم",
-    permissions: [
-      PERMISSIONS.attendanceCheckIn,
-      PERMISSIONS.attendanceReadOwn,
-      PERMISSIONS.attendanceReadAll,
-      PERMISSIONS.attendanceApprove,
-      PERMISSIONS.attendanceCorrectCheckout,
-      PERMISSIONS.employeesRead,
-      PERMISSIONS.branchesRead,
-      PERMISSIONS.branchesWrite,
-      PERMISSIONS.reportsView,
-      PERMISSIONS.formsSubmit,
-      PERMISSIONS.formsReadOwn,
-      PERMISSIONS.formsReadAll,
-      PERMISSIONS.formsApprove,
-      PERMISSIONS.custodyManage,
-      PERMISSIONS.cashierSubmit,
-      PERMISSIONS.cashierReadAll,
-      PERMISSIONS.cashierReview,
-      PERMISSIONS.inventoryRead,
-      PERMISSIONS.inventoryWrite,
-      PERMISSIONS.inventoryItemsManage,
-      PERMISSIONS.documentsPrint,
-      PERMISSIONS.documentsReadAll,
-      PERMISSIONS.disciplinaryManage,
-      PERMISSIONS.sectionReports,
-      PERMISSIONS.sectionCashierClosing,
-      PERMISSIONS.sectionEmployeeFile,
-      PERMISSIONS.sectionInventory,
-      PERMISSIONS.sectionDocuments,
-    ],
-  },
-  {
-    name: "shift_supervisor",
-    nameAr: "مشرف وردية",
-    description: "متابعة حضور الوردية والطلبات",
-    permissions: [
-      PERMISSIONS.attendanceCheckIn,
-      PERMISSIONS.attendanceReadOwn,
-      PERMISSIONS.attendanceReadAll,
-      PERMISSIONS.employeesRead,
-      PERMISSIONS.branchesRead,
-      PERMISSIONS.formsSubmit,
-      PERMISSIONS.formsReadOwn,
-      PERMISSIONS.formsReadAll,
-      PERMISSIONS.cashierSubmit,
-      PERMISSIONS.cashierReadAll,
-      PERMISSIONS.inventoryRead,
-      PERMISSIONS.inventoryWrite,
-      PERMISSIONS.sectionPayroll,
-      PERMISSIONS.sectionEmployeeFile,
-      PERMISSIONS.sectionInventory,
-    ],
-  },
-  {
-    name: "staff",
-    nameAr: "موظف",
-    description: "تسجيل الحضور وعرض سجله ونماذجه الشخصية",
-    permissions: [
-      PERMISSIONS.attendanceCheckIn,
-      PERMISSIONS.attendanceReadOwn,
-      PERMISSIONS.branchesRead,
-      PERMISSIONS.formsSubmit,
-      PERMISSIONS.formsReadOwn,
-      /**
-       * الكاشير يرفع تقفيله اليومي بنفسه؛ ولمنع موظف بعينه من ذلك
-       * يُستخدم التخصيص الفردي (`deny cashier.submit`).
-       */
-      PERMISSIONS.cashierSubmit,
-      /**
-       * الموظف يرى مسيّرات رواتبه وملفه الشخصي بشكل افتراضي؛ وللموارد البشرية
-       * تعطيل أي قسم منها لموظف بعينه عبر التخصيص الفردي (`deny`).
-       */
-      PERMISSIONS.sectionPayroll,
-      PERMISSIONS.sectionEmployeeFile,
-    ],
-  },
-];
+    PERMISSIONS.cashierSubmit,
+    /**
+     * الموظف يرى مسيّرات رواتبه وملفه الشخصي بشكل افتراضي؛ ولمنع ذلك عن
+     * موظف بعينه تُسحب قاعدة البند (درجة 0).
+     */
+    PERMISSIONS.sectionPayroll,
+    PERMISSIONS.sectionEmployeeFile,
+  ],
+};
+
+/** يترجم قالباً إلى قواعد صريحة بنطاق «موظف محدّد» جاهزة للإدراج. */
+function templateRules(templateKey: string, employeeId: number) {
+  const codes = new Set(ACCESS_TEMPLATES[templateKey] ?? []);
+  const rows: Array<{
+    scopeType: string;
+    scopeKey: string;
+    employeeId: number;
+    moduleKey: string;
+    level: number;
+    canDelete: boolean;
+    note: string;
+  }> = [];
+
+  for (const module of MODULE_CATALOG) {
+    const level = derivedModuleLevel(module.key, codes);
+    const canDelete = isDeleteAvailable(module.key) && derivedModuleDelete(module.key, codes);
+    if (level === 0 && !canDelete) continue;
+    rows.push({
+      scopeType: "employee",
+      scopeKey: String(employeeId),
+      employeeId,
+      moduleKey: module.key,
+      level,
+      canDelete,
+      note: "قاعدة أولية للحساب التجريبي — عدّلها من شاشة الصلاحيات",
+    });
+  }
+
+  return rows;
+}
 
 function seedNumber(name: string, fallback: number): number {
   const parsed = Number.parseFloat(env(name) ?? "");
@@ -179,40 +178,6 @@ function seedNumber(name: string, fallback: number): number {
  */
 async function runSeed(): Promise<void> {
   const db = getDb();
-
-  await db.insert(permissions).values(PERMISSION_CATALOG).onConflictDoNothing();
-
-  await db
-    .insert(roles)
-    .values(
-      ROLE_SEED.map(({ name, nameAr, description }) => ({
-        name,
-        nameAr,
-        description,
-      })),
-    )
-    .onConflictDoNothing();
-
-  const allRoles = await db.select({ id: roles.id, name: roles.name }).from(roles);
-  const allPermissions = await db
-    .select({ id: permissions.id, code: permissions.code })
-    .from(permissions);
-
-  const roleIdByName = new Map(allRoles.map((r) => [r.name, r.id]));
-  const permissionIdByCode = new Map(allPermissions.map((p) => [p.code, p.id]));
-
-  const links = ROLE_SEED.flatMap((role) => {
-    const roleId = roleIdByName.get(role.name);
-    if (!roleId) return [];
-    return role.permissions.flatMap((code) => {
-      const permissionId = permissionIdByCode.get(code);
-      return permissionId ? [{ roleId, permissionId }] : [];
-    });
-  });
-
-  if (links.length > 0) {
-    await db.insert(rolePermissions).values(links).onConflictDoNothing();
-  }
 
   // الفرع الافتراضي — إحداثياته قابلة للتعديل عبر متغيّرات البيئة أو الواجهة
   await db
@@ -257,7 +222,6 @@ async function runSeed(): Promise<void> {
           department: "الإدارة",
           passwordHash,
           jobTitle: "مدير الفرع",
-          roleId: roleIdByName.get("branch_manager") ?? null,
           branchId: branch?.id ?? null,
           hiredAt: new Date(),
         },
@@ -271,7 +235,6 @@ async function runSeed(): Promise<void> {
           department: "الكاشير",
           passwordHash,
           jobTitle: "كاشير",
-          roleId: roleIdByName.get("staff") ?? null,
           branchId: branch?.id ?? null,
           hiredAt: new Date(),
         },
@@ -285,7 +248,6 @@ async function runSeed(): Promise<void> {
           department: "الموارد البشرية",
           passwordHash,
           jobTitle: "مدير الموارد البشرية",
-          roleId: roleIdByName.get("hr_manager") ?? null,
           branchId: branch?.id ?? null,
           hiredAt: new Date(),
         },
@@ -304,6 +266,27 @@ async function runSeed(): Promise<void> {
         "EMP-1001": { basic: 4500, housing: 750, transport: 300 },
         "EMP-1002": { basic: 11000, housing: 2000, transport: 600 },
       };
+
+    /**
+     * صلاحيات الحسابات التجريبية تُكتب قواعد صريحة باسم كل حساب، فتبدأ
+     * البيئة الجديدة وفيها حساب يفتح شاشة الصلاحيات (الموارد البشرية) بلا
+     * حاجة إلى أي استنتاج من دور. والقواعد تُكتب مرة واحدة: أي تعديل لاحق
+     * من الشاشة يبقى كما هو.
+     */
+    const demoTemplates: Record<string, string> = {
+      "EMP-1000": "branch_manager",
+      "EMP-1001": "staff",
+      "EMP-1002": "hr_manager",
+    };
+
+    const ruleRows = seededEmployees.flatMap((employee) => {
+      const template = demoTemplates[employee.code];
+      return template ? templateRules(template, employee.id) : [];
+    });
+
+    if (ruleRows.length > 0) {
+      await db.insert(accessRules).values(ruleRows).onConflictDoNothing();
+    }
 
     const salaryRows = seededEmployees.flatMap((employee) => {
       const demo = demoSalaries[employee.code];
