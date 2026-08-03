@@ -83,6 +83,12 @@ export const employees = pgTable(
      * فيسجّل حضوره دون تحقق بالوجه.
      */
     faceEnabled: boolean("face_enabled").notNull().default(true),
+    /**
+     * تجزئة رمز PIN محطة "تحضير" (الكيوسك) بنفس دالة كلمات المرور (scrypt).
+      * تبقى فارغة (null) حتى تحدّدها الموارد البشرية من ملف الموظف، وتُستخدم
+       * فقط كمسار احتياطي عند تعذّر مطابقة الوجه في الكيوسك.
+        */
+    kioskPinHash: text("kiosk_pin_hash"),
     /** تاريخ الانضمام للعمل */
     hiredAt: timestamp("hired_at", { withTimezone: true }),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
