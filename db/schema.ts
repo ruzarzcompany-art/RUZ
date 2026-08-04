@@ -1298,6 +1298,25 @@ export const providerSettlements = pgTable(
     vatIncluded: boolean("vat_included").notNull().default(true),
     /** العمولة بلا ضريبة — تُفيد التقرير الضريبي */
     commissionBeforeVat: money("commission_before_vat"),
+    /**
+     * نسبة العقد المتفق عليها مع الجهة (%) — يُدخلها المحاسب من العقد نفسه،
+     * ومنها يُحسب «المبلغ المتوقع خصمه» فيُقارن بالمخصوم الفعلي في الكشف.
+     */
+    contractRate: doublePrecision("contract_rate").notNull().default(0),
+    /** المتوقع خصمه = الأساس المستحق × نسبة العقد ÷ 100 */
+    expectedAmount: money("expected_amount"),
+    /** المخصوم الفعلي كما في كشف الجهة — رقم واقعي لا مُستنتج */
+    actualDeducted: money("actual_deducted"),
+    /** الفرق = المخصوم الفعلي − المتوقع (موجب = خُصم أكثر من العقد) */
+    varianceAmount: money("variance_amount"),
+    /** المرحّل من الشهر السابق: مبالغ لم تُحوَّل بعد فانتقلت إلى هذا الشهر */
+    carriedInAmount: money("carried_in_amount"),
+    /** المرحّل إلى الشهر التالي = الأساس − المحوّل − المخصوم الفعلي */
+    carriedOutAmount: money("carried_out_amount"),
+    /** الشهر الذي جاء منه المرحّل (YYYY-MM) — للتتبّع لا للحساب */
+    carriedFromMonth: text("carried_from_month").notNull().default(""),
+    /** الشهر الذي رُحّل إليه المتبقي (YYYY-MM) */
+    carriedToMonth: text("carried_to_month").notNull().default(""),
     /** pending | confirmed */
     status: text().notNull().default("pending"),
     reference: text().notNull().default(""),
@@ -1324,6 +1343,44 @@ export const providerSettlements = pgTable(
     index("provider_settlements_provider_idx").on(
       table.providerType,
       table.providerName,
+    ),
+  ],
+);
+
+/**
+ * provider_settlement_payments — دفعات التحويل الواصلة إلى البنك.
+ *
+ * التحويلات ليست يومية ولا دفعة واحدة: تصل على دفعات طوال الشهر وبعده،
+ * فكل دفعة صفٌّ مستقل بتاريخها ومرجعها. والمستلم في التسوية = مجموع دفعاتها،
+ * فلا يُكتب رقم مجمّع بيد أحد ولا تضيع دفعة ولا تُحسب مرتين.
+ *
+ * جدول **إضافة** لا تعديل: لم يُمسّ أي عمود قائم ولا أي صف محفوظ، والتسويات
+ * القديمة تبقى كما سُجِّلت (مستلمها المكتوب يبقى أساساً حتى تُضاف أول دفعة).
+ */
+export const providerSettlementPayments = pgTable(
+  "provider_settlement_payments",
+  {
+    id: serial().primaryKey(),
+    settlementId: integer("settlement_id")
+      .notNull()
+      .references(() => providerSettlements.id, { onDelete: "cascade" }),
+    /** تاريخ وصول الدفعة إلى البنك */
+    paymentDate: date("payment_date").notNull(),
+    amount: money("amount"),
+    /** رقم الحوالة أو مرجع كشف الجهة */
+    reference: text().notNull().default(""),
+    notes: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("provider_settlement_payments_settlement_idx").on(
+      table.settlementId,
+      table.paymentDate,
     ),
   ],
 );
