@@ -206,6 +206,168 @@ export function settlementFigures(input: SettlementInput): SettlementFigures {
   };
 }
 
+/* ── العقد والمتوقع والمخصوم الفعلي وترحيل غير المحوّل ───────────── */
+
+/**
+ * مجموع دفعات التحويل الواصلة إلى البنك.
+ *
+ * الحوالة لا تصل مرة واحدة ولا في موعد ثابت، فتُسجَّل كل دفعة بتاريخها
+ * ومرجعها ويكون «المستلم» مجموعها لا رقماً يكتبه أحد بيده — فلا تضيع دفعة
+ * ولا تُحسب مرتين، وتبقى كل دفعة مرئية للمراجعة.
+ */
+export function paymentsTotal(
+  rows: Array<{ amount?: number | null }>,
+): number {
+  return round2(
+    rows.reduce((total, row) => total + (Number(row.amount) || 0), 0),
+  );
+}
+
+/**
+ * الأساس المستحق للتسوية = مبيعات الشهر المجمّعة + المرحّل من الشهر السابق.
+ *
+ * ما لم يُحوَّل في شهرٍ لا يُلغى ولا يُنسى: يُرحَّل إلى الشهر الجديد فيدخل
+ * أساس تسويته، وبهذا يُسوّى المبلغ متى وصل ولو تأخّر شهراً أو أكثر.
+ */
+export function settlementBase(
+  monthlySales: number,
+  carriedInAmount: number,
+): number {
+  return round2((Number(monthlySales) || 0) + (Number(carriedInAmount) || 0));
+}
+
+/** المبلغ المتوقع خصمه بحسب العقد = الأساس × نسبة العقد ÷ 100. */
+export function expectedDeduction(
+  baseAmount: number,
+  contractRate: number,
+): number {
+  const rate = Number(contractRate) || 0;
+  if (rate <= 0) return 0;
+  return round2(((Number(baseAmount) || 0) * rate) / 100);
+}
+
+/**
+ * الفرق = المخصوم الفعلي − المتوقع.
+ * موجب = الجهة خصمت أكثر من نسبة العقد (مطالبة)، وسالب = خصمت أقل.
+ */
+export function deductionVariance(
+  actualDeducted: number,
+  expectedAmount: number,
+): number {
+  return round2((Number(actualDeducted) || 0) - (Number(expectedAmount) || 0));
+}
+
+/**
+ * المرحّل إلى الشهر التالي = الأساس − المحوّل − المخصوم الفعلي.
+ *
+ * أي أن نقص الحوالة يُفسَّر جزءين لا جزءاً واحداً: ما خُصم عمولةً (معروف من
+ * كشف الجهة) وما لم يُحوَّل بعد. والثاني هو ما يُرحَّل — ولا يكون سالباً،
+ * فوصول أكثر من المستحق لا يُنشئ ترحيلاً بالسالب.
+ */
+export function carryOverAmount(
+  baseAmount: number,
+  receivedAmount: number,
+  actualDeducted: number,
+): number {
+  const remaining =
+    (Number(baseAmount) || 0) -
+    (Number(receivedAmount) || 0) -
+    (Number(actualDeducted) || 0);
+  return remaining <= 0 ? 0 : round2(remaining);
+}
+
+/** يقصّ نسبة العقد داخل المدى المعقول 0..100. */
+export function normalizeRate(value: unknown): number {
+  const rate = Number(value);
+  if (!Number.isFinite(rate) || rate <= 0) return 0;
+  return rate > 100 ? 100 : round2(rate);
+}
+
+export interface MonthlySettlementInput {
+  /** مبيعات الجهة مجمّعة على الشهر كله من التقفيلات اليومية */
+  monthlySales: number;
+  /** المرحّل من الشهر السابق: ما لم يُحوَّل هناك */
+  carriedInAmount?: number | null;
+  /** مجموع دفعات التحويل الواصلة فعلاً */
+  receivedAmount: number;
+  /**
+   * المخصوم الفعلي كما في كشف الجهة. إن لم يُدخل فكل نقص الحوالة يُعدّ
+   * خصماً (وهو سلوك النظام قبل هذه الإضافة تماماً) ولا يُرحَّل شيء.
+   */
+  actualDeducted?: number | null;
+  /** نسبة العقد (%) — منها يُحسب المتوقع ليُقارن بالفعلي */
+  contractRate?: number | null;
+  vatRate?: number | null;
+  vatIncluded?: boolean | null;
+}
+
+export interface MonthlySettlementFigures extends SettlementFigures {
+  monthlySales: number;
+  carriedInAmount: number;
+  /** الأساس المستحق = مبيعات الشهر + المرحّل من السابق */
+  settlementBase: number;
+  contractRate: number;
+  expectedAmount: number;
+  actualDeducted: number;
+  varianceAmount: number;
+  carriedOutAmount: number;
+}
+
+/**
+ * أرقام التسوية الشهرية كاملة: الأساس، المحوّل، المتوقع بحسب العقد،
+ * المخصوم الفعلي، الفرق بينهما، والمرحّل إلى الشهر الجديد.
+ *
+ * العمولة تبقى بمعناها نفسه (ما خُصم من المستحق) والنسبة = العمولة ÷ الأساس
+ * × 100. ولذلك تُحسب هنا عبر `settlementFigures` بعد تحييد المرحّل: نمرّر
+ * «المستلم» على أنه الأساس − المخصوم الفعلي، فتخرج العمولة = المخصوم الفعلي
+ * بالضبط وتُحسب ضريبتها منها — ثم نُعيد المستلم الحقيقي في النتيجة.
+ *
+ * وإذا لم يُدخل المحاسب مخصوماً فعلياً فالنتيجة مطابقة للسلوك القديم حرفياً:
+ * العمولة = الأساس − المستلم، والمرحّل صفر.
+ */
+export function monthlySettlementFigures(
+  input: MonthlySettlementInput,
+): MonthlySettlementFigures {
+  const monthlySales = round2(Number(input.monthlySales) || 0);
+  const carriedInAmount = round2(Number(input.carriedInAmount) || 0);
+  const base = settlementBase(monthlySales, carriedInAmount);
+  const receivedAmount = round2(Number(input.receivedAmount) || 0);
+
+  const shortfall = round2(base - receivedAmount);
+  const rawActual = Number(input.actualDeducted);
+  const hasActual =
+    input.actualDeducted !== undefined &&
+    input.actualDeducted !== null &&
+    Number.isFinite(rawActual);
+  const actualDeducted = hasActual ? round2(Math.max(0, rawActual)) : shortfall;
+
+  const contractRate = normalizeRate(input.contractRate);
+  const expectedAmount = expectedDeduction(base, contractRate);
+  const varianceAmount =
+    contractRate > 0 ? deductionVariance(actualDeducted, expectedAmount) : 0;
+  const carriedOutAmount = carryOverAmount(base, receivedAmount, actualDeducted);
+
+  const core = settlementFigures({
+    salesAmount: base,
+    receivedAmount: round2(base - actualDeducted),
+    vatRate: input.vatRate,
+    vatIncluded: input.vatIncluded,
+  });
+
+  return {
+    ...core,
+    // المستلم الحقيقي لا المُحيَّد الذي استُخدم لاستخراج العمولة
+    receivedAmount,
+    monthlySales,
+    carriedInAmount,
+    settlementBase: base,
+    contractRate,
+    expectedAmount,
+    actualDeducted,
+    varianceAmount,
+    carriedOutAmount,
+  };
+}
 /* ── الرصيد الشهري وإقفال الشهر ─────────────────────────────────── */
 
 export interface MonthlyTotals {
