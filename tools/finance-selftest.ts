@@ -10,6 +10,9 @@
 
 import assert from "node:assert/strict";
 import {
+  aggregateMonthlySales,
+  commissionOf,
+  commissionRateOf,
   decisionOutcome,
   invoiceTotal,
   monthBounds,
@@ -17,6 +20,7 @@ import {
   parseMonthKey,
   remainingCash,
   settlementFigures,
+  unsettledSales,
 } from "../server/finance.js";
 import {
   MODULE_DELETE_GRADE,
@@ -254,6 +258,173 @@ check("درجات بند التسويات: التأكيد في الدرجة ال
   assert.equal(level3.has(PERMISSIONS.settlementsConfirm), false);
   assert.ok(level4.has(PERMISSIONS.settlementsConfirm));
   return "من يعدّل لا يؤكّد السداد";
+});
+
+/* ── 6) مصاريف مكتوبة داخل صفحة التقفيل ───────────────────────── */
+
+section("٦) المصاريف داخل صفحة تقفيل الكاشير (سطر بحقلين: بيان ومبلغ)");
+
+/** أسطر المصروف كما تُكتب في الصفحة: البيان والمبلغ لا غير. */
+const closingExpenseLines = [
+  { label: "غاز", amount: 90 },
+  { label: "دجاج", amount: 282 },
+  { label: "لبن", amount: 43.5 },
+  { label: "خضار", amount: 27.5 },
+];
+
+const closingExpenses = aggregateMonthlySales(closingExpenseLines);
+
+check("مصروفات التقفيلة = مجموع أسطرها المكتوبة في الصفحة نفسها", () => {
+  assert.equal(closingExpenses, 443);
+  return "90 + 282 + 43.5 + 27.5 = 443";
+});
+
+check("كل مصروف يُخصم تلقائياً من نقدي التقفيلة", () => {
+  assert.equal(remainingCash(4200, closingExpenses), 3757);
+  return "4200 − 443 = 3757";
+});
+
+check("سطر بلا مبلغ لا يغيّر شيئاً، وحذف سطر يعيد المبلغ فوراً", () => {
+  const withEmpty = aggregateMonthlySales([
+    ...closingExpenseLines,
+    { label: "بلا مبلغ", amount: 0 },
+  ]);
+  assert.equal(withEmpty, 443);
+  const afterDelete = aggregateMonthlySales(
+    closingExpenseLines.filter((line) => line.label !== "دجاج"),
+  );
+  assert.equal(afterDelete, 161);
+  assert.equal(remainingCash(4200, afterDelete), 4039);
+  return "بعد حذف الدجاج: 161 والمتبقي 4039";
+});
+
+/* ── 7) تسوية شبكة على المجمَّع الشهري ────────────────────────── */
+
+section("٧) تسوية شبكة (مدى) على المجمَّع الشهري لا على يوم واحد");
+
+/** مبيعات مدى كما تجمّعت من تقفيلات الشهر يوماً بيوم. */
+const madaDays = [
+  { amount: 4000 },
+  { amount: 3500 },
+  { amount: 1600 },
+  { amount: 900 },
+];
+const madaMonth = aggregateMonthlySales(madaDays);
+const madaSettlement = settlementFigures({
+  salesAmount: madaMonth,
+  receivedAmount: 9750,
+  vatRate: 15,
+  vatIncluded: true,
+});
+
+check("المبالغ تتجمّع طوال الشهر من التقفيلات اليومية", () => {
+  assert.equal(madaMonth, 10000);
+  return "4000 + 3500 + 1600 + 900 = 10000";
+});
+
+check("العمولة = المبيعات المجمّعة − المستلم في البنك", () => {
+  assert.equal(commissionOf(madaMonth, 9750), 250);
+  assert.equal(madaSettlement.commissionAmount, 250);
+  return "10000 − 9750 = 250";
+});
+
+check("النسبة = العمولة ÷ المبيعات × 100 على المجمَّع الشهري", () => {
+  assert.equal(commissionRateOf(250, madaMonth), 2.5);
+  assert.equal(madaSettlement.commissionRate, 2.5);
+  return "250 ÷ 10000 × 100 = 2.5%";
+});
+
+check("التسوية اليومية تُخرج نسبة مضلِّلة، والشهرية هي الصحيحة", () => {
+  // حوالة واحدة وصلت في يوم واحد لو نُسبت إلى مبيعات ذلك اليوم وحده
+  const daily = settlementFigures({ salesAmount: 4000, receivedAmount: 3750 });
+  assert.equal(daily.commissionRate, 6.25);
+  assert.notEqual(daily.commissionRate, madaSettlement.commissionRate);
+  return "6.25% ليوم واحد مقابل 2.5% للشهر المجمَّع";
+});
+
+check("ما لم يدخل تسويةً بعد = المجمَّع − ما سُوّي", () => {
+  assert.equal(unsettledSales(madaMonth, 10000), 0);
+  assert.equal(unsettledSales(madaMonth, 6000), 4000);
+  return "بقي 4000 بلا تسوية";
+});
+
+/* ── 8) تسوية تطبيق توصيل في قسم مستقل ────────────────────────── */
+
+section("٨) تسوية تطبيق توصيل (جاهز) — قسم مستقل بتجميعه الخاص");
+
+const jahezDays = [{ amount: 2000 }, { amount: 1800 }, { amount: 1200 }];
+const jahezMonth = aggregateMonthlySales(jahezDays);
+const jahezSettlement = settlementFigures({
+  salesAmount: jahezMonth,
+  receivedAmount: 4250,
+  vatRate: 15,
+  vatIncluded: true,
+});
+
+check("تجميع التطبيق مستقل عن تجميع الشبكات", () => {
+  assert.equal(jahezMonth, 5000);
+  assert.notEqual(jahezMonth, madaMonth);
+  return "الشبكة 10000 والتطبيق 5000 لا يختلطان";
+});
+
+check("عمولة التطبيق ونسبتها من مجمَّعه هو", () => {
+  assert.equal(jahezSettlement.commissionAmount, 750);
+  assert.equal(jahezSettlement.commissionRate, 15);
+  return "5000 − 4250 = 750 بنسبة 15%";
+});
+
+check("ضريبة العمولة تُستخرج من داخلها في التطبيق كما في الشبكة", () => {
+  assert.equal(jahezSettlement.vatAmount, 97.83);
+  assert.equal(jahezSettlement.commissionBeforeVat, 652.17);
+  return "750 = 652.17 + 97.83";
+});
+
+check("خلط النوعين في تسوية واحدة يُخرج نسبة ثالثة مخالفة للاثنتين", () => {
+  const mixed = settlementFigures({
+    salesAmount: madaMonth + jahezMonth,
+    receivedAmount: 9750 + 4250,
+  });
+  assert.equal(mixed.commissionRate, 6.67);
+  assert.notEqual(mixed.commissionRate, madaSettlement.commissionRate);
+  assert.notEqual(mixed.commissionRate, jahezSettlement.commissionRate);
+  return "6.67% مخلوطة مقابل 2.5% و15% مفصولتين";
+});
+
+/* ── 9) بندا المتبقي والرصيد الشهري ───────────────────────────── */
+
+section("٩) «المتبقي النقدي» و«الرصيد الشهري» بندان مستقلان");
+
+check("لكل بند خانة صح واحدة بلا سلّم درجات ولا حذف", () => {
+  for (const key of ["cash_remaining", "cash_monthly_balance"]) {
+    const module = MODULE_INDEX.get(key);
+    assert.ok(module, "البند مفقود: " + key);
+    assert.equal(module.levels.length, 1);
+    assert.equal(isDeleteAvailable(key), false);
+  }
+  return "المتبقي النقدي / الرصيد النقدي الشهري";
+});
+
+check("منح أحدهما لا يمنح الآخر ولا يمنح شيئاً من بنود الإقفال", () => {
+  const remainingCodes = new Set(codesForModuleLevel("cash_remaining", 1));
+  const balanceCodes = new Set(codesForModuleLevel("cash_monthly_balance", 1));
+
+  assert.ok(remainingCodes.has(PERMISSIONS.cashRemainingView));
+  assert.equal(remainingCodes.has(PERMISSIONS.cashMonthlyBalanceView), false);
+  assert.equal(remainingCodes.has(PERMISSIONS.monthlySummaryView), false);
+
+  assert.ok(balanceCodes.has(PERMISSIONS.cashMonthlyBalanceView));
+  assert.equal(balanceCodes.has(PERMISSIONS.cashRemainingView), false);
+  assert.equal(balanceCodes.has(PERMISSIONS.monthlyCarryForward), false);
+  return "كل خانة ببندها";
+});
+
+check("من لا بند له لا يرى المتبقي ولا الرصيد الشهري", () => {
+  const none = new Set([
+    ...codesForModuleLevel("cash_remaining", 0),
+    ...codesForModuleLevel("cash_monthly_balance", 0),
+  ]);
+  assert.equal(none.size, 0);
+  return "صفر رمز";
 });
 
 /* ── التقرير ──────────────────────────────────────────────────── */
