@@ -85,6 +85,57 @@ export function remainingCash(cashSales: number, expenses: number): number {
   return round2((Number(cashSales) || 0) - (Number(expenses) || 0));
 }
 
+/* ── التجميع الشهري للشبكات وتطبيقات التوصيل ────────────────────── */
+
+/**
+ * مبيعات جهة واحدة مجمّعة من بنود التقفيلات اليومية.
+ *
+ * التسوية **شهرية لا يومية**: التحويلات لا تصل يوماً بيوم، فتُجمَّع مبيعات
+ * الجهة طوال الشهر ثم تُسوّى مرة واحدة على المجموع عند وصول الحوالة إلى
+ * البنك — وبهذا وحده تخرج نسبة العمولة صحيحة، لأن مقام النسبة يصير مبيعات
+ * الشهر كاملة لا مبيعات يوم واحد.
+ */
+export function aggregateMonthlySales(
+  rows: Array<{ amount?: number | null }>,
+): number {
+  return round2(
+    rows.reduce((total, row) => total + (Number(row.amount) || 0), 0),
+  );
+}
+
+/** ما لم يدخل تسويةً بعد من مبيعات الشهر لجهة: المجمّع − ما سُوّي. */
+export function unsettledSales(
+  monthlySales: number,
+  settledSales: number,
+): number {
+  return round2((Number(monthlySales) || 0) - (Number(settledSales) || 0));
+}
+
+/** مفتاح شهر تاريخٍ يومي: YYYY-MM-DD ← YYYY-MM. */
+export function monthKeyOfDate(isoDate: string): string {
+  return String(isoDate).slice(0, 7);
+}
+
+/* ── معادلتا العمولة ────────────────────────────────────────────── */
+
+/** العمولة = المبيعات − المستلم. */
+export function commissionOf(
+  salesAmount: number,
+  receivedAmount: number,
+): number {
+  return round2((Number(salesAmount) || 0) - (Number(receivedAmount) || 0));
+}
+
+/** النسبة = العمولة ÷ المبيعات × 100 (صفر إن لم تكن هناك مبيعات). */
+export function commissionRateOf(
+  commissionAmount: number,
+  salesAmount: number,
+): number {
+  const sales = Number(salesAmount) || 0;
+  if (sales <= 0) return 0;
+  return round2(((Number(commissionAmount) || 0) / sales) * 100);
+}
+
 /* ── تسوية الشبكات وتطبيقات التوصيل ─────────────────────────────── */
 
 export interface SettlementInput {
@@ -123,9 +174,9 @@ export interface SettlementFigures {
 export function settlementFigures(input: SettlementInput): SettlementFigures {
   const salesAmount = round2(Number(input.salesAmount) || 0);
   const receivedAmount = round2(Number(input.receivedAmount) || 0);
-  const commissionAmount = round2(salesAmount - receivedAmount);
-  const commissionRate =
-    salesAmount > 0 ? round2((commissionAmount / salesAmount) * 100) : 0;
+  // العمولة = المبيعات − المستلم، والنسبة = العمولة ÷ المبيعات × 100
+  const commissionAmount = commissionOf(salesAmount, receivedAmount);
+  const commissionRate = commissionRateOf(commissionAmount, salesAmount);
 
   const vatRate = Math.max(0, Number(input.vatRate) || 0);
   const vatIncluded = input.vatIncluded !== false;
