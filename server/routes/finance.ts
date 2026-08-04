@@ -48,6 +48,8 @@ import {
   MONTH_DECISIONS,
   MONTH_STATUS_LABELS,
   PROVIDER_TYPES,
+  aggregateMonthlySales,
+  commissionRateOf,
   decisionOutcome,
   invoiceTotal,
   isValidPeriod,
@@ -59,7 +61,9 @@ import {
   previousMonth,
   remainingCash,
   settlementFigures,
+  unsettledSales,
   type MonthDecision,
+  type ProviderType,
 } from "../finance.js";
 import { monthLockFor, monthLockMessage } from "../monthLock.js";
 import {
@@ -108,6 +112,117 @@ async function resolveBranchId(
 /** مجموع حقل مالي في مجموعة صفوف — التجميع في الذاكرة لصغر المدى. */
 function sumBy<T>(rows: T[], pick: (row: T) => number | null): number {
   return round2(rows.reduce((total, row) => total + (Number(pick(row)) || 0), 0));
+}
+
+/** فودكس تُرصد في عمود مستقل في التقفيلة لا كبند، فتُسمّى هنا مرة واحدة. */
+const FOODICS_LABEL = "شبكة فودكس (Foodics)";
+
+/**
+ * أسطر المصروف المكتوبة داخل صفحة تقفيل الكاشير.
+ *
+ * بعد نقل المصاريف إلى صفحة التقفيل صار هذا هو مصدرها الأول، ويبقى جدول
+ * `cash_expenses` مصدراً ثانياً لما سُجّل قبل النقل فقط — فلا تضيع فاتورة
+ * قديمة ولا تُخصم فاتورة مرتين، لأن المصدرين لا يشتركان في صفٍّ واحد.
+ */
+async function closingExpenseLines(
+  branchId: number,
+  from: string,
+  to: string,
+): Promise<
+  Array<{ businessDate: string; shift: string; label: string; amount: number }>
+> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      businessDate: cashierClosings.businessDate,
+      shift: cashierClosings.shift,
+      label: cashierClosingLines.label,
+      amount: cashierClosingLines.amount,
+    })
+    .from(cashierClosingLines)
+    .innerJoin(
+      cashierClosings,
+      eq(cashierClosingLines.closingId, cashierClosings.id),
+    )
+    .where(
+      and(
+        eq(cashierClosings.branchId, branchId),
+        eq(cashierClosingLines.category, "expense"),
+        gte(cashierClosings.businessDate, from),
+        lte(cashierClosings.businessDate, to),
+      ),
+    );
+
+  return rows.map((row) => ({
+    businessDate: row.businessDate,
+    shift: row.shift,
+    label: row.label,
+    amount: Number(row.amount) || 0,
+  }));
+}
+
+/**
+ * مبيعات كل جهة **مجمّعة على الشهر كله** من بنود التقفيلات اليومية.
+ *
+ * التسوية شهرية لا يومية: التحويلات لا تصل يوماً بيوم، فتتجمّع المبالغ طوال
+ * الشهر ثم تُسوّى الجهة مرة واحدة على المجمَّع عند وصول الحوالة إلى البنك —
+ * وبهذا يصير مقام النسبة مبيعات الشهر كاملة فتخرج النسبة صحيحة.
+ *
+ * والشبكات مفصولة عن تطبيقات التوصيل: كل نوع يُستدعى وحده بتجميعه الخاص.
+ */
+async function monthlyProviderSales(
+  branchId: number,
+  from: string,
+  to: string,
+  providerType: ProviderType,
+): Promise<Map<string, number>> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      label: cashierClosingLines.label,
+      amount: cashierClosingLines.amount,
+    })
+    .from(cashierClosingLines)
+    .innerJoin(
+      cashierClosings,
+      eq(cashierClosingLines.closingId, cashierClosings.id),
+    )
+    .where(
+      and(
+        eq(cashierClosings.branchId, branchId),
+        eq(cashierClosingLines.category, providerType),
+        gte(cashierClosings.businessDate, from),
+        lte(cashierClosings.businessDate, to),
+      ),
+    );
+
+  const buckets = new Map<string, Array<{ amount: number }>>();
+  for (const row of rows) {
+    const label = (row.label ?? "").trim();
+    if (!label) continue;
+    const list = buckets.get(label) ?? [];
+    list.push({ amount: Number(row.amount) || 0 });
+    buckets.set(label, list);
+  }
+
+  if (providerType === "network") {
+    const foodicsRows = await db
+      .select({ foodicsSales: cashierClosings.foodicsSales })
+      .from(cashierClosings)
+      .where(
+        and(
+          eq(cashierClosings.branchId, branchId),
+          gte(cashierClosings.businessDate, from),
+          lte(cashierClosings.businessDate, to),
+        ),
+      );
+    const foodicsTotal = sumBy(foodicsRows, (row) => row.foodicsSales);
+    if (foodicsTotal !== 0) buckets.set(FOODICS_LABEL, [{ amount: foodicsTotal }]);
+  }
+
+  const totals = new Map<string, number>();
+  for (const [label, list] of buckets) totals.set(label, aggregateMonthlySales(list));
+  return totals;
 }
 
 /** يتحقّق أن مبلغاً مُدخلاً ضمن الحدود المعقولة. */
@@ -570,8 +685,29 @@ financeRouter.get(
             )
             .orderBy(asc(cashExpenses.id));
 
+    // أسطر المصروف المكتوبة في صفحة التقفيل — المصدر الأول بعد النقل
+    const lineExpenses =
+      branchId === null
+        ? []
+        : await closingExpenseLines(branchId, businessDate, businessDate);
+
+    const expenseEntries = [
+      ...lineExpenses.map((row) => ({
+        shift: row.shift,
+        description: row.label,
+        amount: row.amount,
+        source: "closing" as const,
+      })),
+      ...expenseRows.map((row) => ({
+        shift: row.shift,
+        description: row.description,
+        amount: Number(row.amount) || 0,
+        source: "register" as const,
+      })),
+    ];
+
     const cashSales = sumBy(closingRows, (row) => row.cashSales);
-    const expensesTotal = sumBy(expenseRows, (row) => row.amount);
+    const expensesTotal = sumBy(expenseEntries, (row) => row.amount);
 
     const byShift = SHIFTS.map((shift) => {
       const shiftCash = sumBy(
@@ -579,7 +715,7 @@ financeRouter.get(
         (row) => row.cashSales,
       );
       const shiftExpenses = sumBy(
-        expenseRows.filter((row) => row.shift === shift),
+        expenseEntries.filter((row) => row.shift === shift),
         (row) => row.amount,
       );
       return {
@@ -602,7 +738,7 @@ financeRouter.get(
       remainingCash: remainingCash(cashSales, expensesTotal),
       byShift,
       closings: closingRows,
-      expenses: expenseRows,
+      expenses: expenseEntries,
       locked: lock !== null,
       lockNote: lock === null ? "" : monthLockMessage(lock),
     });
@@ -697,7 +833,9 @@ async function monthlySummaryFor(
       ),
     );
 
-  const expenseRows = await db
+  // مصاريف الشهر من مصدرين لا ثالث لهما: أسطر التقفيلات، وما بقي من السجل
+  // المنفصل القديم. لا صفَّ مشترك بينهما فلا يُخصم مبلغ مرتين.
+  const legacyExpenseRows = await db
     .select({
       businessDate: cashExpenses.businessDate,
       kind: cashExpenses.kind,
@@ -711,6 +849,16 @@ async function monthlySummaryFor(
         lte(cashExpenses.businessDate, to),
       ),
     );
+
+  const lineExpenseRows = (await closingExpenseLines(branchId, from, to)).map(
+    (row) => ({
+      businessDate: row.businessDate,
+      kind: "expense",
+      amount: row.amount,
+    }),
+  );
+
+  const expenseRows = [...lineExpenseRows, ...legacyExpenseRows];
 
   const settlementRows = await db
     .select({
@@ -791,6 +939,7 @@ financeRouter.get(
   "/finance/monthly-balance",
   requireAuth,
   requireAnyPermission(
+    PERMISSIONS.cashMonthlyBalanceView,
     PERMISSIONS.monthlySummaryView,
     PERMISSIONS.cashExpensesRead,
   ),
@@ -964,6 +1113,316 @@ financeRouter.get(
         network: DEFAULT_NETWORK_LINES,
         delivery_app: DEFAULT_DELIVERY_APPS,
       },
+    });
+  },
+);
+
+/**
+ * التجميع الشهري لجهات نوع واحد: الشبكات وحدها أو تطبيقات التوصيل وحدها.
+ *
+ * قسمان مستقلان في الشاشة، وكل قسم ينادي هذا المسار بنوعه فيحصل على مبيعات
+ * كل جهة مجمّعة على الشهر كله من التقفيلات اليومية، مع تسوية الشهر إن وُجدت.
+ */
+financeRouter.get(
+  "/finance/settlements/monthly",
+  requireAuth,
+  requirePermission(PERMISSIONS.settlementsRead),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const branchId = await resolveBranchId(req, req.query.branchId);
+    if (branchId === null) {
+      res.status(400).json({ ok: false, error: "حدّد الفرع أولاً" });
+      return;
+    }
+
+    const providerType =
+      asEnum(req.query.providerType, PROVIDER_TYPES) ?? "network";
+    const timezone = await branchTimezone(branchId);
+    const today = isoDateInZone(new Date(), timezone);
+    const period = parseMonthKey(req.query.month) ?? {
+      year: Number.parseInt(today.slice(0, 4), 10),
+      month: Number.parseInt(today.slice(5, 7), 10),
+    };
+
+    if (!isValidPeriod(period.year, period.month)) {
+      res.status(400).json({ ok: false, error: "الشهر المطلوب غير صالح" });
+      return;
+    }
+
+    const { from, to } = monthBounds(period.year, period.month);
+    const monthKey = monthKeyOf(period.year, period.month);
+    const sales = await monthlyProviderSales(branchId, from, to, providerType);
+
+    // تسوية واحدة لكل جهة في الشهر — مفتاحها (الفرع + النوع + الاسم + المدة)
+    const settlementRows = await db
+      .select()
+      .from(providerSettlements)
+      .where(
+        and(
+          eq(providerSettlements.branchId, branchId),
+          eq(providerSettlements.providerType, providerType),
+          gte(providerSettlements.periodFrom, from),
+          lte(providerSettlements.periodTo, to),
+        ),
+      )
+      .orderBy(desc(providerSettlements.id));
+
+    const names = new Set<string>([
+      ...sales.keys(),
+      ...settlementRows.map((row) => row.providerName),
+    ]);
+
+    const providers = [...names].map((providerName) => {
+      const monthlySales = round2(sales.get(providerName) ?? 0);
+      const own = settlementRows.filter(
+        (row) => row.providerName === providerName,
+      );
+      const current = own[0] ?? null;
+      const confirmed = current?.status === "confirmed";
+
+      return {
+        providerName,
+        providerType,
+        /** مبيعات الشهر كاملة كما تجمّعت من التقفيلات اليومية */
+        monthlySales,
+        settledSales: sumBy(own, (row) => row.salesAmount),
+        unsettledSales: unsettledSales(
+          monthlySales,
+          sumBy(own, (row) => row.salesAmount),
+        ),
+        settlementId: current?.id ?? null,
+        status: current?.status ?? "open",
+        receivedAmount: current ? round2(Number(current.receivedAmount) || 0) : 0,
+        commissionAmount: confirmed
+          ? round2(Number(current.commissionAmount) || 0)
+          : 0,
+        commissionRate: confirmed ? Number(current.commissionRate) || 0 : 0,
+        vatRate: current ? Number(current.vatRate) || 0 : 0,
+        vatAmount: confirmed ? round2(Number(current.vatAmount) || 0) : 0,
+        reference: current?.reference ?? "",
+        confirmedByName: current?.confirmedByName ?? "",
+        confirmedAt: current?.confirmedAt ?? null,
+      };
+    });
+
+    providers.sort((a, b) => b.monthlySales - a.monthlySales);
+
+    const confirmedRows = providers.filter((item) => item.status === "confirmed");
+    const confirmedSales = sumBy(confirmedRows, (item) => item.monthlySales);
+    const confirmedCommission = sumBy(
+      confirmedRows,
+      (item) => item.commissionAmount,
+    );
+
+    res.json({
+      ok: true,
+      branchId,
+      providerType,
+      month: monthKey,
+      from,
+      to,
+      providers,
+      totals: {
+        monthlySales: sumBy(providers, (item) => item.monthlySales),
+        receivedAmount: sumBy(confirmedRows, (item) => item.receivedAmount),
+        commissionAmount: confirmedCommission,
+        /** النسبة على المجمَّع المؤكَّد: العمولة ÷ المبيعات × 100 */
+        commissionRate: commissionRateOf(confirmedCommission, confirmedSales),
+        vatAmount: sumBy(confirmedRows, (item) => item.vatAmount),
+        pending: providers.filter((item) => item.status === "pending").length,
+        confirmed: confirmedRows.length,
+      },
+      defaults:
+        providerType === "network" ? DEFAULT_NETWORK_LINES : DEFAULT_DELIVERY_APPS,
+      today,
+    });
+  },
+);
+
+/**
+ * تسجيل أو تحديث تسوية **شهرية** لجهة واحدة.
+ *
+ * المبيعات لا تأتي من المتصفح إطلاقاً: الخادم يجمعها من تقفيلات الشهر نفسه،
+ * فيستحيل أن تختلف عن واقع التقفيلات أو أن تُدخل يدوياً. وعند وصول الحوالة
+ * إلى البنك يُدخل المحاسب المستلم مع `confirm` فيحسب الخادم:
+ * العمولة = المبيعات المجمّعة − المستلم، والنسبة = العمولة ÷ المبيعات × 100.
+ */
+financeRouter.post(
+  "/finance/settlements/monthly",
+  requireAuth,
+  requirePermission(PERMISSIONS.settlementsManage),
+  requireModuleLevel("settlements", 2),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+
+    const branchId = await resolveBranchId(req, body.branchId);
+    if (branchId === null) {
+      res.status(400).json({ ok: false, error: "حدّد الفرع أولاً" });
+      return;
+    }
+
+    const providerType = asEnum(body.providerType, PROVIDER_TYPES) ?? "network";
+    const providerName = asString(body.providerName, 120);
+    if (!providerName) {
+      res.status(400).json({ ok: false, error: "اسم الجهة مطلوب" });
+      return;
+    }
+
+    const period = parseMonthKey(body.month);
+    if (!period) {
+      res.status(400).json({ ok: false, error: "حدّد الشهر بصيغة YYYY-MM" });
+      return;
+    }
+
+    const { from, to } = monthBounds(period.year, period.month);
+    const monthKey = monthKeyOf(period.year, period.month);
+    if (await blockedByMonthLock(branchId, from, res)) return;
+
+    const sales = await monthlyProviderSales(branchId, from, to, providerType);
+    const salesAmount = round2(sales.get(providerName) ?? 0);
+    if (salesAmount <= 0) {
+      res.status(400).json({
+        ok: false,
+        error:
+          "لا توجد مبيعات مجمّعة لـ" +
+          providerName +
+          " في شهر " +
+          monthKey +
+          " — التسوية تقع على المجمَّع الشهري من التقفيلات.",
+      });
+      return;
+    }
+
+    const received = moneyOrError(body.receivedAmount);
+    if (typeof received === "string") {
+      res.status(400).json({ ok: false, error: received });
+      return;
+    }
+
+    const vatRateRaw = asNumber(body.vatRate);
+    const vatRate =
+      vatRateRaw === null || vatRateRaw < 0 || vatRateRaw > 100 ? 0 : vatRateRaw;
+    const vatIncluded =
+      body.vatIncluded === undefined ? true : body.vatIncluded !== false;
+
+    // التأكيد إجراء موافقة ببنده المستقل، فلا يكفي «تسجيل تسوية»
+    const confirm = body.confirm === true;
+    if (
+      confirm &&
+      !(await hasAnyPermission(req, [PERMISSIONS.settlementsConfirm]))
+    ) {
+      res
+        .status(403)
+        .json({ ok: false, error: "لا تملك صلاحية «تأكيد سداد التسوية»" });
+      return;
+    }
+
+    const figures = settlementFigures({
+      salesAmount,
+      receivedAmount: received,
+      vatRate,
+      vatIncluded,
+    });
+
+    const [existing] = await db
+      .select()
+      .from(providerSettlements)
+      .where(
+        and(
+          eq(providerSettlements.branchId, branchId),
+          eq(providerSettlements.providerType, providerType),
+          eq(providerSettlements.providerName, providerName),
+          eq(providerSettlements.periodFrom, from),
+          eq(providerSettlements.periodTo, to),
+        ),
+      )
+      .limit(1);
+
+    if (existing && existing.status === "confirmed") {
+      res.status(409).json({
+        ok: false,
+        error:
+          "تسوية " +
+          providerName +
+          " لشهر " +
+          monthKey +
+          " مؤكَّدة مسبقاً ولا تُعدَّل — احذفها بصلاحية الحذف إن لزم.",
+      });
+      return;
+    }
+
+    const now = new Date();
+    const payload = {
+      branchId,
+      providerType,
+      providerName,
+      periodFrom: from,
+      periodTo: to,
+      salesAmount: figures.salesAmount,
+      receivedAmount: figures.receivedAmount,
+      commissionAmount: figures.commissionAmount,
+      commissionRate: figures.commissionRate,
+      vatRate: figures.vatRate,
+      vatAmount: figures.vatAmount,
+      vatIncluded: figures.vatIncluded,
+      commissionBeforeVat: figures.commissionBeforeVat,
+      status: confirm ? "confirmed" : "pending",
+      reference: asString(body.reference, 120) ?? existing?.reference ?? "",
+      notes: asString(body.notes, 500) ?? existing?.notes ?? "",
+      updatedAt: now,
+      confirmedByEmployeeId: confirm ? actor.id : (existing?.confirmedByEmployeeId ?? null),
+      confirmedByName: confirm ? (actor.fullName ?? "") : (existing?.confirmedByName ?? ""),
+      confirmedAt: confirm ? now : (existing?.confirmedAt ?? null),
+    };
+
+    const [saved] = existing
+      ? await db
+          .update(providerSettlements)
+          .set(payload)
+          .where(eq(providerSettlements.id, existing.id))
+          .returning()
+      : await db
+          .insert(providerSettlements)
+          .values({ ...payload, createdByEmployeeId: actor.id })
+          .returning();
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: confirm ? "settlement.month.confirm" : "settlement.month.save",
+      entityType: "provider_settlements",
+      entityId: saved?.id ?? null,
+      before: existing ?? null,
+      after: saved,
+      reason:
+        providerName +
+        " — شهر " +
+        monthKey +
+        ": مبيعات " +
+        String(figures.salesAmount) +
+        "، مستلم " +
+        String(figures.receivedAmount) +
+        "، عمولة " +
+        String(figures.commissionAmount) +
+        " بنسبة " +
+        String(figures.commissionRate) +
+        "%",
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      settlement: saved,
+      figures,
+      month: monthKey,
+      message: confirm
+        ? "تم تأكيد التسوية الشهرية — العمولة " +
+          String(figures.commissionAmount) +
+          " بنسبة " +
+          String(figures.commissionRate) +
+          "%"
+        : "حُفظت التسوية الشهرية بانتظار وصول الحوالة",
     });
   },
 );
@@ -1851,6 +2310,8 @@ financeRouter.get(
     PERMISSIONS.cashExpensesRead,
     PERMISSIONS.settlementsRead,
     PERMISSIONS.monthlySummaryView,
+    PERMISSIONS.cashMonthlyBalanceView,
+    PERMISSIONS.cashRemainingView,
   ),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
@@ -1892,6 +2353,14 @@ financeRouter.get(
       },
       monthStatusLabels: MONTH_STATUS_LABELS,
       can: {
+        /** خانة «المتبقي النقدي في درج الكاشير» — بند مستقل في الصلاحيات */
+        viewRemaining: await hasAnyPermission(req, [
+          PERMISSIONS.cashRemainingView,
+        ]),
+        /** «الرصيد النقدي الشهري» داخل صفحة التقفيل — بند مستقل */
+        viewMonthlyBalance: await hasAnyPermission(req, [
+          PERMISSIONS.cashMonthlyBalanceView,
+        ]),
         readExpenses: await hasAnyPermission(req, [PERMISSIONS.cashExpensesRead]),
         writeExpenses: await hasAnyPermission(req, [PERMISSIONS.cashExpensesWrite]),
         readSettlements: await hasAnyPermission(req, [PERMISSIONS.settlementsRead]),
