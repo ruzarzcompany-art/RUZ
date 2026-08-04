@@ -79,6 +79,11 @@ const state = {
   lines: [],
   defaultNetworkLines: [],
   defaultDeliveryApps: [],
+  /**
+   * مصاريف السجل الموحّد المطبَّقة على التقفيل المعروض (يحسبها الخادم من
+   * `cash_expenses`)، ومنها يُعرض «المتبقي النقدي» في النموذج فوراً.
+   */
+  registerExpenses: 0,
   /** معرّف تقفيل اليوم المرفوع فعلاً — شرط تفعيل زر الطباعة. */
   todayClosingId: null,
 };
@@ -245,6 +250,7 @@ function fillForm(closing) {
         }))
       : defaultLines();
 
+  state.registerExpenses = Number(closing?.registerExpenses ?? state.registerExpenses ?? 0);
   state.editingId = closing?.id ?? null;
   renderAllLines();
   recomputeDerived();
@@ -268,6 +274,13 @@ function updatePreview() {
 
   el("cashier-diff-hint").textContent =
     difference < -0.009 ? "عجز في الدرج" : difference > 0.009 ? "زيادة في الدرج" : "مطابق";
+
+  // المتبقي النقدي = المبيعات النقدية − مصاريف اليوم/الوردية من السجل الموحّد
+  const remaining = Math.round((value("cashSales") - state.registerExpenses) * 100) / 100;
+  el("cashier-register-expenses").textContent = formatMoney(state.registerExpenses);
+  const remainingNode = el("cashier-remaining");
+  remainingNode.textContent = formatMoney(remaining);
+  remainingNode.classList.toggle("is-negative", remaining < -0.009);
 }
 
 /** زر طباعة تقفيل اليوم لا يعمل قبل رفع التقفيل فعلاً. */
@@ -408,6 +421,8 @@ function renderClosings() {
       formatMoney(closing.expectedCash),
       formatMoney(closing.countedCash),
       differenceCell(closing.difference),
+      formatMoney(closing.registerExpenses ?? 0),
+      differenceCell(closing.remainingCash ?? 0),
       statusChip(closing.status),
       actions,
     ]);
@@ -429,6 +444,8 @@ function renderSummary(summary) {
     ["شبكة foodics", formatMoney(summary.foodicsSales)],
     ["تطبيقات التواصل", formatMoney(summary.deliverySales)],
     ["صافي الفروقات", formatMoney(summary.difference)],
+    ["مصاريف السجل الموحّد", formatMoney(summary.registerExpenses)],
+    ["المتبقي النقدي", formatMoney(summary.remainingCash)],
   ];
 
   for (const [labelText, value] of items) {
@@ -570,6 +587,8 @@ export async function refreshCashierPanel() {
       el("cashier-today-note").textContent = `تاريخ العمل بتوقيت الفرع: ${today.businessDate}`;
       state.defaultNetworkLines = today.defaultNetworkLines ?? [];
       state.defaultDeliveryApps = today.defaultDeliveryApps ?? [];
+      // مصاريف السجل الموحّد لليوم — أساس «المتبقي النقدي» في المعاينة
+      state.registerExpenses = Number(today.cashPosition?.expenses ?? 0);
 
       const existing = today.closings?.[0];
       state.todayClosingId = existing?.id ?? null;
