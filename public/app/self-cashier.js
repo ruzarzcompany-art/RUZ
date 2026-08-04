@@ -53,6 +53,13 @@ const state = {
   lines: [],
   defaultNetworkLines: [],
   defaultDeliveryApps: [],
+  /**
+   * مصاريف السجل الموحّد: مصاريف اليوم كاملة، ومصاريف الوردية المعروضة.
+   * يحسبها الخادم من `cash_expenses` ويعيدها مع تقفيل اليوم، ومنها يظهر
+   * «المتبقي النقدي» في الشاشة (المبيعات النقدية − هذه المصاريف).
+   */
+  dayExpenses: 0,
+  registerExpenses: 0,
   /** تقفيلات اليوم المحمّلة من الخادم، مفتاحها الوردية. */
   byShift: new Map(),
 };
@@ -172,6 +179,13 @@ function updatePreview() {
 
   el("self-cash-diff-hint").textContent =
     difference < -0.009 ? "عجز في الدرج" : difference > 0.009 ? "زيادة في الدرج" : "مطابق";
+
+  // المتبقي النقدي = المبيعات النقدية − مصاريف اليوم/الوردية من السجل الموحّد
+  const remaining = Math.round((value("cashSales") - state.registerExpenses) * 100) / 100;
+  el("self-cash-register-expenses").textContent = formatMoney(state.registerExpenses);
+  const remainingNode = el("self-cash-remaining");
+  remainingNode.textContent = formatMoney(remaining);
+  remainingNode.classList.toggle("is-negative", remaining < -0.009);
 }
 
 /* ── تعبئة الشاشة من تقفيل محفوظ ───────────────────────────── */
@@ -187,6 +201,11 @@ function applyShift() {
   }
   el("self-cash-invoices").value = closing ? Number(closing.invoiceCount ?? 0) : 0;
   el("self-cash-notes").value = closing?.notes ?? "";
+
+  // مصاريف الوردية إن كان لها تقفيل مرفوع، وإلا مصاريف اليوم كلها
+  state.registerExpenses = closing
+    ? Number(closing.registerExpenses ?? 0)
+    : state.dayExpenses;
 
   state.lines = closing?.lines?.length
     ? closing.lines.map((line) => ({ ...line }))
@@ -226,6 +245,7 @@ export async function refreshSelfCashier() {
   state.businessDate = result.businessDate;
   state.defaultNetworkLines = result.defaultNetworkLines ?? [];
   state.defaultDeliveryApps = result.defaultDeliveryApps ?? [];
+  state.dayExpenses = Number(result.cashPosition?.expenses ?? 0);
   state.byShift = new Map((result.closings ?? []).map((closing) => [closing.shift, closing]));
 
   el("self-cash-date").value = result.businessDate;
