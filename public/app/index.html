@@ -474,8 +474,15 @@
             <input id="self-cash-refunds" type="number" step="any" min="0" value="0" />
           </label>
           <label class="field field--sm">
-            <span class="field__label">مصروفات نقدية</span>
-            <input id="self-cash-expenses" type="number" step="any" min="0" value="0" />
+            <span class="field__label">مصروفات نقدية (محسوبة من الأسطر)</span>
+            <input
+              id="self-cash-expenses"
+              type="number"
+              step="any"
+              min="0"
+              value="0"
+              readonly
+            />
           </label>
           <label class="field field--sm">
             <span class="field__label">النقد المعدود في الدرج</span>
@@ -532,6 +539,40 @@
             </p>
           </div>
 
+          <div class="field--wide">
+            <div class="card__head">
+              <h3 class="card__title card__title--xs">
+                المصاريف والمشتريات النقدية
+              </h3>
+              <button
+                id="self-cash-add-expense"
+                class="btn btn--ghost btn--xs"
+                type="button"
+              >
+                إضافة سطر مصروف
+              </button>
+            </div>
+            <div class="table-wrap">
+              <table class="table" id="self-cash-expense">
+                <thead>
+                  <tr>
+                    <th>البيان</th>
+                    <th>المبلغ</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <p id="self-cash-expense-empty" class="empty" hidden>
+              لا توجد مصاريف — أضف سطراً بالبيان والمبلغ فقط.
+            </p>
+            <p class="hint">
+              كل مصروف تكتبه هنا يُخصم تلقائياً من نقدي تقفيلتك، بحقلين فقط:
+              البيان والمبلغ.
+            </p>
+          </div>
+
           <label class="field field--sm field--wide">
             <span class="field__label">ملاحظات</span>
             <textarea id="self-cash-notes" rows="2"></textarea>
@@ -540,8 +581,14 @@
           <div class="row row--wrap">
             <span class="chip">النقد المتوقّع: <strong id="self-cash-expected">0.00</strong></span>
             <span class="chip">الفرق: <strong id="self-cash-difference">0.00</strong></span>
-            <span class="chip">مصاريف السجل الموحّد: <strong id="self-cash-register-expenses">0.00</strong></span>
-            <span class="chip">المتبقي النقدي: <strong id="self-cash-remaining">0.00</strong></span>
+            <span class="chip"
+              >مصاريف التقفيلة:
+              <strong id="self-cash-register-expenses">0.00</strong></span
+            >
+            <span class="chip" id="self-cash-remaining-chip" hidden
+              >المتبقي النقدي في درج الكاشير:
+              <strong id="self-cash-remaining">0.00</strong></span
+            >
             <span class="chip" id="self-cash-diff-hint">مطابق</span>
           </div>
 
