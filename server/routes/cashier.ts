@@ -4,6 +4,7 @@ import { getDb } from "../../db/index.js";
 import {
   branches,
   cashierClosingLines,
+  cashExpenses,
   cashierClosings,
   employees,
 } from "../../db/schema.js";
@@ -17,11 +18,87 @@ import {
   requirePermission,
 } from "../rbac.js";
 import { isoDateInZone, safeTimeZone } from "../time.js";
+import { monthLockFor, monthLockMessage } from "../monthLock.js";
+import { remainingCash } from "../finance.js";
 import { asDateOnly, asEnum, asId, asNumber, asString, round2 } from "../validate.js";
 
 export const cashierRouter = Router();
 
 const SHIFTS = ["morning", "evening", "full"] as const;
+
+/**
+ * مصاريف يوم التقفيلة من السجل الموحّد، والمتبقي النقدي = المبيعات النقدية
+ * − تلك المصاريف.
+ *
+ * الحساب **قراءةً وقت العرض**: لا عمود مخزَّن لهذين الرقمين، فالفاتورة تبقى
+ * مسجّلة مرة واحدة في `cash_expenses` وتُخصم مرة واحدة مهما تكرّر العرض.
+ * التوزيع على الورديات: التقفيلة الوحيدة في يومها تأخذ مصاريف اليوم كلها،
+ * وإن تعدّدت التقفيلات أخذت كل واحدة مصاريف ورديتها وحدها فلا يُخصم مصروف
+ * في تقفيلتين.
+ */
+async function attachRemainingCash(
+  closings: Array<Record<string, unknown>>,
+): Promise<{ expenses: number; remainingCash: number }> {
+  if (closings.length === 0) return { expenses: 0, remainingCash: 0 };
+
+  const db = getDb();
+  const branchIds = [...new Set(closings.map((item) => Number(item.branchId)))];
+  const dates = [...new Set(closings.map((item) => String(item.businessDate)))];
+
+  const rows = await db
+    .select({
+      branchId: cashExpenses.branchId,
+      businessDate: cashExpenses.businessDate,
+      shift: cashExpenses.shift,
+      amount: cashExpenses.amount,
+    })
+    .from(cashExpenses)
+    .where(
+      and(
+        inArray(cashExpenses.branchId, branchIds),
+        inArray(cashExpenses.businessDate, dates),
+      ),
+    );
+
+  let totalExpenses = 0;
+  let totalCash = 0;
+
+  for (const closing of closings) {
+    const branchId = Number(closing.branchId);
+    const businessDate = String(closing.businessDate);
+    const shift = String(closing.shift);
+
+    const sameDayClosings = closings.filter(
+      (item) =>
+        Number(item.branchId) === branchId &&
+        String(item.businessDate) === businessDate,
+    ).length;
+
+    const own = rows.filter(
+      (row) =>
+        row.branchId === branchId &&
+        row.businessDate === businessDate &&
+        (sameDayClosings === 1 || row.shift === shift),
+    );
+
+    const expenses = round2(
+      own.reduce((total, row) => total + (Number(row.amount) || 0), 0),
+    );
+    const cashSales = Number(closing.cashSales) || 0;
+
+    closing.registerExpenses = expenses;
+    closing.remainingCash = remainingCash(cashSales, expenses);
+    closing.registerExpenseCount = own.length;
+
+    totalExpenses = round2(totalExpenses + expenses);
+    totalCash = round2(totalCash + cashSales);
+  }
+
+  return {
+    expenses: totalExpenses,
+    remainingCash: remainingCash(totalCash, totalExpenses),
+  };
+}
 const STATUSES = ["submitted", "reviewed", "disputed"] as const;
 
 /** تصنيفات بنود التقفيل القابلة للإضافة والتعديل والحذف. */
@@ -282,6 +359,13 @@ cashierRouter.post(
       return;
     }
 
+    // شهر أُقفل ملخّصه لا يُعدَّل عليه إطلاقاً — والشهور بلا صفّ إقفال مفتوحة
+    const monthLock = await monthLockFor(branchId, businessDate);
+    if (monthLock) {
+      res.status(409).json({ ok: false, error: monthLockMessage(monthLock) });
+      return;
+    }
+
     const money = readMoney(body);
     if ("error" in money) {
       res.status(400).json({ ok: false, error: money.error });
@@ -426,6 +510,11 @@ cashierRouter.get(
       (closing as Record<string, unknown>).lines = linesByClosing.get(closing.id) ?? [];
     }
 
+    // المتبقي النقدي لكل تقفيلة: المبيعات النقدية − مصاريف يومها/ورديتها
+    const cashPosition = await attachRemainingCash(
+      closings as unknown as Array<Record<string, unknown>>,
+    );
+
     const summary = closings.reduce(
       (acc, item) => ({
         count: acc.count + 1,
@@ -437,7 +526,18 @@ cashierRouter.get(
       { count: 0, totalSales: 0, cashSales: 0, cardSales: 0, difference: 0 },
     );
 
-    res.json({ ok: true, closings, summary, scope: canReadAll ? "all" : "own" });
+    res.json({
+      ok: true,
+      closings,
+      summary: {
+        ...summary,
+        /** مجموع مصاريف السجل الموحّد في أيام هذه التقفيلات */
+        registerExpenses: cashPosition.expenses,
+        /** المتبقي النقدي = النقدي المتراكم − تلك المصاريف */
+        remainingCash: cashPosition.remainingCash,
+      },
+      scope: canReadAll ? "all" : "own",
+    });
   },
 );
 
@@ -464,12 +564,19 @@ cashierRouter.get(
 
     const linesByClosing = await loadLines(rows.map((row) => row.id));
 
+    const todayClosings = rows.map((row) => ({
+      ...row,
+      lines: linesByClosing.get(row.id) ?? [],
+    })) as unknown as Array<Record<string, unknown>>;
+    const todayPosition = await attachRemainingCash(todayClosings);
+
     res.json({
       ok: true,
       businessDate,
       timezone,
       branchId: actor.branchId ?? null,
-      closings: rows.map((row) => ({ ...row, lines: linesByClosing.get(row.id) ?? [] })),
+      closings: todayClosings,
+      cashPosition: todayPosition,
       shifts: SHIFTS,
       lineCategories: LINE_CATEGORIES,
       defaultNetworkLines: DEFAULT_NETWORK_LINES,
@@ -509,6 +616,12 @@ cashierRouter.patch(
 
     if (!before) {
       res.status(404).json({ ok: false, error: "التقفيل غير موجود" });
+      return;
+    }
+
+    const reviewLock = await monthLockFor(before.branchId, before.businessDate);
+    if (reviewLock) {
+      res.status(409).json({ ok: false, error: monthLockMessage(reviewLock) });
       return;
     }
 
@@ -568,6 +681,12 @@ cashierRouter.patch(
     }
 
     const body = (req.body ?? {}) as Record<string, unknown>;
+    const correctionLock = await monthLockFor(before.branchId, before.businessDate);
+    if (correctionLock) {
+      res.status(409).json({ ok: false, error: monthLockMessage(correctionLock) });
+      return;
+    }
+
     const money = readMoney(body, before as unknown as Record<string, number>);
     if ("error" in money) {
       res.status(400).json({ ok: false, error: money.error });
@@ -644,6 +763,12 @@ cashierRouter.delete(
 
     if (!before) {
       res.status(404).json({ ok: false, error: "التقفيل غير موجود" });
+      return;
+    }
+
+    const deleteLock = await monthLockFor(before.branchId, before.businessDate);
+    if (deleteLock) {
+      res.status(409).json({ ok: false, error: monthLockMessage(deleteLock) });
       return;
     }
 
