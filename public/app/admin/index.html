@@ -39,6 +39,7 @@
       <button class="tab" type="button" data-panel="branches">الفروع</button>
       <button class="tab" type="button" data-panel="documents">حزمة النماذج</button>
       <button class="tab" type="button" data-panel="cashier">تقفيل الكاشير</button>
+      <button class="tab" type="button" data-panel="cashbox">النقدية والإقفال</button>
       <button class="tab" type="button" data-panel="inventory">المخزون</button>
       <button class="tab" type="button" data-panel="reports">التقارير</button>
       <button class="tab" type="button" data-panel="settings">الإعدادات</button>
@@ -1141,7 +1142,9 @@
           <p class="row row--wrap">
             <span class="chip">النقد المتوقّع: <strong id="cashier-expected">0.00</strong></span>
             <span class="chip">الفرق: <strong id="cashier-difference">0.00</strong></span>
-            <span class="chip" id="cashier-diff-hint">مطابق</span>
+            <span class="chip">مصاريف السجل الموحّد: <strong id="cashier-register-expenses">0.00</strong></span>
+        <span class="chip">المتبقي النقدي: <strong id="cashier-remaining">0.00</strong></span>
+        <span class="chip" id="cashier-diff-hint">مطابق</span>
           </p>
 
           <div class="row row--wrap">
@@ -1224,6 +1227,8 @@
                 <th>المتوقّع</th>
                 <th>المعدود</th>
                 <th>الفرق</th>
+                <th>مصاريف السجل</th>
+                <th>المتبقي</th>
                 <th>الحالة</th>
                 <th></th>
               </tr>
@@ -1233,6 +1238,393 @@
         </div>
         <p id="cashier-empty" class="empty" hidden>لا توجد تقفيلات مطابقة.</p>
         <p id="cashier-list-result" class="alert" role="status" hidden></p>
+      </section>
+    </main>
+
+
+    <!-- ── النقدية والإقفال الشهري ────────────────────────────── -->
+    <main id="panel-cashbox" class="panel" hidden>
+      <p id="cashbox-alert" class="alert" role="status" hidden></p>
+
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">نطاق العرض وإشعارات الإقفال</h2>
+          <label class="field field--sm">
+            <span class="field__label">الفرع</span>
+            <select id="cashbox-branch"><option value="">فرعي</option></select>
+          </label>
+        </div>
+        <div id="cashbox-notices"></div>
+        <p id="cashbox-notices-empty" class="empty">لا توجد إشعارات إقفال جديدة.</p>
+        <p class="hint">
+          الفاتورة تُسجَّل مرة واحدة في السجل الموحّد وتُخصم مرة واحدة: التقفيل
+          اليومي والتقرير الشهري يقرآن من المصدر نفسه بلا ازدواج خصم.
+        </p>
+      </section>
+
+      <section class="card" id="cashbox-position-card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">المتبقي النقدي في درج الكاشير</h2>
+          <label class="field field--sm">
+            <span class="field__label">تاريخ العمل</span>
+            <input id="cashbox-date" type="date" />
+          </label>
+          <button id="cashbox-position-run" class="btn btn--ghost btn--sm" type="button">عرض</button>
+        </div>
+        <p id="cashbox-position-chips" class="row row--wrap"></p>
+        <div class="table-wrap">
+          <table class="table" id="cashbox-position-table">
+            <thead>
+              <tr>
+                <th>الوردية</th>
+                <th>المبيعات النقدية</th>
+                <th>مصاريف الوردية</th>
+                <th>المتبقي النقدي</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="cashbox-position-empty" class="empty" hidden>لا توجد حركة نقدية في هذا اليوم.</p>
+        <p id="cashbox-position-result" class="alert" role="status" hidden></p>
+        <p class="hint">المتبقي النقدي = المبيعات النقدية − مصاريف اليوم/الوردية من السجل الموحّد.</p>
+      </section>
+
+      <section class="card" id="cashbox-expenses-card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">سجل المصاريف والمشتريات النقدية</h2>
+          <span id="cashbox-exp-mode" class="badge">فاتورة جديدة</span>
+        </div>
+
+        <form id="cashbox-expense-form" class="grid grid--form">
+          <label class="field field--sm">
+            <span class="field__label">التاريخ</span>
+            <input id="cashbox-exp-date" type="date" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الوردية</span>
+            <select id="cashbox-exp-shift">
+              <option value="full">يوم كامل</option>
+              <option value="morning">صباحية</option>
+              <option value="evening">مسائية</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">النوع</span>
+            <select id="cashbox-exp-kind">
+              <option value="expense">مصروف تشغيلي</option>
+              <option value="purchase">شراء بضاعة</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">البيان (غاز، دجاج، لبن...)</span>
+            <input id="cashbox-exp-description" type="text" maxlength="200" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">رقم الفاتورة</span>
+            <input id="cashbox-exp-invoice" type="text" maxlength="80" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الكمية</span>
+            <input id="cashbox-exp-quantity" type="number" step="any" min="0" value="1" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">سعر الوحدة</span>
+            <input id="cashbox-exp-unitPrice" type="number" step="any" min="0" value="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">المبلغ الإجمالي (إن اختلف عن الحساب)</span>
+            <input id="cashbox-exp-amount" type="number" step="any" min="0" value="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">المورد / الجهة</span>
+            <input id="cashbox-exp-supplier" type="text" maxlength="160" />
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">ملاحظات</span>
+            <textarea id="cashbox-exp-notes" rows="2"></textarea>
+          </label>
+
+          <p class="row row--wrap field--wide">
+            <span class="chip">إجمالي الفاتورة: <strong id="cashbox-exp-total">0.00</strong></span>
+          </p>
+          <div class="row row--wrap field--wide">
+            <button id="cashbox-exp-submit" class="btn btn--primary btn--sm" type="submit">تسجيل الفاتورة</button>
+            <button id="cashbox-exp-reset" class="btn btn--ghost btn--sm" type="button">فاتورة جديدة</button>
+          </div>
+        </form>
+        <p id="cashbox-exp-result" class="alert" role="status" hidden></p>
+
+        <div class="filters">
+          <label class="field field--sm">
+            <span class="field__label">من</span>
+            <input id="cashbox-expenses-from" type="date" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">إلى</span>
+            <input id="cashbox-expenses-to" type="date" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">النوع</span>
+            <select id="cashbox-expenses-kind">
+              <option value="">الكل</option>
+              <option value="expense">مصروف تشغيلي</option>
+              <option value="purchase">شراء بضاعة</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الوردية</span>
+            <select id="cashbox-expenses-shift">
+              <option value="">الكل</option>
+              <option value="full">يوم كامل</option>
+              <option value="morning">صباحية</option>
+              <option value="evening">مسائية</option>
+            </select>
+          </label>
+          <button id="cashbox-expenses-run" class="btn btn--ghost btn--sm" type="button">عرض</button>
+        </div>
+
+        <p id="cashbox-expenses-chips" class="row row--wrap"></p>
+        <div class="table-wrap">
+          <table class="table" id="cashbox-expenses-table">
+            <thead>
+              <tr>
+                <th>التاريخ</th>
+                <th>البيان</th>
+                <th>رقم الفاتورة</th>
+                <th>الكمية</th>
+                <th>سعر الوحدة</th>
+                <th>الإجمالي</th>
+                <th>النوع</th>
+                <th>الوردية</th>
+                <th>المورد</th>
+                <th>من سجّلها</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="cashbox-expenses-empty" class="empty" hidden>لا توجد فواتير في هذه المدة.</p>
+        <p id="cashbox-expenses-result" class="alert" role="status" hidden></p>
+      </section>
+      <section class="card" id="cashbox-balance-card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">الرصيد النقدي الشهري</h2>
+          <label class="field field--sm">
+            <span class="field__label">الشهر</span>
+            <input id="cashbox-balance-month" type="month" />
+          </label>
+          <button id="cashbox-balance-run" class="btn btn--ghost btn--sm" type="button">عرض</button>
+        </div>
+        <p id="cashbox-balance-chips" class="row row--wrap"></p>
+        <div class="table-wrap">
+          <table class="table" id="cashbox-balance-table">
+            <thead>
+              <tr>
+                <th>اليوم</th>
+                <th>النقدي من التقفيلات</th>
+                <th>المصاريف والمشتريات</th>
+                <th>المتبقي</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="cashbox-balance-empty" class="empty" hidden>لا توجد حركة نقدية في هذا الشهر.</p>
+        <p id="cashbox-balance-result" class="alert" role="status" hidden></p>
+        <p class="hint">
+          الصافي الحالي = المرحّل من الشهر السابق + النقدي المتراكم من التقفيلات −
+          المصاريف والمشتريات النقدية. يُعرض طوال الشهر لا في نهايته فقط.
+        </p>
+      </section>
+
+      <section class="card" id="cashbox-settlements-card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">تسوية الشبكات وتطبيقات التوصيل</h2>
+          <label class="field field--sm">
+            <span class="field__label">من</span>
+            <input id="cashbox-providers-from" type="date" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">إلى</span>
+            <input id="cashbox-providers-to" type="date" />
+          </label>
+          <button id="cashbox-providers-run" class="btn btn--ghost btn--sm" type="button">عرض</button>
+        </div>
+
+        <div class="table-wrap">
+          <table class="table" id="cashbox-providers-table">
+            <thead>
+              <tr>
+                <th>الجهة</th>
+                <th>النوع</th>
+                <th>مبيعات المدة (من التقفيلات)</th>
+                <th>ما سُوّي</th>
+                <th>المستلم المؤكَّد</th>
+                <th>تسويات معلّقة</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="cashbox-providers-empty" class="empty" hidden>لا توجد مبيعات شبكات أو تطبيقات في هذه المدة.</p>
+        <p id="cashbox-providers-result" class="alert" role="status" hidden></p>
+
+        <form id="cashbox-settlement-form" class="grid grid--form">
+          <label class="field field--sm">
+            <span class="field__label">الجهة (فوديكس، جاهز...)</span>
+            <input id="cashbox-set-provider" type="text" maxlength="120" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">النوع</span>
+            <select id="cashbox-set-type">
+              <option value="network">شبكة</option>
+              <option value="delivery_app">تطبيق توصيل</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">من</span>
+            <input id="cashbox-set-from" type="date" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">إلى</span>
+            <input id="cashbox-set-to" type="date" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">المبيعات</span>
+            <input id="cashbox-set-sales" type="number" step="any" min="0" value="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">المستلم في البنك (يُدخل عند التأكيد)</span>
+            <input id="cashbox-set-received" type="number" step="any" min="0" value="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">ضريبة العمولة % (اختياري)</span>
+            <input id="cashbox-set-vat" type="number" step="any" min="0" max="100" value="0" />
+          </label>
+          <label class="field field--sm field--check">
+            <input id="cashbox-set-vatIncluded" type="checkbox" checked />
+            <span class="field__label">العمولة المقتطعة شاملة للضريبة</span>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">مرجع الحوالة</span>
+            <input id="cashbox-set-reference" type="text" maxlength="120" />
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">ملاحظات</span>
+            <textarea id="cashbox-set-notes" rows="2"></textarea>
+          </label>
+
+          <p id="cashbox-set-preview" class="row row--wrap field--wide"></p>
+          <div class="row row--wrap field--wide">
+            <button id="cashbox-set-submit" class="btn btn--primary btn--sm" type="submit">تسجيل التسوية</button>
+            <button id="cashbox-set-reset" class="btn btn--ghost btn--sm" type="button">تفريغ النموذج</button>
+          </div>
+        </form>
+        <p id="cashbox-set-result" class="alert" role="status" hidden></p>
+
+        <div class="filters">
+          <label class="field field--sm">
+            <span class="field__label">الحالة</span>
+            <select id="cashbox-settlements-status">
+              <option value="">الكل</option>
+              <option value="pending">بانتظار السداد</option>
+              <option value="confirmed">مؤكَّدة</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">النوع</span>
+            <select id="cashbox-settlements-type">
+              <option value="">الكل</option>
+              <option value="network">شبكة</option>
+              <option value="delivery_app">تطبيق توصيل</option>
+            </select>
+          </label>
+          <button id="cashbox-settlements-run" class="btn btn--ghost btn--sm" type="button">عرض</button>
+        </div>
+
+        <p id="cashbox-settlements-chips" class="row row--wrap"></p>
+        <div class="table-wrap">
+          <table class="table" id="cashbox-settlements-table">
+            <thead>
+              <tr>
+                <th>الجهة</th>
+                <th>النوع</th>
+                <th>المدة</th>
+                <th>المبيعات</th>
+                <th>المستلم</th>
+                <th>العمولة</th>
+                <th>النسبة</th>
+                <th>الضريبة</th>
+                <th>الحالة</th>
+                <th>تاريخ التأكيد</th>
+                <th>المحاسب</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="cashbox-settlements-empty" class="empty" hidden>لا توجد تسويات مطابقة.</p>
+        <p id="cashbox-settlements-result" class="alert" role="status" hidden></p>
+        <p class="hint">
+          العمولة = المبيعات − المستلم، والنسبة المئوية منها، والضريبة على العمولة
+          اختيارية — يحسبها الخادم عند تأكيد السداد ويثبّت تاريخه واسم المحاسب.
+        </p>
+      </section>
+
+      <section class="card" id="cashbox-months-card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">إقفال الشهر والترحيل</h2>
+          <label class="field field--sm">
+            <span class="field__label">السنة</span>
+            <input id="cashbox-year" type="number" min="2000" max="2200" step="1" />
+          </label>
+          <button id="cashbox-months-run" class="btn btn--ghost btn--sm" type="button">عرض</button>
+        </div>
+
+        <div class="filters" id="cashbox-prepare-row">
+          <label class="field field--sm">
+            <span class="field__label">تجهيز ملخّص شهر</span>
+            <input id="cashbox-prepare-month" type="month" />
+          </label>
+          <button id="cashbox-prepare-run" class="btn btn--ghost btn--sm" type="button">تجهيز الملخّص وإشعار أصحاب الصلاحية</button>
+        </div>
+
+        <p id="cashbox-decision-hint" class="hint" hidden>
+          لا تملك «اعتماد الترحيل الشهري» ولا «تصفير الرصيد الشهري»، فتظهر لك
+          الملخّصات للعرض فقط بلا أزرار قرار.
+        </p>
+
+        <div class="table-wrap">
+          <table class="table" id="cashbox-months-table">
+            <thead>
+              <tr>
+                <th>الشهر</th>
+                <th>المرحّل إليه</th>
+                <th>الإجمالي النقدي</th>
+                <th>المصاريف</th>
+                <th>الصافي</th>
+                <th>المرحّل للشهر التالي</th>
+                <th>الحالة</th>
+                <th>من قرّر</th>
+                <th>وقت القرار</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="cashbox-months-empty" class="empty" hidden>لا توجد ملخّصات إقفال في هذه السنة.</p>
+        <p id="cashbox-months-note" class="hint"></p>
+        <p id="cashbox-months-result" class="alert" role="status" hidden></p>
+        <p class="hint">
+          الشهر يبقى «بانتظار الاعتماد» ولا يُعدَّل عليه حتى يُتخذ القرار:
+          «اعتماد الترحيل» يرحّل الصافي لبداية الشهر الجديد، و«تصفير» يبدأ الشهر
+          الجديد من صفر. وكل قرار يُسجَّل في سجل المراجعة باسم صاحبه ووقته.
+        </p>
       </section>
     </main>
 
