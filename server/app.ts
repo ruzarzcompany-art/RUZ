@@ -24,6 +24,7 @@ import { adminRouter } from "./routes/admin.js";
 import { attendanceRouter } from "./routes/attendance.js";
 import { cashierRouter } from "./routes/cashier.js";
 import { documentsRouter } from "./routes/documents.js";
+import { financeRouter } from "./routes/finance.js";
 import { formsRouter } from "./routes/forms.js";
 import { inventoryRouter } from "./routes/inventory.js";
 import { payrollRouter } from "./routes/payroll.js";
@@ -440,6 +441,8 @@ export function createApp() {
   app.use("/api", cashierRouter);
   app.use("/api", inventoryRouter);
   app.use("/api", documentsRouter);
+  // النقدية والخزينة: المصاريف، المتبقي، التسويات، وإقفال الشهر
+  app.use("/api", financeRouter);
   app.use("/api", accessRouter);
 
   app.use("/api", (_req: Request, res: Response) => {
