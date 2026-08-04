@@ -556,7 +556,6 @@ export async function loadMonthlyBalance() {
 function applyCapabilities() {
   el("cashier-remaining-chip").hidden = !state.caps.viewRemaining;
   el("cashier-th-remaining").hidden = !state.caps.viewRemaining;
-  el("cashier-balance-card").hidden = !state.caps.viewMonthlyBalance;
 }
 
 
