@@ -934,15 +934,17 @@ async function monthlySummaryFor(
   };
 }
 
-/** الرصيد النقدي الشهري — يُعرض طوال الشهر لا في نهايته فقط. */
+/**
+ * الرصيد النقدي الشهري — يُعرض طوال الشهر لا في نهايته فقط، وموضعه صفحة
+ * تقفيل الكاشير نفسها أسفل أرقام اليوم.
+ *
+ * بندٌ **مستقل** في إدارة الصلاحيات (`cash_monthly_balance`): من لا يملكه
+ * يُرفض طلبه هنا فلا يصله الرقم أصلاً، ولا يُكتفى بإخفاء القسم في المتصفح.
+ */
 financeRouter.get(
   "/finance/monthly-balance",
   requireAuth,
-  requireAnyPermission(
-    PERMISSIONS.cashMonthlyBalanceView,
-    PERMISSIONS.monthlySummaryView,
-    PERMISSIONS.cashExpensesRead,
-  ),
+  requirePermission(PERMISSIONS.cashMonthlyBalanceView),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const branchId = await resolveBranchId(req, req.query.branchId);
