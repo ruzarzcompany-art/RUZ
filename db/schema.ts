@@ -11,6 +11,7 @@ import {
   uniqueIndex,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 /**
  * المبالغ المالية تُخزَّن كأرقام عشرية مضاعفة الدقة وتُقرَّب إلى منزلتين
@@ -1194,3 +1195,226 @@ export const systemFlags = pgTable("system_flags", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/* ══════════════════════════════════════════════════════════════════════
+ * نظام تقفيل الكاشير والنقدية — جداول مستقلة تماماً.
+ *
+ * هذه الجداول **إضافة** لا تعديل: لم يُمسّ أي عمود في `cashier_closings`
+ * ولا في بنودها، فالتقفيلات السابقة وحساباتها تبقى كما سُجِّلت حرفياً.
+ * والمتبقي النقدي والرصيد الشهري يُحسبان قراءةً من هذه الجداول وقت العرض،
+ * فلا يوجد مبلغ مخزَّن مرتين ولا خصم مزدوج.
+ */
+
+/**
+ * cash_expenses — السجل الموحّد للمصاريف والمشتريات النقدية.
+ *
+ * كل عملية دفع نقدي (مصروف أو شراء) صفٌّ واحد بفاتورته: البيان، رقم
+ * الفاتورة، الكمية، سعر الوحدة، المبلغ الإجمالي، والتاريخ. الفاتورة تُسجَّل
+ * مرة واحدة فقط — يمنع ذلك فهرس فريد جزئي على (الفرع + رقم الفاتورة) لا
+ * يشمل الصفوف بلا رقم فاتورة. ويقرأ منها التقفيل اليومي والتقرير الشهري
+ * معاً من هذا المصدر الواحد، فلا يتكرّر الخصم.
+ */
+export const cashExpenses = pgTable(
+  "cash_expenses",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** تاريخ الصرف بتوقيت الفرع — عليه يقع الخصم في تقفيلة اليوم */
+    businessDate: date("business_date").notNull(),
+    /** morning | evening | full — وردية الصرف، لحصر المصروف بوردية بعينها */
+    shift: text().notNull().default("full"),
+    /** expense = مصروف تشغيلي، purchase = شراء بضاعة */
+    kind: text().notNull().default("expense"),
+    /** البيان: غاز، دجاج، لبن ... */
+    description: text().notNull(),
+    /** رقم الفاتورة — فريد داخل الفرع متى وُجد */
+    invoiceNumber: text("invoice_number").notNull().default(""),
+    quantity: doublePrecision().notNull().default(1),
+    unitPrice: money("unit_price"),
+    /** المبلغ الإجمالي المدفوع فعلاً (الكمية × سعر الوحدة ما لم يُصرَّح بغيره) */
+    amount: money("amount"),
+    supplier: text().notNull().default(""),
+    /** cash دائماً في هذا السجل — العمود للتوثيق ولأي توسّع لاحق */
+    paymentMethod: text("payment_method").notNull().default("cash"),
+    /** ربط اختياري بتقفيلة بعينها؛ الخصم يقع بالتاريخ والفرع لا بالربط */
+    closingId: integer("closing_id").references(() => cashierClosings.id, {
+      onDelete: "set null",
+    }),
+    notes: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    /**
+     * فاتورة واحدة لا تُسجَّل مرتين في الفرع نفسه. الفهرس **جزئي** فلا يمنع
+     * تعدّد المصاريف التي بلا رقم فاتورة (نثريات، بقشيش، مصروف بلا سند).
+     */
+    uniqueIndex("cash_expenses_invoice_unique_idx")
+      .on(table.branchId, table.invoiceNumber)
+      .where(sql.raw("invoice_number <> ''")),
+    index("cash_expenses_branch_date_idx").on(table.branchId, table.businessDate),
+    index("cash_expenses_closing_idx").on(table.closingId),
+  ],
+);
+
+/**
+ * provider_settlements — تسوية الشبكات وتطبيقات التوصيل.
+ *
+ * تُسجَّل مبيعات الجهة في التقفيلة أولاً، وعند وصول المبلغ إلى البنك يؤكّد
+ * المحاسب السداد ويُدخل المستلم، فيحسب الخادم: العمولة = المبيعات − المستلم،
+ * والنسبة المئوية منها، والضريبة الاختيارية على العمولة.
+ */
+export const providerSettlements = pgTable(
+  "provider_settlements",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** network = شبكة (فودكس، مدى...)، delivery_app = تطبيق توصيل */
+    providerType: text("provider_type").notNull().default("network"),
+    /** الجهة كما تُكتب في بنود التقفيلة تماماً */
+    providerName: text("provider_name").notNull(),
+    periodFrom: date("period_from").notNull(),
+    periodTo: date("period_to").notNull(),
+    /** المبيعات كما رُصدت في تقفيلات المدة */
+    salesAmount: money("sales_amount"),
+    /** المبلغ الذي وصل البنك فعلاً */
+    receivedAmount: money("received_amount"),
+    /** العمولة = المبيعات − المستلم (يحسبها الخادم) */
+    commissionAmount: money("commission_amount"),
+    /** نسبة العمولة المئوية من المبيعات */
+    commissionRate: doublePrecision("commission_rate").notNull().default(0),
+    /** نسبة ضريبة القيمة المضافة على العمولة — اختيارية (0 = بلا ضريبة) */
+    vatRate: doublePrecision("vat_rate").notNull().default(0),
+    vatAmount: money("vat_amount"),
+    /** هل العمولة المحسوبة شاملة للضريبة أم تُضاف إليها؟ */
+    vatIncluded: boolean("vat_included").notNull().default(true),
+    /** العمولة بلا ضريبة — تُفيد التقرير الضريبي */
+    commissionBeforeVat: money("commission_before_vat"),
+    /** pending | confirmed */
+    status: text().notNull().default("pending"),
+    reference: text().notNull().default(""),
+    notes: text().notNull().default(""),
+    confirmedByEmployeeId: integer("confirmed_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    /** اسم المحاسب وقت التأكيد — لقطة نصّية تبقى ولو تغيّر ملفه لاحقاً */
+    confirmedByName: text("confirmed_by_name").notNull().default(""),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("provider_settlements_branch_period_idx").on(
+      table.branchId,
+      table.periodFrom,
+    ),
+    index("provider_settlements_provider_idx").on(
+      table.providerType,
+      table.providerName,
+    ),
+  ],
+);
+
+/**
+ * monthly_cash_closings — إقفال الشهر والترحيل.
+ *
+ * يجهّز النظام ملخّص الشهر (الإجمالي، المصاريف، الصافي) فيبقى الشهر بحالة
+ * `pending_approval` لا يُعدّل عليه، حتى يقرّر صاحب الصلاحية: `carry_forward`
+ * فيُرحَّل الصافي إلى بداية الشهر التالي، أو `reset` فيبدأ الشهر الجديد من صفر.
+ * وفي الحالتين يُقفل الشهر (`locked_at`) فلا يُعدَّل بعدها.
+ */
+export const monthlyCashClosings = pgTable(
+  "monthly_cash_closings",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    periodYear: integer("period_year").notNull(),
+    periodMonth: integer("period_month").notNull(),
+    /** المرحّل من الشهر السابق (صفر إن كان قرار الشهر السابق تصفيراً) */
+    openingBalance: money("opening_balance"),
+    cashSalesTotal: money("cash_sales_total"),
+    expensesTotal: money("expenses_total"),
+    settlementsReceived: money("settlements_received"),
+    commissionTotal: money("commission_total"),
+    vatTotal: money("vat_total"),
+    /** الصافي = المرحّل + النقدي المتراكم − المصاريف والمشتريات النقدية */
+    netAmount: money("net_amount"),
+    /** ما رُحّل فعلاً إلى الشهر التالي بعد القرار */
+    carriedAmount: money("carried_amount"),
+    /** pending_approval | carried_forward | reset */
+    status: text().notNull().default("pending_approval"),
+    /** carry_forward | reset — يبقى فارغاً قبل القرار */
+    decision: text().notNull().default(""),
+    decisionNote: text("decision_note").notNull().default(""),
+    decidedByEmployeeId: integer("decided_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    decidedByName: text("decided_by_name").notNull().default(""),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    preparedByEmployeeId: integer("prepared_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    preparedAt: timestamp("prepared_at", { withTimezone: true }).notNull().defaultNow(),
+    /** لحظة إقفال الشهر — وجودها يمنع أي تعديل على بيانات الشهر */
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    /** لقطة JSON من الملخّص وقت التجهيز (للمراجعة والطباعة) */
+    summaryJson: text("summary_json").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("monthly_cash_closings_period_unique_idx").on(
+      table.branchId,
+      table.periodYear,
+      table.periodMonth,
+    ),
+    index("monthly_cash_closings_status_idx").on(
+      table.status,
+      table.periodYear,
+      table.periodMonth,
+    ),
+  ],
+);
+
+/**
+ * cash_notifications — إشعار ملخّص الإقفال للأونر ولمن يملك صلاحية الترحيل.
+ * صفٌّ لكل مستلم، ويبقى غير مقروء حتى يفتحه صاحبه.
+ */
+export const cashNotifications = pgTable(
+  "cash_notifications",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    /** month_close_ready | month_closed */
+    kind: text().notNull().default("month_close_ready"),
+    title: text().notNull().default(""),
+    body: text().notNull().default(""),
+    refType: text("ref_type").notNull().default(""),
+    refId: integer("ref_id"),
+    isRead: boolean("is_read").notNull().default(false),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("cash_notifications_employee_idx").on(table.employeeId, table.isRead),
+  ],
+);
