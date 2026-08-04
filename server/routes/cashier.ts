@@ -27,14 +27,17 @@ export const cashierRouter = Router();
 const SHIFTS = ["morning", "evening", "full"] as const;
 
 /**
- * مصاريف يوم التقفيلة من السجل الموحّد، والمتبقي النقدي = المبيعات النقدية
- * − تلك المصاريف.
+ * مصاريف التقفيلة، والمتبقي النقدي = المبيعات النقدية − تلك المصاريف.
  *
- * الحساب **قراءةً وقت العرض**: لا عمود مخزَّن لهذين الرقمين، فالفاتورة تبقى
- * مسجّلة مرة واحدة في `cash_expenses` وتُخصم مرة واحدة مهما تكرّر العرض.
- * التوزيع على الورديات: التقفيلة الوحيدة في يومها تأخذ مصاريف اليوم كلها،
- * وإن تعدّدت التقفيلات أخذت كل واحدة مصاريف ورديتها وحدها فلا يُخصم مصروف
- * في تقفيلتين.
+ * بعد نقل المصاريف إلى صفحة التقفيل صار مصدرها الأول أسطر المصروف داخل
+ * التقفيلة نفسها (`cashier_closing_lines` بتصنيف `expense`)، ويُضاف إليها
+ * ما بقي في السجل المنفصل القديم (`cash_expenses`) لنفس اليوم حتى لا تضيع
+ * فواتير سُجّلت قبل النقل.
+ *
+ * الحساب **قراءةً وقت العرض** لا تخزيناً: مهما تكرّر فتح الشاشة لا يُخصم
+ * المصروف مرتين. والتوزيع على الورديات: التقفيلة الوحيدة في يومها تأخذ
+ * مصاريف اليوم القديمة كلها، وإن تعدّدت التقفيلات أخذت كل واحدة مصاريف
+ * ورديتها وحدها.
  */
 async function attachRemainingCash(
   closings: Array<Record<string, unknown>>,
@@ -45,7 +48,7 @@ async function attachRemainingCash(
   const branchIds = [...new Set(closings.map((item) => Number(item.branchId)))];
   const dates = [...new Set(closings.map((item) => String(item.businessDate)))];
 
-  const rows = await db
+  const legacyRows = await db
     .select({
       branchId: cashExpenses.branchId,
       businessDate: cashExpenses.businessDate,
@@ -74,21 +77,27 @@ async function attachRemainingCash(
         String(item.businessDate) === businessDate,
     ).length;
 
-    const own = rows.filter(
+    const legacy = legacyRows.filter(
       (row) =>
         row.branchId === branchId &&
         row.businessDate === businessDate &&
         (sameDayClosings === 1 || row.shift === shift),
     );
 
+    // أسطر المصروف المكتوبة في صفحة التقفيل نفسها — هي الأصل بعد النقل
+    const ownLines = ((closing.lines as ParsedLine[] | undefined) ?? []).filter(
+      (line) => line.category === "expense",
+    );
+
     const expenses = round2(
-      own.reduce((total, row) => total + (Number(row.amount) || 0), 0),
+      ownLines.reduce((total, line) => total + (Number(line.amount) || 0), 0) +
+        legacy.reduce((total, row) => total + (Number(row.amount) || 0), 0),
     );
     const cashSales = Number(closing.cashSales) || 0;
 
     closing.registerExpenses = expenses;
     closing.remainingCash = remainingCash(cashSales, expenses);
-    closing.registerExpenseCount = own.length;
+    closing.registerExpenseCount = ownLines.length + legacy.length;
 
     totalExpenses = round2(totalExpenses + expenses);
     totalCash = round2(totalCash + cashSales);
@@ -99,10 +108,16 @@ async function attachRemainingCash(
     remainingCash: remainingCash(totalCash, totalExpenses),
   };
 }
+
 const STATUSES = ["submitted", "reviewed", "disputed"] as const;
 
-/** تصنيفات بنود التقفيل القابلة للإضافة والتعديل والحذف. */
-export const LINE_CATEGORIES = ["network", "delivery_app"] as const;
+/**
+ * تصنيفات بنود التقفيل القابلة للإضافة والتعديل والحذف:
+ * `network` بنود الشبكات، `delivery_app` تطبيقات التوصيل، و`expense` سطر
+ * مصروف أو شراء نقدي يُكتب **داخل صفحة التقفيل نفسها** بحقلين لا ثالث لهما:
+ * البيان والمبلغ — لا رقم فاتورة ولا كمية ولا سعر وحدة.
+ */
+export const LINE_CATEGORIES = ["network", "delivery_app", "expense"] as const;
 type LineCategory = (typeof LINE_CATEGORIES)[number];
 
 /** أقصى عدد بنود لكل تصنيف في تقفيل واحد. */
@@ -214,7 +229,11 @@ function readLines(
   if (!Array.isArray(raw)) return { error: "بنود التقفيل يجب أن تكون قائمة" };
 
   const lines: ParsedLine[] = [];
-  const counts: Record<LineCategory, number> = { network: 0, delivery_app: 0 };
+  const counts: Record<LineCategory, number> = {
+    network: 0,
+    delivery_app: 0,
+    expense: 0,
+  };
 
   for (const entry of raw) {
     if (!entry || typeof entry !== "object") continue;
@@ -224,7 +243,14 @@ function readLines(
     if (category === null) return { error: "تصنيف البند غير معروف" };
 
     const label = asString(item.label, 120);
-    if (!label) return { error: "لكل بند اسم مطلوب (اسم الشبكة أو التطبيق)" };
+    if (!label) {
+      return {
+        error:
+          category === "expense"
+            ? "لكل سطر مصروف بيانٌ مطلوب (غاز، دجاج، لبن ...)"
+            : "لكل بند اسم مطلوب (اسم الشبكة أو التطبيق)",
+      };
+    }
 
     const amountRaw = asNumber(item.amount);
     const amount = amountRaw === null ? 0 : amountRaw;
@@ -240,7 +266,9 @@ function readLines(
       category,
       label,
       amount: round2(amount),
-      reference: asString(item.reference, 120) ?? "",
+      // سطر المصروف بحقلين فقط، فلا مرجع له أصلاً
+      reference:
+        category === "expense" ? "" : (asString(item.reference, 120) ?? ""),
       sortOrder: lines.length,
     });
   }
@@ -295,9 +323,12 @@ export async function loadLines(closingIds: number[]): Promise<Map<number, Parse
 }
 
 /**
- * إجماليّا الشبكة والتوصيل يُشتقّان من البنود عند إرسالها:
+ * الإجماليات المشتقّة من البنود عند إرسالها:
  * `cardSales` = مجموع بنود الشبكة + شبكة foodics،
- * و`deliverySales` = مجموع بنود تطبيقات التواصل.
+ * `deliverySales` = مجموع بنود تطبيقات التوصيل،
+ * و`expenses` = مجموع أسطر المصاريف والمشتريات النقدية المكتوبة في صفحة
+ * التقفيل نفسها — فكل مصروف يُخصم تلقائياً من نقدي التقفيلة، ولا يُدخل
+ * إجمالي المصروفات يدوياً ولا يأتي من صفحة منفصلة.
  */
 function applyLineTotals(
   values: Record<MoneyField, number>,
@@ -305,6 +336,7 @@ function applyLineTotals(
 ): void {
   values.cardSales = round2(sumLines(lines, "network") + values.foodicsSales);
   values.deliverySales = sumLines(lines, "delivery_app");
+  values.expenses = sumLines(lines, "expense");
 }
 
 /* ── رفع التقفيل اليومي (الكاشير بنفسه) ────────────────────────── */
@@ -510,10 +542,21 @@ cashierRouter.get(
       (closing as Record<string, unknown>).lines = linesByClosing.get(closing.id) ?? [];
     }
 
-    // المتبقي النقدي لكل تقفيلة: المبيعات النقدية − مصاريف يومها/ورديتها
+    // المتبقي النقدي لكل تقفيلة: المبيعات النقدية − مصاريف التقفيلة
     const cashPosition = await attachRemainingCash(
       closings as unknown as Array<Record<string, unknown>>,
     );
+
+    // «المتبقي النقدي في درج الكاشير» بندٌ مستقل في إدارة الصلاحيات:
+    // من لا يملكه لا يصله الرقم من الخادم أصلاً، لا أن يُخفى في المتصفح فقط.
+    const canSeeRemaining = await hasAnyPermission(req, [
+      PERMISSIONS.cashRemainingView,
+    ]);
+    if (!canSeeRemaining) {
+      for (const closing of closings) {
+        delete (closing as Record<string, unknown>).remainingCash;
+      }
+    }
 
     const summary = closings.reduce(
       (acc, item) => ({
@@ -531,11 +574,12 @@ cashierRouter.get(
       closings,
       summary: {
         ...summary,
-        /** مجموع مصاريف السجل الموحّد في أيام هذه التقفيلات */
+        /** مجموع مصاريف التقفيلات: أسطر المصروف + ما بقي من السجل القديم */
         registerExpenses: cashPosition.expenses,
-        /** المتبقي النقدي = النقدي المتراكم − تلك المصاريف */
-        remainingCash: cashPosition.remainingCash,
+        /** المتبقي النقدي — لا يُرسل إلا لمن يملك بنده المستقل */
+        remainingCash: canSeeRemaining ? cashPosition.remainingCash : null,
       },
+      canViewRemaining: canSeeRemaining,
       scope: canReadAll ? "all" : "own",
     });
   },
@@ -570,13 +614,30 @@ cashierRouter.get(
     })) as unknown as Array<Record<string, unknown>>;
     const todayPosition = await attachRemainingCash(todayClosings);
 
+    // بندان مستقلان في إدارة الصلاحيات: خانة المتبقي، والرصيد الشهري
+    const canSeeRemaining = await hasAnyPermission(req, [
+      PERMISSIONS.cashRemainingView,
+    ]);
+    const canSeeMonthlyBalance = await hasAnyPermission(req, [
+      PERMISSIONS.cashMonthlyBalanceView,
+    ]);
+    if (!canSeeRemaining) {
+      for (const closing of todayClosings) delete closing.remainingCash;
+    }
+
     res.json({
       ok: true,
       businessDate,
       timezone,
       branchId: actor.branchId ?? null,
       closings: todayClosings,
-      cashPosition: todayPosition,
+      cashPosition: canSeeRemaining
+        ? todayPosition
+        : { expenses: todayPosition.expenses, remainingCash: null },
+      can: {
+        viewRemaining: canSeeRemaining,
+        viewMonthlyBalance: canSeeMonthlyBalance,
+      },
       shifts: SHIFTS,
       lineCategories: LINE_CATEGORIES,
       defaultNetworkLines: DEFAULT_NETWORK_LINES,
