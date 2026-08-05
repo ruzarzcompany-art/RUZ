@@ -71,6 +71,30 @@ export const PERMISSIONS = {
   sectionInventory: "sections.inventory",
   sectionSettings: "sections.settings",
   sectionDocuments: "sections.documents",
+
+  /* ── النقدية والخزينة (إضافة نظام تقفيل الكاشير والنقدية) ─────── */
+  /** قراءة السجل الموحّد للمصاريف والمشتريات النقدية */
+  cashExpensesRead: "cash_expenses.read",
+  /** تسجيل وتعديل فواتير المصاريف والمشتريات النقدية */
+  cashExpensesWrite: "cash_expenses.write",
+  /** قراءة تسويات الشبكات وتطبيقات التوصيل */
+  settlementsRead: "settlements.read",
+  /** تسجيل وتعديل تسوية قبل تأكيدها */
+  settlementsManage: "settlements.manage",
+  /** تأكيد وصول المبلغ إلى البنك وإقفال التسوية */
+  settlementsConfirm: "settlements.confirm",
+  /** عرض ملخّص إقفال الشهر والرصيد النقدي الشهري */
+  monthlySummaryView: "monthly.summary_view",
+  /** اعتماد ترحيل صافي الشهر إلى بداية الشهر الجديد */
+  monthlyCarryForward: "monthly.carry_forward",
+  /** تصفير الرصيد وبدء الشهر الجديد من صفر */
+  monthlyReset: "monthly.reset",
+  /** شاشة النقدية والخزينة في لوحة الإدارة */
+  sectionCashBook: "sections.cash_book",
+  /** خانة «المتبقي النقدي في درج الكاشير» داخل صفحة تقفيل الكاشير */
+  cashRemainingView: "cash_remaining.view",
+  /** الرصيد النقدي الشهري المتراكم أسفل أرقام اليوم في صفحة التقفيل */
+  cashMonthlyBalanceView: "cash_monthly_balance.view",
 } as const;
 
 export const PERMISSION_CATALOG: Array<{ code: string; description: string }> = [
@@ -136,6 +160,29 @@ export const PERMISSION_CATALOG: Array<{ code: string; description: string }> = 
   { code: PERMISSIONS.sectionInventory, description: "رؤية شاشة المخزون" },
   { code: PERMISSIONS.sectionSettings, description: "رؤية لوحة الإعدادات" },
   { code: PERMISSIONS.sectionDocuments, description: "رؤية شاشة النماذج القابلة للطباعة" },
+  {
+    code: PERMISSIONS.cashExpensesRead,
+    description: "عرض سجل المصاريف والمشتريات النقدية",
+  },
+  {
+    code: PERMISSIONS.cashExpensesWrite,
+    description: "تسجيل وتعديل فواتير المصاريف والمشتريات النقدية",
+  },
+  { code: PERMISSIONS.settlementsRead, description: "عرض تسويات الشبكات وتطبيقات التوصيل" },
+  { code: PERMISSIONS.settlementsManage, description: "تسجيل وتعديل تسوية شبكة أو تطبيق" },
+  { code: PERMISSIONS.settlementsConfirm, description: "تأكيد سداد التسوية وإقفالها" },
+  { code: PERMISSIONS.monthlySummaryView, description: "عرض ملخص إقفال الشهر" },
+  { code: PERMISSIONS.monthlyCarryForward, description: "اعتماد الترحيل الشهري" },
+  { code: PERMISSIONS.monthlyReset, description: "تصفير الرصيد الشهري" },
+  { code: PERMISSIONS.sectionCashBook, description: "رؤية شاشة النقدية والخزينة" },
+  {
+    code: PERMISSIONS.cashRemainingView,
+    description: "رؤية المتبقي النقدي في درج الكاشير",
+  },
+  {
+    code: PERMISSIONS.cashMonthlyBalanceView,
+    description: "رؤية الرصيد النقدي الشهري داخل صفحة التقفيل",
+  },
 ];
 
 /**
@@ -268,6 +315,72 @@ export const SECTION_CATALOG: Array<{
     label: "تعديل الإعدادات",
     hint: "إضافة/تعديل/حذف الكيانات الأساسية وهوية المطبوعات",
     group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.sectionCashBook,
+    label: "شاشة النقدية والخزينة",
+    hint: "سجل المصاريف، المتبقي النقدي، الرصيد الشهري، وإقفال الشهر",
+    group: "الشاشات",
+  },
+  {
+    code: PERMISSIONS.cashExpensesRead,
+    label: "قراءة سجل المصاريف النقدية",
+    hint: "عرض فواتير المصاريف والمشتريات النقدية",
+    group: "صلاحيات القراءة",
+  },
+  {
+    code: PERMISSIONS.settlementsRead,
+    label: "قراءة تسويات الشبكات",
+    hint: "عرض تسويات الشبكات وتطبيقات التوصيل وعمولاتها",
+    group: "صلاحيات القراءة",
+  },
+  {
+    code: PERMISSIONS.monthlySummaryView,
+    label: "عرض ملخص الإقفال",
+    hint: "ملخّص إقفال الشهر والرصيد النقدي الشهري",
+    group: "صلاحيات القراءة",
+  },
+  {
+    code: PERMISSIONS.cashExpensesWrite,
+    label: "تسجيل مصروف نقدي",
+    hint: "إضافة وتعديل فواتير المصاريف والمشتريات",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.settlementsManage,
+    label: "تسجيل تسوية شبكة",
+    hint: "إضافة وتعديل تسويات الشبكات وتطبيقات التوصيل",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.settlementsConfirm,
+    label: "تأكيد سداد التسوية",
+    hint: "تأكيد وصول المبلغ إلى البنك وإقفال التسوية",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.monthlyCarryForward,
+    label: "اعتماد الترحيل الشهري",
+    hint: "ترحيل صافي الشهر إلى بداية الشهر الجديد",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.monthlyReset,
+    label: "تصفير الرصيد الشهري",
+    hint: "بدء الشهر الجديد من صفر بلا ترحيل",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.cashRemainingView,
+    label: "المتبقي النقدي في درج الكاشير",
+    hint: "خانة المتبقي داخل صفحة تقفيل الكاشير — من لا يملكها لا يراها",
+    group: "صلاحيات القراءة",
+  },
+  {
+    code: PERMISSIONS.cashMonthlyBalanceView,
+    label: "الرصيد النقدي الشهري",
+    hint: "الرصيد المتراكم للشهر أسفل أرقام اليوم في صفحة التقفيل",
+    group: "صلاحيات القراءة",
   },
 ];
 
@@ -713,6 +826,132 @@ export const MODULE_CATALOG: AccessModule[] = [
       },
     ],
   },
+
+  /* ── النقدية والخزينة وإقفال الشهر ───────────────────────────── */
+  {
+    key: "cash_expenses",
+    label: "المصاريف والمشتريات النقدية",
+    hint: "سجل موحّد لكل فاتورة تُدفع نقداً — تُسجَّل مرة وتُخصم مرة",
+    group: "الكاشير والمالية",
+    levels: [
+      {
+        level: 1,
+        codes: [P.cashExpensesRead, P.sectionCashBook],
+        hint: "عرض السجل والمتبقي النقدي والرصيد الشهري",
+      },
+      {
+        level: 2,
+        codes: [P.cashExpensesWrite],
+        hint: "تسجيل فاتورة مصروف أو شراء نقدي",
+      },
+      {
+        level: 3,
+        codes: [P.cashExpensesWrite],
+        hint: "تعديل فواتير السجل",
+      },
+    ],
+  },
+  {
+    key: "settlements",
+    label: "تسوية الشبكات وتطبيقات التوصيل",
+    hint: "مبيعات كل جهة مقابل المستلم في البنك، والعمولة والنسبة والضريبة",
+    group: "الكاشير والمالية",
+    levels: [
+      {
+        level: 1,
+        codes: [P.settlementsRead, P.sectionCashBook],
+        hint: "عرض التسويات وعمولاتها",
+      },
+      { level: 2, codes: [P.settlementsManage], hint: "تسجيل تسوية جديدة" },
+      {
+        level: 3,
+        codes: [P.settlementsManage],
+        hint: "تعديل التسويات قبل تأكيدها",
+      },
+      {
+        level: 4,
+        codes: [P.settlementsConfirm],
+        hint: "تأكيد وصول المبلغ للبنك وإقفال التسوية",
+      },
+    ],
+  },
+
+  /*
+   * بندان مستقلان بخانة صح واحدة لكل بند، وموضعهما داخل صفحة تقفيل الكاشير
+   * نفسها: «المتبقي النقدي في الدرج» و«الرصيد النقدي الشهري». من لا يملك
+   * البند لا يرى خانته أصلاً، والخادم لا يُرسل رقمها في الاستجابة أساساً.
+   */
+  {
+    key: "cash_remaining",
+    label: "المتبقي النقدي في درج الكاشير",
+    hint: "خانة المتبقي داخل صفحة التقفيل: النقدي − مصاريف التقفيلة",
+    group: "الكاشير والمالية",
+    levels: [
+      {
+        level: 1,
+        codes: [P.cashRemainingView],
+        hint: "رؤية المتبقي النقدي في نموذج التقفيلة وفي سجل التقفيلات",
+      },
+    ],
+  },
+  {
+    key: "cash_monthly_balance",
+    label: "الرصيد النقدي الشهري",
+    hint: "الرصيد المتراكم للشهر أسفل أرقام اليوم في صفحة التقفيل",
+    group: "الكاشير والمالية",
+    levels: [
+      {
+        level: 1,
+        codes: [P.cashMonthlyBalanceView],
+        hint: "رؤية الرصيد الشهري المتراكم داخل صفحة تقفيل الكاشير",
+      },
+    ],
+  },
+
+  /*
+   * ثلاثة بنود مستقلة بخانة صح واحدة لكل بند (لا سلّم درجات فيها):
+   * من مُنح البند رآه وعمل به، ومن لم يُمنح لا يرى الزر أصلاً — والخادم
+   * يرفض الطلب على كل حال. الأونر يملكها افتراضياً ويمنحها من يشاء.
+   */
+  {
+    key: "monthly_summary",
+    label: "عرض ملخص الإقفال",
+    hint: "ملخّص إقفال الشهر (الإجمالي، المصاريف، الصافي) والرصيد الشهري",
+    group: "إقفال الشهر والترحيل",
+    levels: [
+      {
+        level: 1,
+        codes: [P.monthlySummaryView, P.sectionCashBook],
+        hint: "عرض ملخّص الإقفال الشهري وحده دون أي قرار",
+      },
+    ],
+  },
+  {
+    key: "monthly_carry_forward",
+    label: "اعتماد الترحيل الشهري",
+    hint: "ترحيل صافي الشهر تلقائياً إلى بداية الشهر الجديد",
+    group: "إقفال الشهر والترحيل",
+    levels: [
+      {
+        level: 1,
+        codes: [P.monthlyCarryForward, P.monthlySummaryView, P.sectionCashBook],
+        hint: "إظهار زر «اعتماد الترحيل» والضغط عليه",
+      },
+    ],
+  },
+  {
+    key: "monthly_reset",
+    label: "تصفير الرصيد الشهري",
+    hint: "بدء الشهر الجديد من صفر بلا ترحيل",
+    group: "إقفال الشهر والترحيل",
+    levels: [
+      {
+        level: 1,
+        codes: [P.monthlyReset, P.monthlySummaryView, P.sectionCashBook],
+        hint: "إظهار زر «تصفير» والضغط عليه",
+      },
+    ],
+  },
 ];
 
 export const MODULE_INDEX = new Map(MODULE_CATALOG.map((item) => [item.key, item]));
@@ -746,6 +985,14 @@ export const MODULE_DELETE_GRADE: Record<string, { codes: string[]; hint: string
   branches: { codes: [P.branchesWrite], hint: "حذف فرع" },
   settings: { codes: [P.settingsManage], hint: "حذف كيان أساسي" },
   access_control: { codes: [P.permissionsManage], hint: "حذف قواعد الصلاحيات" },
+  cash_expenses: {
+    codes: [P.cashExpensesWrite],
+    hint: "حذف فاتورة من سجل المصاريف النقدية",
+  },
+  settlements: {
+    codes: [P.settlementsManage],
+    hint: "حذف تسوية لم تُؤكَّد بعد",
+  },
 };
 
 /** هل لهذا البند خانة حذف أصلاً؟ */

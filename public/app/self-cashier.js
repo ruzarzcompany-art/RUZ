@@ -25,8 +25,8 @@ const MONEY_FIELDS = [
   "countedCash",
 ];
 
-/** حقلان يشتقّهما الخادم من البنود، فلا يُدخلان يدوياً. */
-const DERIVED_FIELDS = new Set(["cardSales", "deliverySales"]);
+/** حقول يشتقّها الخادم من البنود والأسطر، فلا تُدخل يدوياً. */
+const DERIVED_FIELDS = new Set(["cardSales", "deliverySales", "expenses"]);
 
 const LINE_TABLES = {
   network: {
@@ -38,6 +38,11 @@ const LINE_TABLES = {
     table: "self-cash-delivery",
     empty: "self-cash-delivery-empty",
     namePlaceholder: "اسم التطبيق",
+  },
+  expense: {
+    table: "self-cash-expense",
+    empty: "self-cash-expense-empty",
+    namePlaceholder: "البيان (غاز، دجاج، لبن ...)",
   },
 };
 
@@ -53,6 +58,17 @@ const state = {
   lines: [],
   defaultNetworkLines: [],
   defaultDeliveryApps: [],
+  /**
+   * مصاريف السجل الموحّد: مصاريف اليوم كاملة، ومصاريف الوردية المعروضة.
+   * يحسبها الخادم من `cash_expenses` ويعيدها مع تقفيل اليوم، ومنها يظهر
+   * «المتبقي النقدي» في الشاشة (المبيعات النقدية − هذه المصاريف).
+   */
+  dayExpenses: 0,
+  registerExpenses: 0,
+  /** ما بقي من السجل المنفصل القديم لليوم */
+  legacyExpenses: 0,
+  /** بند «المتبقي النقدي» المستقل كما يعيده الخادم */
+  caps: { viewRemaining: false },
   /** تقفيلات اليوم المحمّلة من الخادم، مفتاحها الوردية. */
   byShift: new Map(),
 };
@@ -94,22 +110,32 @@ function renderLines(category) {
   const meta = LINE_TABLES[category];
   const body = el(meta.table).querySelector("tbody");
   const own = state.lines.filter((line) => line.category === category);
+  // سطر المصروف بحقلين فقط: البيان والمبلغ
+  const isExpense = category === "expense";
 
   body.replaceChildren(
-    ...own.map((line) =>
-      row([
+    ...own.map((line) => {
+      const cells = [
         lineField(line.label, {
           placeholder: meta.namePlaceholder,
           onInput: (value) => {
             line.label = value;
           },
         }),
-        lineField(line.reference ?? "", {
-          placeholder: "اختياري",
-          onInput: (value) => {
-            line.reference = value;
-          },
-        }),
+      ];
+
+      if (!isExpense) {
+        cells.push(
+          lineField(line.reference ?? "", {
+            placeholder: "اختياري",
+            onInput: (value) => {
+              line.reference = value;
+            },
+          }),
+        );
+      }
+
+      cells.push(
         lineField(line.amount ?? 0, {
           type: "number",
           onInput: (value) => {
@@ -125,8 +151,10 @@ function renderLines(category) {
             recomputeDerived();
           },
         }),
-      ]),
-    ),
+      );
+
+      return row(cells);
+    }),
   );
 
   el(meta.empty).hidden = own.length > 0;
@@ -135,6 +163,7 @@ function renderLines(category) {
 function renderAllLines() {
   renderLines("network");
   renderLines("delivery_app");
+  renderLines("expense");
   recomputeDerived();
 }
 
@@ -153,6 +182,8 @@ function recomputeDerived() {
   const foodics = Number(el("self-cash-foodicsSales").value || 0);
   el("self-cash-cardSales").value = (Math.round((sum("network") + foodics) * 100) / 100).toFixed(2);
   el("self-cash-deliverySales").value = (Math.round(sum("delivery_app") * 100) / 100).toFixed(2);
+  // كل مصروف مكتوب في الصفحة يُخصم تلقائياً من نقدي التقفيلة
+  el("self-cash-expenses").value = (Math.round(sum("expense") * 100) / 100).toFixed(2);
   updatePreview();
 }
 
@@ -172,6 +203,15 @@ function updatePreview() {
 
   el("self-cash-diff-hint").textContent =
     difference < -0.009 ? "عجز في الدرج" : difference > 0.009 ? "زيادة في الدرج" : "مطابق";
+
+  // مصاريف التقفيلة = أسطر المصروف المكتوبة هنا + ما بقي من السجل القديم
+  const expensesTotal =
+    Math.round((value("expenses") + state.legacyExpenses) * 100) / 100;
+  const remaining = Math.round((value("cashSales") - expensesTotal) * 100) / 100;
+  el("self-cash-register-expenses").textContent = formatMoney(expensesTotal);
+  const remainingNode = el("self-cash-remaining");
+  remainingNode.textContent = formatMoney(remaining);
+  remainingNode.classList.toggle("is-negative", remaining < -0.009);
 }
 
 /* ── تعبئة الشاشة من تقفيل محفوظ ───────────────────────────── */
@@ -187,6 +227,18 @@ function applyShift() {
   }
   el("self-cash-invoices").value = closing ? Number(closing.invoiceCount ?? 0) : 0;
   el("self-cash-notes").value = closing?.notes ?? "";
+
+  // ما بقي من السجل المنفصل القديم = مصاريف اليوم/الوردية − أسطر التقفيلة
+  const savedExpenseLines = (closing?.lines ?? [])
+    .filter((line) => line.category === "expense")
+    .reduce((total, line) => total + Number(line.amount || 0), 0);
+  const dayTotal = closing
+    ? Number(closing.registerExpenses ?? 0)
+    : state.dayExpenses;
+  state.legacyExpenses = Math.max(
+    0,
+    Math.round((dayTotal - savedExpenseLines) * 100) / 100,
+  );
 
   state.lines = closing?.lines?.length
     ? closing.lines.map((line) => ({ ...line }))
@@ -226,6 +278,10 @@ export async function refreshSelfCashier() {
   state.businessDate = result.businessDate;
   state.defaultNetworkLines = result.defaultNetworkLines ?? [];
   state.defaultDeliveryApps = result.defaultDeliveryApps ?? [];
+  state.dayExpenses = Number(result.cashPosition?.expenses ?? 0);
+  // «المتبقي النقدي» بند مستقل في الصلاحيات — الخادم هو من يقرّره
+  state.caps.viewRemaining = result.can?.viewRemaining === true;
+  el("self-cash-remaining-chip").hidden = !state.caps.viewRemaining;
   state.byShift = new Map((result.closings ?? []).map((closing) => [closing.shift, closing]));
 
   el("self-cash-date").value = result.businessDate;
@@ -278,6 +334,7 @@ export function initSelfCashier() {
   el("self-cash-shift").addEventListener("change", applyShift);
   el("self-cash-add-network").addEventListener("click", () => addLine("network"));
   el("self-cash-add-delivery").addEventListener("click", () => addLine("delivery_app"));
+  el("self-cash-add-expense").addEventListener("click", () => addLine("expense"));
 
   for (const field of MONEY_FIELDS) {
     if (DERIVED_FIELDS.has(field)) continue;

@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import {
   accessRules,
@@ -84,6 +84,15 @@ const ACCESS_TEMPLATES: Record<string, string[]> = {
     PERMISSIONS.sectionInventory,
     PERMISSIONS.sectionSettings,
     PERMISSIONS.sectionDocuments,
+    PERMISSIONS.sectionCashBook,
+    PERMISSIONS.cashExpensesRead,
+    PERMISSIONS.cashExpensesWrite,
+    PERMISSIONS.settlementsRead,
+    PERMISSIONS.settlementsManage,
+    PERMISSIONS.settlementsConfirm,
+    PERMISSIONS.monthlySummaryView,
+    PERMISSIONS.monthlyCarryForward,
+    PERMISSIONS.monthlyReset,
   ],
   /** مدير الفرع: يصحّح انصراف الورديات المُقفلة تلقائياً، لكن بلا إدخال يدوي كامل. */
   branch_manager: [
@@ -405,6 +414,64 @@ async function runSeed(): Promise<void> {
  * يُعيد بذر البيانات التجريبية عند الطلب (بعد إلغاء علم الحذف) — يستخدمه
  * مسار «إعادة البيانات التجريبية» في لوحة الإعدادات.
  */
+/**
+ * بنود النقدية وإقفال الشهر التي يملكها الأونر افتراضياً.
+ *
+ * «الأونر» هنا هو من يملك بند «إدارة الصلاحيات» بدرجة التعديل — أي من بيده
+ * منح الصلاحيات أصلاً. تُكتب له قواعد صريحة لهذه البنود مرة واحدة فقط
+ * (ON CONFLICT DO NOTHING)، فيستطيع بعدها منحها أو سحبها من أي موظف من شاشة
+ * «إدارة الصلاحيات» — وأي تعديل يجريه هناك لا يعود البذر فيكتبه.
+ *
+ * ومن لم تُمنح له هذه البنود لا يرى أزرار الترحيل والتصفير إطلاقاً، والخادم
+ * يرفض طلبه لو استدعى المسار مباشرة.
+ */
+const CASH_CLOSING_GRANTS: Array<{
+  moduleKey: string;
+  level: number;
+  canDelete: boolean;
+}> = [
+  { moduleKey: "cash_expenses", level: 3, canDelete: true },
+  { moduleKey: "settlements", level: 4, canDelete: true },
+  { moduleKey: "monthly_summary", level: 1, canDelete: false },
+  { moduleKey: "monthly_carry_forward", level: 1, canDelete: false },
+  { moduleKey: "monthly_reset", level: 1, canDelete: false },
+];
+
+/**
+ * يمنح الأونر بنود النقدية وإقفال الشهر إن لم تكن ممنوحة له بعد.
+ * إضافة خالصة: لا تُعدَّل قاعدة قائمة ولا تُسحب من أحد.
+ */
+export async function ensureCashClosingGrants(): Promise<void> {
+  const db = getDb();
+
+  const owners = await db
+    .select({
+      scopeType: accessRules.scopeType,
+      scopeKey: accessRules.scopeKey,
+      employeeId: accessRules.employeeId,
+    })
+    .from(accessRules)
+    .where(
+      and(eq(accessRules.moduleKey, "access_control"), gte(accessRules.level, 3)),
+    );
+
+  if (owners.length === 0) return;
+
+  const rows = owners.flatMap((owner) =>
+    CASH_CLOSING_GRANTS.map((grant) => ({
+      scopeType: owner.scopeType,
+      scopeKey: owner.scopeKey,
+      employeeId: owner.employeeId,
+      moduleKey: grant.moduleKey,
+      level: grant.level,
+      canDelete: grant.canDelete,
+      note: "بند نقدية أولي للأونر — امنحه أو اسحبه من شاشة إدارة الصلاحيات",
+    })),
+  );
+
+  await db.insert(accessRules).values(rows).onConflictDoNothing();
+}
+
 export async function reseedNow(): Promise<void> {
   seedPromise = undefined;
   await ensureSeeded();
@@ -418,10 +485,13 @@ let seedPromise: Promise<void> | undefined;
  */
 export function ensureSeeded(): Promise<void> {
   if (!seedPromise) {
-    seedPromise = runSeed().catch((error) => {
-      seedPromise = undefined; // اسمح بإعادة المحاولة في الطلب التالي
-      throw error;
-    });
+    seedPromise = runSeed()
+      // منح الأونر بنود النقدية وإقفال الشهر مرة واحدة (idempotent)
+      .then(ensureCashClosingGrants)
+      .catch((error) => {
+        seedPromise = undefined; // اسمح بإعادة المحاولة في الطلب التالي
+        throw error;
+      });
   }
   return seedPromise;
 }

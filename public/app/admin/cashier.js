@@ -42,8 +42,8 @@ const MONEY_FIELDS = [
   ["countedCash", "النقد المعدود في الدرج"],
 ];
 
-/** حقول يحسبها الخادم من البنود، فلا تُدخل يدوياً. */
-const DERIVED_FIELDS = new Set(["cardSales", "deliverySales"]);
+/** حقول يحسبها الخادم من البنود والأسطر، فلا تُدخل يدوياً. */
+const DERIVED_FIELDS = new Set(["cardSales", "deliverySales", "expenses"]);
 
 /** جدول كل تصنيف من بنود التقفيل. */
 const LINE_TABLES = {
@@ -57,6 +57,11 @@ const LINE_TABLES = {
     empty: "cashier-lines-delivery-empty",
     namePlaceholder: "اسم التطبيق",
   },
+  expense: {
+    table: "cashier-lines-expense",
+    empty: "cashier-lines-expense-empty",
+    namePlaceholder: "البيان (غاز، دجاج، لبن ...)",
+  },
 };
 
 /** تقسيم صفحات جداول الشاشة: التقفيلات وبنود كل تصنيف. */
@@ -64,6 +69,7 @@ const closingsPager = createPager("cashier-table", { unit: "تقفيل" });
 const linePagers = {
   network: createPager(LINE_TABLES.network.table, { unit: "بند" }),
   delivery_app: createPager(LINE_TABLES.delivery_app.table, { unit: "تطبيق" }),
+  expense: createPager(LINE_TABLES.expense.table, { unit: "سطر" }),
 };
 
 const state = {
@@ -79,6 +85,15 @@ const state = {
   lines: [],
   defaultNetworkLines: [],
   defaultDeliveryApps: [],
+  /**
+   * مصاريف السجل الموحّد المطبَّقة على التقفيل المعروض (يحسبها الخادم من
+   * `cash_expenses`)، ومنها يُعرض «المتبقي النقدي» في النموذج فوراً.
+   */
+  registerExpenses: 0,
+  /** ما بقي من السجل المنفصل القديم لليوم — يُضاف فوق أسطر التقفيلة */
+  legacyExpenses: 0,
+  /** بندان مستقلان في إدارة الصلاحيات، والخادم هو من يقرّرهما */
+  caps: { viewRemaining: false, viewMonthlyBalance: false },
   /** معرّف تقفيل اليوم المرفوع فعلاً — شرط تفعيل زر الطباعة. */
   todayClosingId: null,
 };
@@ -116,6 +131,8 @@ function recomputeDerived() {
   const foodics = Number(el("cashier-foodicsSales").value || 0);
   el("cashier-cardSales").value = (Math.round((sum("network") + foodics) * 100) / 100).toFixed(2);
   el("cashier-deliverySales").value = (Math.round(sum("delivery_app") * 100) / 100).toFixed(2);
+  // كل مصروف مكتوب في الصفحة يُخصم تلقائياً من نقدي التقفيلة
+  el("cashier-expenses").value = (Math.round(sum("expense") * 100) / 100).toFixed(2);
   updatePreview();
 }
 
@@ -140,23 +157,33 @@ function lineField(value, { type = "text", placeholder = "", onInput }) {
 function renderLines(category, { page = "keep" } = {}) {
   const meta = LINE_TABLES[category];
   const own = state.lines.filter((line) => line.category === category);
+  // سطر المصروف بحقلين لا ثالث لهما: البيان والمبلغ — لا مرجع ولا كمية
+  const isExpense = category === "expense";
 
   linePagers[category].render(
     own,
-    (line) =>
-      row([
+    (line) => {
+      const cells = [
         lineField(line.label, {
           placeholder: meta.namePlaceholder,
           onInput: (value) => {
             line.label = value;
           },
         }),
-        lineField(line.reference ?? "", {
-          placeholder: "اختياري",
-          onInput: (value) => {
-            line.reference = value;
-          },
-        }),
+      ];
+
+      if (!isExpense) {
+        cells.push(
+          lineField(line.reference ?? "", {
+            placeholder: "اختياري",
+            onInput: (value) => {
+              line.reference = value;
+            },
+          }),
+        );
+      }
+
+      cells.push(
         lineField(line.amount ?? 0, {
           type: "number",
           onInput: (value) => {
@@ -172,7 +199,10 @@ function renderLines(category, { page = "keep" } = {}) {
             recomputeDerived();
           },
         }),
-      ]),
+      );
+
+      return row(cells);
+    },
     { page },
   );
 
@@ -182,6 +212,7 @@ function renderLines(category, { page = "keep" } = {}) {
 function renderAllLines() {
   renderLines("network", { page: "first" });
   renderLines("delivery_app", { page: "first" });
+  renderLines("expense", { page: "first" });
 }
 
 function addLine(category) {
@@ -245,6 +276,7 @@ function fillForm(closing) {
         }))
       : defaultLines();
 
+  state.registerExpenses = Number(closing?.registerExpenses ?? state.registerExpenses ?? 0);
   state.editingId = closing?.id ?? null;
   renderAllLines();
   recomputeDerived();
@@ -268,6 +300,17 @@ function updatePreview() {
 
   el("cashier-diff-hint").textContent =
     difference < -0.009 ? "عجز في الدرج" : difference > 0.009 ? "زيادة في الدرج" : "مطابق";
+
+  // مصاريف التقفيلة = أسطر المصروف المكتوبة هنا + ما بقي من السجل القديم،
+  // وكلها تُخصم تلقائياً من نقدي التقفيلة.
+  const expensesTotal =
+    Math.round((value("expenses") + state.legacyExpenses) * 100) / 100;
+  const remaining = Math.round((value("cashSales") - expensesTotal) * 100) / 100;
+
+  el("cashier-register-expenses").textContent = formatMoney(expensesTotal);
+  const remainingNode = el("cashier-remaining");
+  remainingNode.textContent = formatMoney(remaining);
+  remainingNode.classList.toggle("is-negative", remaining < -0.009);
 }
 
 /** زر طباعة تقفيل اليوم لا يعمل قبل رفع التقفيل فعلاً. */
@@ -408,12 +451,17 @@ function renderClosings() {
       formatMoney(closing.expectedCash),
       formatMoney(closing.countedCash),
       differenceCell(closing.difference),
+      formatMoney(closing.registerExpenses ?? 0),
+      ...(state.caps.viewRemaining
+        ? [differenceCell(closing.remainingCash ?? 0)]
+        : []),
       statusChip(closing.status),
       actions,
     ]);
   });
 
   el("cashier-empty").hidden = state.closings.length > 0;
+  el("cashier-th-remaining").hidden = !state.caps.viewRemaining;
 }
 
 function renderSummary(summary) {
@@ -429,7 +477,12 @@ function renderSummary(summary) {
     ["شبكة foodics", formatMoney(summary.foodicsSales)],
     ["تطبيقات التواصل", formatMoney(summary.deliverySales)],
     ["صافي الفروقات", formatMoney(summary.difference)],
+    ["مصاريف التقفيلات", formatMoney(summary.registerExpenses)],
   ];
+
+  if (state.caps.viewRemaining) {
+    items.push(["المتبقي النقدي", formatMoney(summary.remainingCash ?? 0)]);
+  }
 
   for (const [labelText, value] of items) {
     const chip = document.createElement("span");
@@ -440,6 +493,71 @@ function renderSummary(summary) {
     box.append(chip);
   }
 }
+
+/* ── الرصيد النقدي الشهري داخل صفحة التقفيل ─────────────────────── */
+
+/**
+ * الرصيد المتراكم للشهر يظهر أسفل أرقام اليوم في الصفحة نفسها لا في صفحة
+ * منفصلة. وهو بندٌ مستقل في إدارة الصلاحيات: من لا يملكه يرفض الخادم طلبه
+ * فيُخفى القسم كله، فلا يكفي إخفاؤه في المتصفح.
+ */
+export async function loadMonthlyBalance() {
+  const card = el("cashier-balance-card");
+  const month = el("cashier-balance-month").value || todayIso().slice(0, 7);
+  const result = await api("/finance/monthly-balance?month=" + month);
+
+  if (!result.ok) {
+    card.hidden = true;
+    state.caps.viewMonthlyBalance = false;
+    return;
+  }
+
+  card.hidden = false;
+  state.caps.viewMonthlyBalance = true;
+
+  const summary = result.summary ?? {};
+  const box = el("cashier-balance-chips");
+  box.textContent = "";
+
+  const chips = [
+    ["المرحّل من الشهر السابق", formatMoney(summary.openingBalance)],
+    ["النقدي المتراكم من التقفيلات", formatMoney(summary.cashSalesTotal)],
+    ["المصاريف والمشتريات النقدية", formatMoney(summary.expensesTotal)],
+    ["الرصيد المتراكم للشهر", formatMoney(summary.netAmount)],
+    ["حالة الشهر", result.statusLabel ?? "مفتوح"],
+  ];
+
+  for (const [labelText, value] of chips) {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    const strong = document.createElement("strong");
+    strong.textContent = value;
+    chip.append(document.createTextNode(`${labelText}: `), strong);
+    box.append(chip);
+  }
+
+  const body = el("cashier-balance-table").querySelector("tbody");
+  body.replaceChildren(
+    ...(summary.days ?? []).map((day) =>
+      row([
+        day.businessDate,
+        formatMoney(day.cashSales),
+        formatMoney(day.expenses),
+        formatMoney(day.remainingCash),
+      ]),
+    ),
+  );
+
+  el("cashier-balance-empty").hidden = (summary.days ?? []).length > 0;
+  setAlert(el("cashier-balance-result"), "");
+}
+
+/** يخفي ما لا يملك المستخدم بنده: خانة المتبقي وقسم الرصيد الشهري. */
+function applyCapabilities() {
+  el("cashier-remaining-chip").hidden = !state.caps.viewRemaining;
+  el("cashier-th-remaining").hidden = !state.caps.viewRemaining;
+}
+
 
 export async function loadClosings() {
   const params = new URLSearchParams();
@@ -464,6 +582,11 @@ export async function loadClosings() {
   }
 
   state.closings = result.closings ?? [];
+  // بند «المتبقي النقدي» مستقل، والخادم هو من يقرّره لا المتصفح
+  if (result.canViewRemaining !== undefined) {
+    state.caps.viewRemaining = result.canViewRemaining === true;
+    applyCapabilities();
+  }
   state.canReview = state.can("cashier.review");
   renderClosings();
   renderSummary(result.summary);
@@ -545,6 +668,9 @@ export function initCashierModule({ can, levelOf, canDeleteIn }) {
 
   el("cashier-add-network").addEventListener("click", () => addLine("network"));
   el("cashier-add-delivery").addEventListener("click", () => addLine("delivery_app"));
+  el("cashier-add-expense").addEventListener("click", () => addLine("expense"));
+  el("cashier-balance-run").addEventListener("click", loadMonthlyBalance);
+  el("cashier-balance-month").addEventListener("change", loadMonthlyBalance);
   el("cashier-print").addEventListener("click", printToday);
 
   el("cashier-filter-run").addEventListener("click", loadClosings);
@@ -570,10 +696,29 @@ export async function refreshCashierPanel() {
       el("cashier-today-note").textContent = `تاريخ العمل بتوقيت الفرع: ${today.businessDate}`;
       state.defaultNetworkLines = today.defaultNetworkLines ?? [];
       state.defaultDeliveryApps = today.defaultDeliveryApps ?? [];
+      state.caps.viewRemaining = today.can?.viewRemaining === true;
 
       const existing = today.closings?.[0];
+
+      // ما بقي من السجل المنفصل القديم = مصاريف اليوم − أسطر التقفيلة نفسها،
+      // فلا يُحسب سطر المصروف مرتين في معاينة المتبقي.
+      const savedExpenseLines = (existing?.lines ?? [])
+        .filter((line) => line.category === "expense")
+        .reduce((total, line) => total + Number(line.amount || 0), 0);
+      state.legacyExpenses = Math.max(
+        0,
+        Math.round(
+          (Number(today.cashPosition?.expenses ?? 0) - savedExpenseLines) * 100,
+        ) / 100,
+      );
+
       state.todayClosingId = existing?.id ?? null;
       updatePrintState();
+      applyCapabilities();
+
+      if (!el("cashier-balance-month").value) {
+        el("cashier-balance-month").value = today.businessDate.slice(0, 7);
+      }
 
       if (existing && state.editingId === null) fillForm(existing);
       else if (state.lines.length === 0) fillForm(null);
@@ -581,5 +726,5 @@ export async function refreshCashierPanel() {
     }
   }
 
-  await loadClosings();
+  await Promise.all([loadClosings(), loadMonthlyBalance()]);
 }

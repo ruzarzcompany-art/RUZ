@@ -48,6 +48,7 @@ import {
 import { initReportsModule } from "./reports.js";
 import { initSettingsModule, refreshSettingsPanel } from "./settings.js";
 import { initCashierModule, refreshCashierPanel } from "./cashier.js";
+import { initCashboxModule, refreshCashboxPanel } from "./cashbox.js";
 import { initInventoryModule, refreshInventoryPanel } from "./inventory.js";
 import { initDocumentsModule, refreshDocumentsPanel } from "./documents.js";
 import { initAccessModule, refreshAccessPanel } from "./access.js";
@@ -1073,6 +1074,7 @@ const PANEL_LOADERS = {
   branches: refreshBranchesPanel,
   documents: refreshDocumentsPanel,
   cashier: refreshCashierPanel,
+  cashbox: refreshCashboxPanel,
   inventory: refreshInventoryPanel,
   reports: async () => {
     fillPeopleSelects();
@@ -1315,6 +1317,12 @@ const TAB_PERMISSIONS = {
   branches: ["branches.read"],
   documents: ["documents.print", "documents.read_all", "disciplinary.manage", "forms.read_all"],
   cashier: ["cashier.submit", "cashier.review", "cashier.read_all", "sections.cashier"],
+  cashbox: [
+    "cash_expenses.read",
+    "settlements.read",
+    "monthly.summary_view",
+    "sections.cash_book",
+  ],
   inventory: ["inventory.read", "inventory.write", "sections.inventory"],
   reports: ["reports.view", "sections.reports"],
   settings: ["settings.manage", "branches.manage", "sections.settings"],
@@ -1396,6 +1404,7 @@ async function boot() {
   initReportsModule();
   initSettingsModule({ can, employees: state.employees });
   initCashierModule({ can, levelOf, canDeleteIn });
+  initCashboxModule({ can, levelOf, canDeleteIn });
   initInventoryModule({ can, levelOf, canDeleteIn });
   initDocumentsModule({ can, levelOf, canDeleteIn });
   initAccessModule({ can });
