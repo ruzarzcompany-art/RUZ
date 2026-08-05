@@ -8,7 +8,10 @@ import {
   codesForModuleLevel,
   deleteCodesForModule,
   isDeleteAvailable,
+  maxAvailableLevel,
   MODULE_CATALOG,
+  MODULE_INDEX,
+  MODULE_INHERITS,
   PERMISSIONS,
   type AccessLevel,
   type AccessScopeType,
@@ -37,6 +40,7 @@ export {
   MODULE_CATALOG,
   MODULE_DELETE_GRADE,
   MODULE_INDEX,
+  MODULE_INHERITS,
   PERMISSION_CATALOG,
   PERMISSIONS,
   SECTION_CATALOG,
@@ -255,6 +259,24 @@ export function buildAccessProfile(rules: MatchedAccessRule[]): AccessProfile {
     levels[module.key] = rule ? rule.level : 0;
     deletes[module.key] =
       isDeleteAvailable(module.key) && rule !== undefined && rule.canDelete;
+  }
+
+  /*
+   * وراثة البنود المفصولة: البند الابن بلا قاعدة خاصة يأخذ درجة أبيه وخانة
+   * حذفه. لا يوسّع هذا صلاحية أحد، إنما يمنع سحبها بأثر رجعي حين يُفصل بندٌ
+   * كان مندرجاً في غيره — ووجود قاعدة صريحة للابن يُلغي الوراثة كلها سحباً
+   * كان أو منحاً، فالقاعدة الصريحة هي القول الأخير دائماً.
+   */
+  for (const [child, parent] of Object.entries(MODULE_INHERITS)) {
+    if (decisions[child] !== undefined) continue;
+    if (!MODULE_INDEX.has(child)) continue;
+    const inherited = levels[parent] ?? 0;
+    if (inherited > 0) {
+      levels[child] = Math.min(inherited, maxAvailableLevel(child));
+    }
+    if (isDeleteAvailable(child) && deletes[parent] === true) {
+      deletes[child] = true;
+    }
   }
 
   // الرموز الذرّية التي تبرّرها هذه الدرجات — وهي كل ما يملكه الموظف

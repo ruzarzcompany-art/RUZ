@@ -862,16 +862,51 @@ export const MODULE_CATALOG: AccessModule[] = [
         codes: [P.settlementsRead, P.sectionCashBook],
         hint: "عرض التسويات وعمولاتها",
       },
-      { level: 2, codes: [P.settlementsManage], hint: "تسجيل تسوية جديدة" },
+      {
+        level: 2,
+        codes: [P.settlementsManage],
+        hint: "إضافة: إنشاء تسوية شهر جديدة وترحيل غير المحوّل إلى الشهر الجديد",
+      },
       {
         level: 3,
         codes: [P.settlementsManage],
-        hint: "تعديل التسويات قبل تأكيدها",
+        hint: "تعديل: تغيير أرقام تسوية قائمة (نسبة العقد، المخصوم الفعلي، المحوّل)",
       },
       {
         level: 4,
         codes: [P.settlementsConfirm],
-        hint: "تأكيد وصول المبلغ للبنك وإقفال التسوية",
+        hint: "اعتماد: تأكيد وصول المبلغ للبنك وإقفال التسوية فلا تُعدَّل بعده",
+      },
+    ],
+  },
+  /*
+   * بند مستقل لدفعات التحويل: قد يُؤتمن محاسب على إدخال مبالغ الحوالات
+   * وتصحيحها دون أن يُمكَّن من أرقام التسوية نفسها ولا من اعتمادها.
+   *
+   * وإن لم تُوضع له قاعدة خاصة ورث درجته من بند «تسوية الشبكات» حرفياً
+   * (MODULE_INHERITS أدناه)، فلا تُسحب صلاحية أحد بمجرّد فصل البند — ومتى
+   * وُضعت له قاعدة صريحة تقدّمت على الوراثة.
+   */
+  {
+    key: "settlement_payments",
+    label: "دفعات التحويل في التسوية",
+    hint: "مبالغ الحوالات الواصلة للبنك: كل دفعة بتاريخها ومرجعها ومبلغها",
+    group: "الكاشير والمالية",
+    levels: [
+      {
+        level: 1,
+        codes: [P.settlementsRead, P.sectionCashBook],
+        hint: "اطلاع: فتح لوحة الدفعات وقراءة كل دفعة بتاريخها ومرجعها",
+      },
+      {
+        level: 2,
+        codes: [P.settlementsManage],
+        hint: "إضافة: تسجيل مبلغ حوالة وصل بتاريخه ومرجعه",
+      },
+      {
+        level: 3,
+        codes: [P.settlementsManage],
+        hint: "تعديل: تصحيح مبلغ دفعة أو تاريخها أو مرجعها",
       },
     ],
   },
@@ -957,6 +992,19 @@ export const MODULE_CATALOG: AccessModule[] = [
 export const MODULE_INDEX = new Map(MODULE_CATALOG.map((item) => [item.key, item]));
 
 /**
+ * بنود تُفصَل من بندٍ قائم: البند الابن يرث درجة أبيه وخانة حذفه إن لم
+ * تُوضع له قاعدة خاصة في `access_rules`.
+ *
+ * وُضعت لأن فصل بندٍ جديد لا يجوز أن يسحب صلاحية أحد بأثر رجعي: من كان
+ * يملك «تسوية الشبكات» يبقى عاملاً بالدفعات كما كان قبل الفصل بالضبط،
+ * حتى يقرّر مدير الصلاحيات وضع قاعدة صريحة للبند الجديد — وعندها تتقدّم
+ * قاعدته الصريحة على الوراثة سحباً أو منحاً.
+ */
+export const MODULE_INHERITS: Record<string, string> = {
+  settlement_payments: "settlements",
+};
+
+/**
  * درجة الحذف لكل بند فيه حذف فعلي في الخادم. البنود غير المذكورة هنا لا
  * تعرض خانة حذف أصلاً (لا يوجد فيها مسار حذف: التقارير، سجل التدقيق،
  * حضوري الشخصي، جداول الدوام، تعريف الراتب).
@@ -992,6 +1040,10 @@ export const MODULE_DELETE_GRADE: Record<string, { codes: string[]; hint: string
   settlements: {
     codes: [P.settlementsManage],
     hint: "حذف تسوية لم تُؤكَّد بعد",
+  },
+  settlement_payments: {
+    codes: [P.settlementsManage],
+    hint: "حذف دفعة أُدخلت خطأً — مستقلة عن حذف التسوية نفسها",
   },
 };
 

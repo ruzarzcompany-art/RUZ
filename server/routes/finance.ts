@@ -29,6 +29,8 @@ import {
   accessRulesByEmployee,
   buildAccessProfile,
   hasAnyPermission,
+  hasModuleDelete,
+  hasModuleLevel,
   requireAnyPermission,
   requireModuleDelete,
   requireModuleLevel,
@@ -1594,6 +1596,24 @@ financeRouter.post(
       return;
     }
 
+    /*
+     * فصل «الإضافة» عن «التعديل» فصلاً حقيقياً: إنشاء تسوية شهر لم تُسجَّل بعد
+     * يكفيه درجة الإضافة (2)، أما الكتابة فوق تسوية قائمة فهي تعديل لا إضافة،
+     * فتُطلب درجة التعديل (3) — ولا يكفي أن يملك الرمز الذرّي وحده.
+     */
+    if (existing && !(await hasModuleLevel(req, "settlements", 3))) {
+      res.status(403).json({
+        ok: false,
+        error:
+          "تسوية " +
+          providerName +
+          " لشهر " +
+          monthKey +
+          " مسجَّلة مسبقاً، وتغييرها يحتاج درجة «إضافة / تعديل» في بند تسوية الشبكات.",
+      });
+      return;
+    }
+
     // المرحّل الداخل: مثبَّتاً إن سُجِّل رسمياً، وإلا معاينةً من غير المحوّل سابقاً
     const previous = previousMonth(period.year, period.month);
     const previousKey = monthKeyOf(previous.year, previous.month);
@@ -1693,13 +1713,12 @@ financeRouter.post(
 
     // التأكيد إجراء موافقة ببنده المستقل، فلا يكفي «تسجيل تسوية»
     const confirm = body.confirm === true;
-    if (
-      confirm &&
-      !(await hasAnyPermission(req, [PERMISSIONS.settlementsConfirm]))
-    ) {
-      res
-        .status(403)
-        .json({ ok: false, error: "لا تملك صلاحية «تأكيد سداد التسوية»" });
+    if (confirm && !(await hasModuleLevel(req, "settlements", 4))) {
+      res.status(403).json({
+        ok: false,
+        error:
+          "الاعتماد درجة مستقلة: لا تملك «صلاحية إعطاء الموافقات» في بند تسوية الشبكات",
+      });
       return;
     }
 
@@ -1830,6 +1849,7 @@ financeRouter.get(
   "/finance/settlements/:id/payments",
   requireAuth,
   requirePermission(PERMISSIONS.settlementsRead),
+  requireModuleLevel("settlement_payments", 1),
   async (req: AuthedRequest, res: Response) => {
     const id = asId(req.params.id);
     if (id === null) {
@@ -1867,7 +1887,7 @@ financeRouter.post(
   "/finance/settlements/:id/payments",
   requireAuth,
   requirePermission(PERMISSIONS.settlementsManage),
-  requireModuleLevel("settlements", 2),
+  requireModuleLevel("settlement_payments", 2),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -1959,7 +1979,7 @@ financeRouter.patch(
   "/finance/settlements/payments/:paymentId",
   requireAuth,
   requirePermission(PERMISSIONS.settlementsManage),
-  requireModuleLevel("settlements", 3),
+  requireModuleLevel("settlement_payments", 3),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -2058,7 +2078,7 @@ financeRouter.delete(
   "/finance/settlements/payments/:paymentId",
   requireAuth,
   requirePermission(PERMISSIONS.settlementsManage),
-  requireModuleDelete("settlements"),
+  requireModuleDelete("settlement_payments"),
   async (req: AuthedRequest, res: Response) => {
     const db = getDb();
     const actor = req.employee!;
@@ -2368,6 +2388,7 @@ financeRouter.get(
   "/finance/settlements/monthly/report",
   requireAuth,
   requirePermission(PERMISSIONS.settlementsRead),
+  requireModuleLevel("settlements", 1),
   async (req: AuthedRequest, res: Response) => {
     const branchId = await resolveBranchId(req, req.query.branchId);
     if (branchId === null) {
@@ -3458,6 +3479,63 @@ financeRouter.get(
     const branchId = actor.branchId ?? branchRows[0]?.id ?? null;
     const timezone = await branchTimezone(branchId);
 
+    /*
+     * القدرات الفعلية للمستخدم في هذه الشاشة، مفصّلة كما يفصلها الخادم بالضبط
+     * حتى لا يظهر للمستخدم زرٌّ سيُرفَض عند الضغط: الاطلاع درجة 1، والإضافة 2،
+     * والتعديل 3، والاعتماد 4، والحذف خانة مستقلة عن السلّم كله. ودفعات
+     * التحويل بندها المستقل، فقد يملكها من لا يملك أرقام التسوية نفسها.
+     */
+    const capabilities = {
+      /** خانة «المتبقي النقدي في درج الكاشير» — بند مستقل في الصلاحيات */
+      viewRemaining: await hasAnyPermission(req, [PERMISSIONS.cashRemainingView]),
+      /** «الرصيد النقدي الشهري» داخل صفحة التقفيل — بند مستقل */
+      viewMonthlyBalance: await hasAnyPermission(req, [
+        PERMISSIONS.cashMonthlyBalanceView,
+      ]),
+      readExpenses: await hasAnyPermission(req, [PERMISSIONS.cashExpensesRead]),
+      writeExpenses: await hasAnyPermission(req, [PERMISSIONS.cashExpensesWrite]),
+      addExpenses: await hasModuleLevel(req, "cash_expenses", 2),
+      editExpenses: await hasModuleLevel(req, "cash_expenses", 3),
+      deleteExpenses: await hasModuleDelete(req, "cash_expenses"),
+      readSettlements: await hasAnyPermission(req, [PERMISSIONS.settlementsRead]),
+      manageSettlements: await hasAnyPermission(req, [
+        PERMISSIONS.settlementsManage,
+      ]),
+      confirmSettlements: await hasAnyPermission(req, [
+        PERMISSIONS.settlementsConfirm,
+      ]),
+      addSettlements: await hasModuleLevel(req, "settlements", 2),
+      editSettlements: await hasModuleLevel(req, "settlements", 3),
+      approveSettlements: await hasModuleLevel(req, "settlements", 4),
+      deleteSettlements: await hasModuleDelete(req, "settlements"),
+      viewPayments: await hasModuleLevel(req, "settlement_payments", 1),
+      addPayments: await hasModuleLevel(req, "settlement_payments", 2),
+      editPayments: await hasModuleLevel(req, "settlement_payments", 3),
+      deletePayments: await hasModuleDelete(req, "settlement_payments"),
+      viewMonthlySummary: await hasAnyPermission(req, [
+        PERMISSIONS.monthlySummaryView,
+      ]),
+      carryForward: await hasAnyPermission(req, [PERMISSIONS.monthlyCarryForward]),
+      resetBalance: await hasAnyPermission(req, [PERMISSIONS.monthlyReset]),
+    };
+
+    /*
+     * الدخول نفسه يُسجَّل في سجل التدقيق: من فتح شاشة «النقدية والإقفال» ومتى
+     * ومن أي عنوان، ومعه صورة قدراته وقت الدخول — فيُعرف من رأى الأرقام لا من
+     * غيّرها فقط. والتسجيل بعد نجاح فحص الصلاحية، فالمحاولة المرفوضة تُردّ 403
+     * قبل الوصول إلى هنا.
+     */
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "finance.cashbox.enter",
+      entityType: "cash_screen",
+      entityId: branchId,
+      before: null,
+      after: { branchId, capabilities },
+      reason: "دخول شاشة النقدية والإقفال",
+      ipAddress: clientIp(req),
+    });
+
     res.json({
       ok: true,
       branches: branchRows,
@@ -3472,30 +3550,7 @@ financeRouter.get(
         delivery_app: DEFAULT_DELIVERY_APPS,
       },
       monthStatusLabels: MONTH_STATUS_LABELS,
-      can: {
-        /** خانة «المتبقي النقدي في درج الكاشير» — بند مستقل في الصلاحيات */
-        viewRemaining: await hasAnyPermission(req, [
-          PERMISSIONS.cashRemainingView,
-        ]),
-        /** «الرصيد النقدي الشهري» داخل صفحة التقفيل — بند مستقل */
-        viewMonthlyBalance: await hasAnyPermission(req, [
-          PERMISSIONS.cashMonthlyBalanceView,
-        ]),
-        readExpenses: await hasAnyPermission(req, [PERMISSIONS.cashExpensesRead]),
-        writeExpenses: await hasAnyPermission(req, [PERMISSIONS.cashExpensesWrite]),
-        readSettlements: await hasAnyPermission(req, [PERMISSIONS.settlementsRead]),
-        manageSettlements: await hasAnyPermission(req, [
-          PERMISSIONS.settlementsManage,
-        ]),
-        confirmSettlements: await hasAnyPermission(req, [
-          PERMISSIONS.settlementsConfirm,
-        ]),
-        viewMonthlySummary: await hasAnyPermission(req, [
-          PERMISSIONS.monthlySummaryView,
-        ]),
-        carryForward: await hasAnyPermission(req, [PERMISSIONS.monthlyCarryForward]),
-        resetBalance: await hasAnyPermission(req, [PERMISSIONS.monthlyReset]),
-      },
+      can: capabilities,
     });
   },
 );

@@ -6,9 +6,11 @@ import {
   buildAccessProfile,
   codesForModuleLevel,
   deleteCodesForModule,
+  maxAvailableLevel,
   MOBILE_APP_FLOOR_CODES,
   MODULE_CATALOG,
   MODULE_INDEX,
+  MODULE_INHERITS,
   resolveRuleDecisions,
   satisfiesMobileAppFloor,
 } from "./rbac.js";
@@ -18,7 +20,12 @@ import {
  * هناك أساس ضمني يُستنتج منه شيء. فصار عمل هذه الأداة تثبيت ذلك عملياً لا
  * افتراضه: تقرأ ما يملكه كل موظف فعلاً، وتردّ كل درجة وكل رمز إلى مصدره،
  * وتُبلّغ عن أي شيء لا تبرّره قاعدة محفوظة ولا أرضية الجوال المكتوبة في
- * الكود. النتيجة السليمة هي تغطية 100% بلا فجوة واحدة.
+ * الكود ولا وراثة بندٍ من أبيه (MODULE_INHERITS). النتيجة السليمة هي تغطية
+ * 100% بلا فجوة واحدة.
+ *
+ * والوراثة مصدر مشروع كالأرضية: بندٌ فُصل من بندٍ قائم يأخذ درجة أبيه حتى
+ * تُوضع له قاعدة خاصة، فلا تُسحب صلاحية أحد بمجرّد الفصل — ولذلك تُحسب هنا
+ * تبريراً لا فجوة، وتُذكر في الصف صراحةً ليُعرف مصدر الدرجة.
  *
  * تُستدعى من `GET /access/audit` ومن أداة سطر الأوامر، فالحساب واحد في
  * الحالتين لا نسختان منه.
@@ -31,6 +38,9 @@ export interface AuditGap {
   explicitLevel: number;
   effectiveDelete: boolean;
   explicitDelete: boolean;
+  /** الدرجة الموروثة من البند الأب — تبرير مشروع لا فجوة */
+  inheritedLevel: number;
+  inheritedDelete: boolean;
 }
 
 export interface AuditEmployeeRow {
@@ -157,8 +167,20 @@ export async function computeAccessAudit(options?: {
       const canDelete = explicitDelete[module.key] === true;
       const floorLevel = floorProfile.moduleLevels[module.key] ?? 0;
 
+      /*
+       * الوراثة تُحسب كما تحسبها buildAccessProfile بالضبط: تُعمل فقط حين لا
+       * قاعدة خاصة للبند الابن، ومقصوصةً على أعلى درجة متاحة فيه.
+       */
+      const parentKey = MODULE_INHERITS[module.key];
+      const inheritsNow = parentKey !== undefined && decisions[module.key] === undefined;
+      const inheritedLevel = inheritsNow
+        ? Math.min(explicitLevels[parentKey] ?? 0, maxAvailableLevel(module.key))
+        : 0;
+      const inheritedDelete = inheritsNow && explicitDelete[parentKey] === true;
+
       const covered =
-        Math.max(level, floorLevel) >= effectiveLevel && (!effectiveDelete || canDelete);
+        Math.max(level, floorLevel, inheritedLevel) >= effectiveLevel &&
+        (!effectiveDelete || canDelete || inheritedDelete);
       if (covered) {
         coveredGrades += 1;
         continue;
@@ -170,6 +192,8 @@ export async function computeAccessAudit(options?: {
         explicitLevel: level,
         effectiveDelete,
         explicitDelete: canDelete,
+        inheritedLevel,
+        inheritedDelete,
       });
     }
 
