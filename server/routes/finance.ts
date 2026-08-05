@@ -19,6 +19,7 @@ import {
   cashierClosings,
   employees,
   monthlyCashClosings,
+  providerSettlementPayments,
   providerSettlements,
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
@@ -56,8 +57,11 @@ import {
   monthBounds,
   monthKeyOf,
   monthlyNet,
+  monthlySettlementFigures,
   nextMonth,
+  normalizeRate,
   parseMonthKey,
+  paymentsTotal,
   previousMonth,
   remainingCash,
   settlementFigures,
@@ -223,6 +227,337 @@ async function monthlyProviderSales(
   const totals = new Map<string, number>();
   for (const [label, list] of buckets) totals.set(label, aggregateMonthlySales(list));
   return totals;
+}
+
+/* ══ مساعدات التسوية الشهرية: الدفعات والمرحّل والمتوقع والفعلي ══════ */
+
+/** دفعات تسوية واحدة مرتّبة بتاريخها. */
+async function settlementPaymentRows(settlementId: number) {
+  const db = getDb();
+  return db
+    .select()
+    .from(providerSettlementPayments)
+    .where(eq(providerSettlementPayments.settlementId, settlementId))
+    .orderBy(
+      asc(providerSettlementPayments.paymentDate),
+      asc(providerSettlementPayments.id),
+    );
+}
+
+/** مجموع وعدد الدفعات لكل تسوية في استعلام واحد. */
+async function paymentsBySettlement(
+  ids: number[],
+): Promise<Map<number, { total: number; count: number }>> {
+  const map = new Map<number, { total: number; count: number }>();
+  if (ids.length === 0) return map;
+  const db = getDb();
+  const rows = await db
+    .select({
+      settlementId: providerSettlementPayments.settlementId,
+      amount: providerSettlementPayments.amount,
+    })
+    .from(providerSettlementPayments)
+    .where(inArray(providerSettlementPayments.settlementId, ids));
+  for (const row of rows) {
+    const before = map.get(row.settlementId) ?? { total: 0, count: 0 };
+    map.set(row.settlementId, {
+      total: round2(before.total + (Number(row.amount) || 0)),
+      count: before.count + 1,
+    });
+  }
+  return map;
+}
+
+/**
+ * المخصوم الفعلي المخزَّن إن كان المحاسب قد أدخله فعلاً، وإلا `null`.
+ *
+ * التمييز ضروري للتوافق: الصفوف القديمة لا تحمل مخصوماً فعلياً ولا مرحّلاً،
+ * فتُعاد إلى السلوك القديم حرفياً (العمولة = المستحق − المستلم، والمرحّل صفر)
+ * ولا يتغيّر رقم واحد فيها.
+ */
+function storedActualDeducted(
+  row: { actualDeducted?: number | null; carriedOutAmount?: number | null } | null,
+): number | null {
+  if (!row) return null;
+  const actual = Number(row.actualDeducted) || 0;
+  const carried = Number(row.carriedOutAmount) || 0;
+  if (actual > 0 || carried > 0) return round2(actual);
+  return null;
+}
+
+/** ما لم يُحوَّل في شهرٍ ما، لكل جهة: أساس الترحيل إلى الشهر الذي يليه. */
+async function carriedOutByProvider(
+  branchId: number,
+  providerType: ProviderType,
+  year: number,
+  month: number,
+): Promise<Map<string, number>> {
+  const db = getDb();
+  const { from, to } = monthBounds(year, month);
+  const rows = await db
+    .select({
+      providerName: providerSettlements.providerName,
+      carriedOutAmount: providerSettlements.carriedOutAmount,
+    })
+    .from(providerSettlements)
+    .where(
+      and(
+        eq(providerSettlements.branchId, branchId),
+        eq(providerSettlements.providerType, providerType),
+        gte(providerSettlements.periodFrom, from),
+        lte(providerSettlements.periodTo, to),
+      ),
+    )
+    .orderBy(desc(providerSettlements.id));
+
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    const amount = round2(Number(row.carriedOutAmount) || 0);
+    if (amount <= 0) continue;
+    map.set(row.providerName, round2((map.get(row.providerName) ?? 0) + amount));
+  }
+  return map;
+}
+
+/** صفّ جهة واحدة في الشاشة الشهرية بعد حساب كل أرقامها. */
+interface MonthlyProviderRow {
+  providerName: string;
+  providerType: ProviderType;
+  monthlySales: number;
+  carriedInAmount: number;
+  carriedFromMonth: string;
+  settlementBase: number;
+  contractRate: number;
+  expectedAmount: number;
+  actualDeducted: number;
+  varianceAmount: number;
+  carriedOutAmount: number;
+  carriedToMonth: string;
+  receivedAmount: number;
+  paymentsCount: number;
+  paymentsTotal: number;
+  commissionAmount: number;
+  commissionRate: number;
+  vatRate: number;
+  vatAmount: number;
+  vatIncluded: boolean;
+  settledSales: number;
+  unsettledSales: number;
+  settlementId: number | null;
+  status: string;
+  reference: string;
+  notes: string;
+  confirmedByName: string;
+  confirmedAt: Date | null;
+}
+
+/**
+ * صفوف الشهر لنوع واحد (الشبكات وحدها أو التطبيقات وحدها) بكامل أرقامها.
+ *
+ * مصدرٌ واحد للحقيقة تستخدمه الشاشة والتقرير والترحيل جميعاً، فلا يختلف رقم
+ * بين موضع وموضع. والمبيعات تُجمَّع في الخادم من التقفيلات اليومية، والمرحّل
+ * الداخل من الشهر السابق، والمستلم من مجموع الدفعات — لا شيء منها من المتصفح.
+ */
+async function monthlyProviderRows(
+  branchId: number,
+  providerType: ProviderType,
+  year: number,
+  month: number,
+): Promise<{
+  from: string;
+  to: string;
+  monthKey: string;
+  rows: MonthlyProviderRow[];
+}> {
+  const db = getDb();
+  const { from, to } = monthBounds(year, month);
+  const monthKey = monthKeyOf(year, month);
+  const sales = await monthlyProviderSales(branchId, from, to, providerType);
+
+  const settlementRows = await db
+    .select()
+    .from(providerSettlements)
+    .where(
+      and(
+        eq(providerSettlements.branchId, branchId),
+        eq(providerSettlements.providerType, providerType),
+        gte(providerSettlements.periodFrom, from),
+        lte(providerSettlements.periodTo, to),
+      ),
+    )
+    .orderBy(desc(providerSettlements.id));
+
+  const previous = previousMonth(year, month);
+  const carryIn = await carriedOutByProvider(
+    branchId,
+    providerType,
+    previous.year,
+    previous.month,
+  );
+  const payments = await paymentsBySettlement(settlementRows.map((row) => row.id));
+
+  const names = new Set<string>([
+    ...sales.keys(),
+    ...settlementRows.map((row) => row.providerName),
+    ...carryIn.keys(),
+  ]);
+
+  const rows: MonthlyProviderRow[] = [...names].map((providerName) => {
+    const monthlySales = round2(sales.get(providerName) ?? 0);
+    const own = settlementRows.filter((row) => row.providerName === providerName);
+    const current = own[0] ?? null;
+    const confirmed = current?.status === "confirmed";
+    const stat = current
+      ? (payments.get(current.id) ?? { total: 0, count: 0 })
+      : { total: 0, count: 0 };
+
+    // المرحّل المُثبَّت له أولوية على المعاينة: ما رُحّل رسمياً لا يُعاد حسابه
+    const carriedFromMonth = current?.carriedFromMonth ?? "";
+    const carriedInAmount = carriedFromMonth
+      ? round2(Number(current?.carriedInAmount) || 0)
+      : round2(carryIn.get(providerName) ?? 0);
+
+    // المستلم = مجموع الدفعات إن وُجدت، وإلا الرقم المحفوظ (توافقاً مع القديم)
+    const receivedAmount =
+      stat.count > 0 ? stat.total : round2(Number(current?.receivedAmount) || 0);
+
+    const figures = monthlySettlementFigures({
+      monthlySales,
+      carriedInAmount,
+      receivedAmount,
+      // بلا تسوية مسجّلة: لا خصم ولا مطالبة — كل الأساس ينتظر التحويل
+      actualDeducted: current ? storedActualDeducted(current) : 0,
+      contractRate: current ? Number(current.contractRate) || 0 : 0,
+      vatRate: current ? Number(current.vatRate) || 0 : 0,
+      vatIncluded: current ? current.vatIncluded !== false : true,
+    });
+
+    return {
+      providerName,
+      providerType,
+      monthlySales,
+      carriedInAmount,
+      carriedFromMonth,
+      settlementBase: figures.settlementBase,
+      contractRate: figures.contractRate,
+      expectedAmount: figures.expectedAmount,
+      actualDeducted: current ? figures.actualDeducted : 0,
+      varianceAmount: current ? figures.varianceAmount : 0,
+      carriedOutAmount: figures.carriedOutAmount,
+      carriedToMonth: current?.carriedToMonth ?? "",
+      receivedAmount,
+      paymentsCount: stat.count,
+      paymentsTotal: stat.total,
+      commissionAmount: confirmed ? figures.commissionAmount : 0,
+      commissionRate: confirmed ? figures.commissionRate : 0,
+      vatRate: figures.vatRate,
+      vatAmount: confirmed ? figures.vatAmount : 0,
+      vatIncluded: figures.vatIncluded,
+      settledSales: sumBy(own, (row) => row.salesAmount),
+      unsettledSales: unsettledSales(
+        monthlySales,
+        sumBy(own, (row) => row.salesAmount),
+      ),
+      settlementId: current?.id ?? null,
+      status: current?.status ?? "open",
+      reference: current?.reference ?? "",
+      notes: current?.notes ?? "",
+      confirmedByName: current?.confirmedByName ?? "",
+      confirmedAt: current?.confirmedAt ?? null,
+    };
+  });
+
+  rows.sort((a, b) => b.settlementBase - a.settlementBase);
+  return { from, to, monthKey, rows };
+}
+
+/** مجاميع قسم واحد: الأساس والمتوقع والفعلي والفرق والمرحّل. */
+function providerTotals(rows: MonthlyProviderRow[]) {
+  const confirmedRows = rows.filter((row) => row.status === "confirmed");
+  const confirmedBase = sumBy(confirmedRows, (row) => row.settlementBase);
+  const confirmedCommission = sumBy(confirmedRows, (row) => row.commissionAmount);
+  return {
+    providers: rows.length,
+    monthlySales: sumBy(rows, (row) => row.monthlySales),
+    carriedInAmount: sumBy(rows, (row) => row.carriedInAmount),
+    settlementBase: sumBy(rows, (row) => row.settlementBase),
+    contractRate: commissionRateOf(
+      sumBy(rows, (row) => row.expectedAmount),
+      sumBy(rows, (row) => row.settlementBase),
+    ),
+    expectedAmount: sumBy(rows, (row) => row.expectedAmount),
+    actualDeducted: sumBy(rows, (row) => row.actualDeducted),
+    varianceAmount: sumBy(rows, (row) => row.varianceAmount),
+    receivedAmount: sumBy(rows, (row) => row.receivedAmount),
+    carriedOutAmount: sumBy(rows, (row) => row.carriedOutAmount),
+    commissionAmount: confirmedCommission,
+    /** النسبة على المجمَّع المؤكَّد: العمولة ÷ الأساس المستحق × 100 */
+    commissionRate: commissionRateOf(confirmedCommission, confirmedBase),
+    vatAmount: sumBy(confirmedRows, (row) => row.vatAmount),
+    paymentsCount: rows.reduce((total, row) => total + row.paymentsCount, 0),
+    open: rows.filter((row) => row.status === "open").length,
+    pending: rows.filter((row) => row.status === "pending").length,
+    confirmed: confirmedRows.length,
+    carryingProviders: rows.filter((row) => row.carriedOutAmount > 0).length,
+  };
+}
+
+/** اسم النوع كما يُعرض في التقرير. */
+const PROVIDER_TYPE_LABEL: Record<ProviderType, string> = {
+  network: "الشبكات",
+  delivery_app: "تطبيقات التوصيل",
+};
+
+/**
+ * يعيد حساب أرقام تسوية محفوظة بعد أي تغيير في دفعاتها أو حقولها.
+ *
+ * الحساب في الخادم دائماً: المستلم = مجموع الدفعات، والمتوقع من نسبة العقد،
+ * والفرق = الفعلي − المتوقع، والمرحّل = الأساس − المحوّل − الفعلي. فلا يكتب
+ * المتصفح رقماً محسوباً ولا يختلف صفٌّ عن معادلته.
+ */
+async function recomputeSettlement(settlementId: number) {
+  const db = getDb();
+  const [row] = await db
+    .select()
+    .from(providerSettlements)
+    .where(eq(providerSettlements.id, settlementId))
+    .limit(1);
+  if (!row) return null;
+
+  const payments = await settlementPaymentRows(settlementId);
+  const receivedAmount =
+    payments.length > 0
+      ? paymentsTotal(payments)
+      : round2(Number(row.receivedAmount) || 0);
+
+  const figures = monthlySettlementFigures({
+    monthlySales: round2(Number(row.salesAmount) || 0),
+    carriedInAmount: round2(Number(row.carriedInAmount) || 0),
+    receivedAmount,
+    actualDeducted: storedActualDeducted(row),
+    contractRate: Number(row.contractRate) || 0,
+    vatRate: Number(row.vatRate) || 0,
+    vatIncluded: row.vatIncluded !== false,
+  });
+
+  const [updated] = await db
+    .update(providerSettlements)
+    .set({
+      receivedAmount: figures.receivedAmount,
+      commissionAmount: figures.commissionAmount,
+      commissionRate: figures.commissionRate,
+      vatAmount: figures.vatAmount,
+      commissionBeforeVat: figures.commissionBeforeVat,
+      expectedAmount: figures.expectedAmount,
+      actualDeducted: figures.actualDeducted,
+      varianceAmount: figures.varianceAmount,
+      carriedOutAmount: figures.carriedOutAmount,
+      updatedAt: new Date(),
+    })
+    .where(eq(providerSettlements.id, settlementId))
+    .returning();
+
+  return { before: row, settlement: updated, figures, payments };
 }
 
 /** يتحقّق أن مبلغاً مُدخلاً ضمن الحدود المعقولة. */
@@ -1123,14 +1458,15 @@ financeRouter.get(
  * التجميع الشهري لجهات نوع واحد: الشبكات وحدها أو تطبيقات التوصيل وحدها.
  *
  * قسمان مستقلان في الشاشة، وكل قسم ينادي هذا المسار بنوعه فيحصل على مبيعات
- * كل جهة مجمّعة على الشهر كله من التقفيلات اليومية، مع تسوية الشهر إن وُجدت.
+ * كل جهة مجمّعة على الشهر كله من التقفيلات اليومية، مضافاً إليها المرحّل من
+ * الشهر السابق، ومعها نسبة العقد والمتوقع والمخصوم الفعلي والفرق ودفعات
+ * التحويل وما سيُرحَّل إلى الشهر الجديد.
  */
 financeRouter.get(
   "/finance/settlements/monthly",
   requireAuth,
   requirePermission(PERMISSIONS.settlementsRead),
   async (req: AuthedRequest, res: Response) => {
-    const db = getDb();
     const branchId = await resolveBranchId(req, req.query.branchId);
     if (branchId === null) {
       res.status(400).json({ ok: false, error: "حدّد الفرع أولاً" });
@@ -1151,103 +1487,49 @@ financeRouter.get(
       return;
     }
 
-    const { from, to } = monthBounds(period.year, period.month);
-    const monthKey = monthKeyOf(period.year, period.month);
-    const sales = await monthlyProviderSales(branchId, from, to, providerType);
-
-    // تسوية واحدة لكل جهة في الشهر — مفتاحها (الفرع + النوع + الاسم + المدة)
-    const settlementRows = await db
-      .select()
-      .from(providerSettlements)
-      .where(
-        and(
-          eq(providerSettlements.branchId, branchId),
-          eq(providerSettlements.providerType, providerType),
-          gte(providerSettlements.periodFrom, from),
-          lte(providerSettlements.periodTo, to),
-        ),
-      )
-      .orderBy(desc(providerSettlements.id));
-
-    const names = new Set<string>([
-      ...sales.keys(),
-      ...settlementRows.map((row) => row.providerName),
-    ]);
-
-    const providers = [...names].map((providerName) => {
-      const monthlySales = round2(sales.get(providerName) ?? 0);
-      const own = settlementRows.filter(
-        (row) => row.providerName === providerName,
-      );
-      const current = own[0] ?? null;
-      const confirmed = current?.status === "confirmed";
-
-      return {
-        providerName,
-        providerType,
-        /** مبيعات الشهر كاملة كما تجمّعت من التقفيلات اليومية */
-        monthlySales,
-        settledSales: sumBy(own, (row) => row.salesAmount),
-        unsettledSales: unsettledSales(
-          monthlySales,
-          sumBy(own, (row) => row.salesAmount),
-        ),
-        settlementId: current?.id ?? null,
-        status: current?.status ?? "open",
-        receivedAmount: current ? round2(Number(current.receivedAmount) || 0) : 0,
-        commissionAmount: confirmed
-          ? round2(Number(current.commissionAmount) || 0)
-          : 0,
-        commissionRate: confirmed ? Number(current.commissionRate) || 0 : 0,
-        vatRate: current ? Number(current.vatRate) || 0 : 0,
-        vatAmount: confirmed ? round2(Number(current.vatAmount) || 0) : 0,
-        reference: current?.reference ?? "",
-        confirmedByName: current?.confirmedByName ?? "",
-        confirmedAt: current?.confirmedAt ?? null,
-      };
-    });
-
-    providers.sort((a, b) => b.monthlySales - a.monthlySales);
-
-    const confirmedRows = providers.filter((item) => item.status === "confirmed");
-    const confirmedSales = sumBy(confirmedRows, (item) => item.monthlySales);
-    const confirmedCommission = sumBy(
-      confirmedRows,
-      (item) => item.commissionAmount,
+    const { from, to, monthKey, rows } = await monthlyProviderRows(
+      branchId,
+      providerType,
+      period.year,
+      period.month,
     );
+
+    const previous = previousMonth(period.year, period.month);
+    const next = nextMonth(period.year, period.month);
 
     res.json({
       ok: true,
       branchId,
       providerType,
       month: monthKey,
+      previousMonth: monthKeyOf(previous.year, previous.month),
+      nextMonth: monthKeyOf(next.year, next.month),
       from,
       to,
-      providers,
-      totals: {
-        monthlySales: sumBy(providers, (item) => item.monthlySales),
-        receivedAmount: sumBy(confirmedRows, (item) => item.receivedAmount),
-        commissionAmount: confirmedCommission,
-        /** النسبة على المجمَّع المؤكَّد: العمولة ÷ المبيعات × 100 */
-        commissionRate: commissionRateOf(confirmedCommission, confirmedSales),
-        vatAmount: sumBy(confirmedRows, (item) => item.vatAmount),
-        pending: providers.filter((item) => item.status === "pending").length,
-        confirmed: confirmedRows.length,
-      },
+      providers: rows,
+      totals: providerTotals(rows),
       defaults:
         providerType === "network" ? DEFAULT_NETWORK_LINES : DEFAULT_DELIVERY_APPS,
       today,
+      /** التسوية النهائية تقع عند آخر يوم في الشهر لا قبله */
+      monthEnd: to,
+      isMonthEnded: today > to,
     });
   },
 );
 
 /**
- * تسجيل أو تحديث تسوية **شهرية** لجهة واحدة.
+ * تسجيل أو تعديل تسوية **شهرية** لجهة واحدة — والتسوية النهائية في نهاية الشهر.
  *
  * المبيعات لا تأتي من المتصفح إطلاقاً: الخادم يجمعها من تقفيلات الشهر نفسه،
- * فيستحيل أن تختلف عن واقع التقفيلات أو أن تُدخل يدوياً. وعند وصول الحوالة
- * إلى البنك يُدخل المحاسب المستلم مع `confirm` فيحسب الخادم:
- * العمولة = المبيعات المجمّعة − المستلم، والنسبة = العمولة ÷ المبيعات × 100.
+ * ثم يضيف إليها ما رُحّل من الشهر السابق فيصير «الأساس المستحق». وعليه:
+ *   المتوقع خصمه = الأساس × نسبة العقد ÷ 100
+ *   الفرق        = المخصوم الفعلي − المتوقع
+ *   المرحّل      = الأساس − المحوّل − المخصوم الفعلي (لا يقلّ عن صفر)
+ * والمستلم = مجموع دفعات التحويل إن سُجِّلت دفعات، وإلا الرقم المُدخل.
+ *
+ * وإن لم يُدخل المحاسب مخصوماً فعلياً فالنتيجة مطابقة للسلوك السابق حرفياً:
+ * العمولة = المستحق − المستلم، والنسبة = العمولة ÷ المستحق × 100، ولا ترحيل.
  */
 financeRouter.post(
   "/finance/settlements/monthly",
@@ -1284,49 +1566,6 @@ financeRouter.post(
 
     const sales = await monthlyProviderSales(branchId, from, to, providerType);
     const salesAmount = round2(sales.get(providerName) ?? 0);
-    if (salesAmount <= 0) {
-      res.status(400).json({
-        ok: false,
-        error:
-          "لا توجد مبيعات مجمّعة لـ" +
-          providerName +
-          " في شهر " +
-          monthKey +
-          " — التسوية تقع على المجمَّع الشهري من التقفيلات.",
-      });
-      return;
-    }
-
-    const received = moneyOrError(body.receivedAmount);
-    if (typeof received === "string") {
-      res.status(400).json({ ok: false, error: received });
-      return;
-    }
-
-    const vatRateRaw = asNumber(body.vatRate);
-    const vatRate =
-      vatRateRaw === null || vatRateRaw < 0 || vatRateRaw > 100 ? 0 : vatRateRaw;
-    const vatIncluded =
-      body.vatIncluded === undefined ? true : body.vatIncluded !== false;
-
-    // التأكيد إجراء موافقة ببنده المستقل، فلا يكفي «تسجيل تسوية»
-    const confirm = body.confirm === true;
-    if (
-      confirm &&
-      !(await hasAnyPermission(req, [PERMISSIONS.settlementsConfirm]))
-    ) {
-      res
-        .status(403)
-        .json({ ok: false, error: "لا تملك صلاحية «تأكيد سداد التسوية»" });
-      return;
-    }
-
-    const figures = settlementFigures({
-      salesAmount,
-      receivedAmount: received,
-      vatRate,
-      vatIncluded,
-    });
 
     const [existing] = await db
       .select()
@@ -1355,6 +1594,125 @@ financeRouter.post(
       return;
     }
 
+    // المرحّل الداخل: مثبَّتاً إن سُجِّل رسمياً، وإلا معاينةً من غير المحوّل سابقاً
+    const previous = previousMonth(period.year, period.month);
+    const previousKey = monthKeyOf(previous.year, previous.month);
+    const carryIn = await carriedOutByProvider(
+      branchId,
+      providerType,
+      previous.year,
+      previous.month,
+    );
+    const previewCarry = round2(carryIn.get(providerName) ?? 0);
+    const carriedInAmount = existing?.carriedFromMonth
+      ? round2(Number(existing.carriedInAmount) || 0)
+      : previewCarry;
+    const carriedFromMonth = existing?.carriedFromMonth
+      ? existing.carriedFromMonth
+      : previewCarry > 0
+        ? previousKey
+        : "";
+
+    const baseAmount = round2(salesAmount + carriedInAmount);
+    if (baseAmount <= 0) {
+      res.status(400).json({
+        ok: false,
+        error:
+          "لا مبيعات مجمّعة ولا مبالغ مرحّلة لـ" +
+          providerName +
+          " في شهر " +
+          monthKey +
+          " — التسوية تقع على المجمَّع الشهري من التقفيلات مع المرحّل.",
+      });
+      return;
+    }
+
+    // المستلم من الدفعات إن وُجدت: لا يُكتب رقم مجمّع بيد أحد فوق الدفعات
+    const payments = existing ? await settlementPaymentRows(existing.id) : [];
+    let received = 0;
+    if (payments.length > 0) {
+      received = paymentsTotal(payments);
+    } else {
+      const value = moneyOrError(body.receivedAmount);
+      if (typeof value === "string") {
+        res.status(400).json({ ok: false, error: value });
+        return;
+      }
+      received = value;
+    }
+
+    const contractRate =
+      body.contractRate === undefined || body.contractRate === null
+        ? existing
+          ? Number(existing.contractRate) || 0
+          : 0
+        : normalizeRate(body.contractRate);
+
+    // المخصوم الفعلي: رقم من كشف الجهة. غيابه يعني الرجوع للسلوك القديم تماماً
+    let actualDeducted: number | null = null;
+    if (
+      body.actualDeducted === undefined ||
+      body.actualDeducted === null ||
+      body.actualDeducted === ""
+    ) {
+      actualDeducted = storedActualDeducted(existing ?? null);
+    } else {
+      const value = moneyOrError(body.actualDeducted);
+      if (typeof value === "string") {
+        res.status(400).json({ ok: false, error: value });
+        return;
+      }
+      if (value > baseAmount) {
+        res.status(400).json({
+          ok: false,
+          error:
+            "المخصوم الفعلي (" +
+            String(value) +
+            ") أكبر من الأساس المستحق (" +
+            String(baseAmount) +
+            ") — راجع كشف الجهة.",
+        });
+        return;
+      }
+      actualDeducted = value;
+    }
+
+    const vatRateRaw = asNumber(body.vatRate);
+    const vatRate =
+      vatRateRaw === null || vatRateRaw < 0 || vatRateRaw > 100
+        ? existing
+          ? Number(existing.vatRate) || 0
+          : 0
+        : vatRateRaw;
+    const vatIncluded =
+      body.vatIncluded === undefined
+        ? existing
+          ? existing.vatIncluded !== false
+          : true
+        : body.vatIncluded !== false;
+
+    // التأكيد إجراء موافقة ببنده المستقل، فلا يكفي «تسجيل تسوية»
+    const confirm = body.confirm === true;
+    if (
+      confirm &&
+      !(await hasAnyPermission(req, [PERMISSIONS.settlementsConfirm]))
+    ) {
+      res
+        .status(403)
+        .json({ ok: false, error: "لا تملك صلاحية «تأكيد سداد التسوية»" });
+      return;
+    }
+
+    const figures = monthlySettlementFigures({
+      monthlySales: salesAmount,
+      carriedInAmount,
+      receivedAmount: received,
+      actualDeducted,
+      contractRate,
+      vatRate,
+      vatIncluded,
+    });
+
     const now = new Date();
     const payload = {
       branchId,
@@ -1362,7 +1720,8 @@ financeRouter.post(
       providerName,
       periodFrom: from,
       periodTo: to,
-      salesAmount: figures.salesAmount,
+      // مبيعات الشهر وحدها هنا؛ المرحّل عمودٌ مستقل فلا يُحسب مبلغ مرتين
+      salesAmount: figures.monthlySales,
       receivedAmount: figures.receivedAmount,
       commissionAmount: figures.commissionAmount,
       commissionRate: figures.commissionRate,
@@ -1370,6 +1729,14 @@ financeRouter.post(
       vatAmount: figures.vatAmount,
       vatIncluded: figures.vatIncluded,
       commissionBeforeVat: figures.commissionBeforeVat,
+      contractRate: figures.contractRate,
+      expectedAmount: figures.expectedAmount,
+      actualDeducted: figures.actualDeducted,
+      varianceAmount: figures.varianceAmount,
+      carriedInAmount: figures.carriedInAmount,
+      carriedOutAmount: figures.carriedOutAmount,
+      carriedFromMonth,
+      carriedToMonth: existing?.carriedToMonth ?? "",
       status: confirm ? "confirmed" : "pending",
       reference: asString(body.reference, 120) ?? existing?.reference ?? "",
       notes: asString(body.notes, 500) ?? existing?.notes ?? "",
@@ -1402,14 +1769,23 @@ financeRouter.post(
         " — شهر " +
         monthKey +
         ": مبيعات " +
-        String(figures.salesAmount) +
-        "، مستلم " +
+        String(figures.monthlySales) +
+        " + مرحّل " +
+        String(figures.carriedInAmount) +
+        " = أساس " +
+        String(figures.settlementBase) +
+        "، محوّل " +
         String(figures.receivedAmount) +
-        "، عمولة " +
-        String(figures.commissionAmount) +
-        " بنسبة " +
-        String(figures.commissionRate) +
-        "%",
+        "، متوقع " +
+        String(figures.expectedAmount) +
+        " بنسبة عقد " +
+        String(figures.contractRate) +
+        "%، مخصوم فعلي " +
+        String(figures.actualDeducted) +
+        "، فرق " +
+        String(figures.varianceAmount) +
+        "، مرحّل للشهر التالي " +
+        String(figures.carriedOutAmount),
       ipAddress: clientIp(req),
     });
 
@@ -1418,13 +1794,661 @@ financeRouter.post(
       settlement: saved,
       figures,
       month: monthKey,
+      paymentsCount: payments.length,
       message: confirm
-        ? "تم تأكيد التسوية الشهرية — العمولة " +
-          String(figures.commissionAmount) +
-          " بنسبة " +
-          String(figures.commissionRate) +
-          "%"
-        : "حُفظت التسوية الشهرية بانتظار وصول الحوالة",
+        ? "تم تأكيد التسوية الشهرية — مخصوم فعلي " +
+          String(figures.actualDeducted) +
+          " مقابل متوقع " +
+          String(figures.expectedAmount) +
+          "، والمرحّل للشهر الجديد " +
+          String(figures.carriedOutAmount)
+        : "حُفظت التسوية الشهرية — المرحّل المتوقع للشهر الجديد " +
+          String(figures.carriedOutAmount),
+    });
+  },
+);
+
+/* ══ دفعات التحويل: إضافة مبالغ للتسوية وتعديلها ═══════════════════ */
+
+/** يقرأ تسوية بمعرّفها أو يردّ 404. */
+async function settlementOr404(id: number, res: Response) {
+  const db = getDb();
+  const [row] = await db
+    .select()
+    .from(providerSettlements)
+    .where(eq(providerSettlements.id, id))
+    .limit(1);
+  if (!row) {
+    res.status(404).json({ ok: false, error: "التسوية غير موجودة" });
+    return null;
+  }
+  return row;
+}
+
+/** دفعات تسوية واحدة مع مجموعها — كل دفعة مرئية للمراجعة. */
+financeRouter.get(
+  "/finance/settlements/:id/payments",
+  requireAuth,
+  requirePermission(PERMISSIONS.settlementsRead),
+  async (req: AuthedRequest, res: Response) => {
+    const id = asId(req.params.id);
+    if (id === null) {
+      res.status(400).json({ ok: false, error: "معرّف التسوية غير صالح" });
+      return;
+    }
+    const settlement = await settlementOr404(id, res);
+    if (!settlement) return;
+
+    const payments = await settlementPaymentRows(id);
+    res.json({
+      ok: true,
+      settlementId: id,
+      providerName: settlement.providerName,
+      providerType: settlement.providerType,
+      month: String(settlement.periodFrom).slice(0, 7),
+      payments,
+      totals: {
+        count: payments.length,
+        amount: paymentsTotal(payments),
+      },
+      canManage: await hasAnyPermission(req, [PERMISSIONS.settlementsManage]),
+    });
+  },
+);
+
+/**
+ * إضافة مبلغ محوَّل إلى تسوية الشهر.
+ *
+ * الحوالة تصل على دفعات متفرّقة، فكل دفعة صفٌّ بتاريخها ومرجعها. وبعد كل
+ * إضافة يُعاد حساب التسوية كاملة في الخادم: المستلم = مجموع الدفعات، ويُحدَّث
+ * المرحّل إلى الشهر الجديد تلقائياً. ولا تُلمس أي بيانات سابقة.
+ */
+financeRouter.post(
+  "/finance/settlements/:id/payments",
+  requireAuth,
+  requirePermission(PERMISSIONS.settlementsManage),
+  requireModuleLevel("settlements", 2),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+
+    const id = asId(req.params.id);
+    if (id === null) {
+      res.status(400).json({ ok: false, error: "معرّف التسوية غير صالح" });
+      return;
+    }
+    const settlement = await settlementOr404(id, res);
+    if (!settlement) return;
+
+    if (settlement.status === "confirmed") {
+      res.status(409).json({
+        ok: false,
+        error: "التسوية مؤكَّدة ولا تُضاف إليها دفعات — أعد فتحها بالحذف إن لزم",
+      });
+      return;
+    }
+    if (await blockedByMonthLock(settlement.branchId, settlement.periodFrom, res))
+      return;
+
+    const amount = moneyOrError(body.amount, false);
+    if (typeof amount === "string") {
+      res.status(400).json({ ok: false, error: amount });
+      return;
+    }
+    if (amount <= 0) {
+      res.status(400).json({ ok: false, error: "مبلغ الدفعة مطلوب" });
+      return;
+    }
+
+    const timezone = await branchTimezone(settlement.branchId);
+    const paymentDate =
+      asDateOnly(body.paymentDate) ?? isoDateInZone(new Date(), timezone);
+
+    const [created] = await db
+      .insert(providerSettlementPayments)
+      .values({
+        settlementId: id,
+        paymentDate,
+        amount,
+        reference: asString(body.reference, 120) ?? "",
+        notes: asString(body.notes, 500) ?? "",
+        createdByEmployeeId: actor.id,
+      })
+      .returning();
+
+    const result = await recomputeSettlement(id);
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "settlement.payment.add",
+      entityType: "provider_settlement_payments",
+      entityId: created?.id ?? null,
+      before: null,
+      after: created,
+      reason:
+        settlement.providerName +
+        ": دفعة " +
+        String(amount) +
+        " بتاريخ " +
+        paymentDate +
+        " — صار المحوّل " +
+        String(result?.figures.receivedAmount ?? amount) +
+        " والمرحّل " +
+        String(result?.figures.carriedOutAmount ?? 0),
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      payment: created,
+      settlement: result?.settlement ?? null,
+      figures: result?.figures ?? null,
+      payments: result?.payments ?? [],
+      message:
+        "أُضيفت الدفعة — مجموع المحوّل " +
+        String(result?.figures.receivedAmount ?? amount) +
+        " والمتبقي للترحيل " +
+        String(result?.figures.carriedOutAmount ?? 0),
+    });
+  },
+);
+
+/** تعديل دفعة محفوظة (مبلغها أو تاريخها أو مرجعها) ثم إعادة الحساب. */
+financeRouter.patch(
+  "/finance/settlements/payments/:paymentId",
+  requireAuth,
+  requirePermission(PERMISSIONS.settlementsManage),
+  requireModuleLevel("settlements", 3),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+
+    const paymentId = asId(req.params.paymentId);
+    if (paymentId === null) {
+      res.status(400).json({ ok: false, error: "معرّف الدفعة غير صالح" });
+      return;
+    }
+
+    const [before] = await db
+      .select()
+      .from(providerSettlementPayments)
+      .where(eq(providerSettlementPayments.id, paymentId))
+      .limit(1);
+    if (!before) {
+      res.status(404).json({ ok: false, error: "الدفعة غير موجودة" });
+      return;
+    }
+
+    const settlement = await settlementOr404(before.settlementId, res);
+    if (!settlement) return;
+    if (settlement.status === "confirmed") {
+      res.status(409).json({
+        ok: false,
+        error: "التسوية مؤكَّدة ولا تُعدَّل دفعاتها",
+      });
+      return;
+    }
+    if (await blockedByMonthLock(settlement.branchId, settlement.periodFrom, res))
+      return;
+
+    const patch: Record<string, unknown> = { updatedAt: new Date() };
+    if (body.amount !== undefined) {
+      const amount = moneyOrError(body.amount, false);
+      if (typeof amount === "string") {
+        res.status(400).json({ ok: false, error: amount });
+        return;
+      }
+      if (amount <= 0) {
+        res.status(400).json({ ok: false, error: "مبلغ الدفعة مطلوب" });
+        return;
+      }
+      patch.amount = amount;
+    }
+    if (body.paymentDate !== undefined) {
+      const date = asDateOnly(body.paymentDate);
+      if (!date) {
+        res.status(400).json({ ok: false, error: "تاريخ الدفعة غير صالح" });
+        return;
+      }
+      patch.paymentDate = date;
+    }
+    if (body.reference !== undefined)
+      patch.reference = asString(body.reference, 120) ?? "";
+    if (body.notes !== undefined) patch.notes = asString(body.notes, 500) ?? "";
+
+    const [updated] = await db
+      .update(providerSettlementPayments)
+      .set(patch)
+      .where(eq(providerSettlementPayments.id, paymentId))
+      .returning();
+
+    const result = await recomputeSettlement(before.settlementId);
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "settlement.payment.update",
+      entityType: "provider_settlement_payments",
+      entityId: paymentId,
+      before,
+      after: updated,
+      reason:
+        settlement.providerName +
+        ": تعديل دفعة — صار المحوّل " +
+        String(result?.figures.receivedAmount ?? 0) +
+        " والمرحّل " +
+        String(result?.figures.carriedOutAmount ?? 0),
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      payment: updated,
+      settlement: result?.settlement ?? null,
+      figures: result?.figures ?? null,
+      payments: result?.payments ?? [],
+      message: "تم تعديل الدفعة وإعادة حساب التسوية",
+    });
+  },
+);
+
+/** حذف دفعة أُدخلت خطأً — بصلاحية الحذف وحدها، ثم إعادة الحساب. */
+financeRouter.delete(
+  "/finance/settlements/payments/:paymentId",
+  requireAuth,
+  requirePermission(PERMISSIONS.settlementsManage),
+  requireModuleDelete("settlements"),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+
+    const paymentId = asId(req.params.paymentId);
+    if (paymentId === null) {
+      res.status(400).json({ ok: false, error: "معرّف الدفعة غير صالح" });
+      return;
+    }
+
+    const [before] = await db
+      .select()
+      .from(providerSettlementPayments)
+      .where(eq(providerSettlementPayments.id, paymentId))
+      .limit(1);
+    if (!before) {
+      res.status(404).json({ ok: false, error: "الدفعة غير موجودة" });
+      return;
+    }
+
+    const settlement = await settlementOr404(before.settlementId, res);
+    if (!settlement) return;
+    if (settlement.status === "confirmed") {
+      res.status(409).json({
+        ok: false,
+        error: "التسوية مؤكَّدة ولا تُحذف دفعاتها",
+      });
+      return;
+    }
+    if (await blockedByMonthLock(settlement.branchId, settlement.periodFrom, res))
+      return;
+
+    await db
+      .delete(providerSettlementPayments)
+      .where(eq(providerSettlementPayments.id, paymentId));
+
+    const result = await recomputeSettlement(before.settlementId);
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "settlement.payment.delete",
+      entityType: "provider_settlement_payments",
+      entityId: paymentId,
+      before,
+      after: null,
+      reason:
+        settlement.providerName +
+        ": حذف دفعة " +
+        String(Number(before.amount) || 0) +
+        " — صار المحوّل " +
+        String(result?.figures.receivedAmount ?? 0),
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      settlement: result?.settlement ?? null,
+      figures: result?.figures ?? null,
+      payments: result?.payments ?? [],
+      message: "تم حذف الدفعة وإعادة حساب التسوية",
+    });
+  },
+);
+
+/* ══ ترحيل غير المحوّل إلى الشهر الجديد وتقرير نهاية الشهر ════════ */
+
+/**
+ * ترحيل ما لم يُحوَّل من شهرٍ إلى الشهر الذي يليه — لكل الشبكات والتطبيقات.
+ *
+ * ما لم تُحوِّله الجهة لا يُلغى ولا يُنسى: يُنقل إلى أساس تسوية الشهر الجديد
+ * فيُسوّى متى وصل ولو تأخّر شهوراً. والعملية **إضافة لا حذف**: لا يُمسّ صفّ
+ * الشهر المصدر إلا بوسم «رُحّل إلى» للتتبّع، ولا تُحذف ولا تُصفّر أي بيانات.
+ * وهي **قابلة للتكرار بلا أثر**: الجهة المُرحَّلة مسبقاً تُتجاوز فلا يتضاعف مبلغ.
+ */
+financeRouter.post(
+  "/finance/settlements/monthly/carry-forward",
+  requireAuth,
+  requirePermission(PERMISSIONS.settlementsManage),
+  requireModuleLevel("settlements", 2),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+
+    const branchId = await resolveBranchId(req, body.branchId);
+    if (branchId === null) {
+      res.status(400).json({ ok: false, error: "حدّد الفرع أولاً" });
+      return;
+    }
+
+    const period = parseMonthKey(body.month);
+    if (!period) {
+      res.status(400).json({ ok: false, error: "حدّد الشهر بصيغة YYYY-MM" });
+      return;
+    }
+
+    const sourceKey = monthKeyOf(period.year, period.month);
+    const target = nextMonth(period.year, period.month);
+    const targetKey = monthKeyOf(target.year, target.month);
+    const targetBounds = monthBounds(target.year, target.month);
+    if (await blockedByMonthLock(branchId, targetBounds.from, res)) return;
+
+    const requestedType = asEnum(body.providerType, PROVIDER_TYPES);
+    const types = requestedType ? [requestedType] : [...PROVIDER_TYPES];
+
+    const moved = [];
+    const skipped = [];
+    const now = new Date();
+
+    for (const providerType of types) {
+      const source = await monthlyProviderRows(
+        branchId,
+        providerType,
+        period.year,
+        period.month,
+      );
+      const carrying = source.rows.filter((row) => row.carriedOutAmount > 0);
+      if (carrying.length === 0) continue;
+
+      const targetSales = await monthlyProviderSales(
+        branchId,
+        targetBounds.from,
+        targetBounds.to,
+        providerType,
+      );
+
+      for (const row of carrying) {
+        const [existing] = await db
+          .select()
+          .from(providerSettlements)
+          .where(
+            and(
+              eq(providerSettlements.branchId, branchId),
+              eq(providerSettlements.providerType, providerType),
+              eq(providerSettlements.providerName, row.providerName),
+              eq(providerSettlements.periodFrom, targetBounds.from),
+              eq(providerSettlements.periodTo, targetBounds.to),
+            ),
+          )
+          .limit(1);
+
+        if (existing && existing.carriedFromMonth === sourceKey) {
+          skipped.push({
+            providerType,
+            providerName: row.providerName,
+            amount: row.carriedOutAmount,
+            reason: "مُرحَّل مسبقاً إلى " + targetKey,
+          });
+          continue;
+        }
+        if (existing && existing.status === "confirmed") {
+          skipped.push({
+            providerType,
+            providerName: row.providerName,
+            amount: row.carriedOutAmount,
+            reason: "تسوية " + targetKey + " مؤكَّدة ولا تُعدَّل",
+          });
+          continue;
+        }
+
+        let settlementId = 0;
+        if (existing) {
+          // الصفوف القديمة بلا «مخصوم فعلي»: نثبّت خصمها الضمني كما كان
+          // بالضبط قبل الترحيل، فلا يتحوّل المرحّل الداخل إلى عمولة بالغلط
+          const explicit = storedActualDeducted(existing);
+          const impliedActual =
+            explicit === null
+              ? Math.max(
+                  0,
+                  round2(
+                    (Number(existing.salesAmount) || 0) -
+                      (Number(existing.receivedAmount) || 0),
+                  ),
+                )
+              : explicit;
+          await db
+            .update(providerSettlements)
+            .set({
+              carriedInAmount: row.carriedOutAmount,
+              carriedFromMonth: sourceKey,
+              actualDeducted: impliedActual,
+              carriedOutAmount: row.carriedOutAmount,
+              contractRate:
+                (Number(existing.contractRate) || 0) > 0
+                  ? existing.contractRate
+                  : row.contractRate,
+              updatedAt: now,
+            })
+            .where(eq(providerSettlements.id, existing.id));
+          settlementId = existing.id;
+        } else {
+          const monthlySales = round2(targetSales.get(row.providerName) ?? 0);
+          const [inserted] = await db
+            .insert(providerSettlements)
+            .values({
+              branchId,
+              providerType,
+              providerName: row.providerName,
+              periodFrom: targetBounds.from,
+              periodTo: targetBounds.to,
+              salesAmount: monthlySales,
+              receivedAmount: 0,
+              commissionAmount: 0,
+              commissionRate: 0,
+              vatRate: row.vatRate,
+              vatAmount: 0,
+              vatIncluded: row.vatIncluded,
+              commissionBeforeVat: 0,
+              contractRate: row.contractRate,
+              expectedAmount: 0,
+              actualDeducted: 0,
+              varianceAmount: 0,
+              carriedInAmount: row.carriedOutAmount,
+              // مبدئياً كل الأساس بانتظار التحويل حتى تُسجَّل دفعة أو خصم
+              carriedOutAmount: round2(monthlySales + row.carriedOutAmount),
+              carriedFromMonth: sourceKey,
+              carriedToMonth: "",
+              status: "pending",
+              reference: "",
+              notes: "مبلغ مُرحَّل تلقائياً من شهر " + sourceKey,
+              createdByEmployeeId: actor.id,
+              updatedAt: now,
+            })
+            .returning();
+          settlementId = inserted?.id ?? 0;
+        }
+
+        if (settlementId === 0) continue;
+        const result = await recomputeSettlement(settlementId);
+
+        // وسم صفّ الشهر المصدر بأنه رُحّل — تتبّعاً لا حساباً
+        if (row.settlementId) {
+          await db
+            .update(providerSettlements)
+            .set({ carriedToMonth: targetKey, updatedAt: now })
+            .where(eq(providerSettlements.id, row.settlementId));
+        }
+
+        moved.push({
+          providerType,
+          providerName: row.providerName,
+          amount: row.carriedOutAmount,
+          fromMonth: sourceKey,
+          toMonth: targetKey,
+          settlementId,
+          newBase: result?.figures.settlementBase ?? 0,
+          created: !existing,
+        });
+      }
+    }
+
+    const movedTotal = round2(
+      moved.reduce((total, item) => total + item.amount, 0),
+    );
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "settlement.month.carry_forward",
+      entityType: "provider_settlements",
+      entityId: null,
+      before: { month: sourceKey, skipped },
+      after: { month: targetKey, moved },
+      reason:
+        "ترحيل غير المحوّل من " +
+        sourceKey +
+        " إلى " +
+        targetKey +
+        ": " +
+        String(moved.length) +
+        " جهة بمجموع " +
+        String(movedTotal),
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      fromMonth: sourceKey,
+      toMonth: targetKey,
+      moved,
+      skipped,
+      totals: { providers: moved.length, amount: movedTotal },
+      message:
+        moved.length === 0
+          ? skipped.length > 0
+            ? "لا جديد للترحيل — كل المبالغ مُرحَّلة مسبقاً إلى " + targetKey
+            : "لا مبالغ غير محوّلة في شهر " + sourceKey
+          : "رُحّل " +
+            String(movedTotal) +
+            " لـ" +
+            String(moved.length) +
+            " جهة من " +
+            sourceKey +
+            " إلى " +
+            targetKey,
+    });
+  },
+);
+
+/**
+ * تقرير نهاية الشهر: الشبكات وتطبيقات التوصيل في مستندٍ واحد.
+ *
+ * يُخرج لكل جهة: مبيعات الشهر، المرحّل الداخل، الأساس المستحق، نسبة العقد،
+ * المتوقع خصمه، المخصوم الفعلي، الفرق بينهما، المحوّل فعلاً (بعدد دفعاته)،
+ * وما سيُرحَّل إلى الشهر الجديد — ثم مجاميع كل قسم والمجموع العام.
+ */
+financeRouter.get(
+  "/finance/settlements/monthly/report",
+  requireAuth,
+  requirePermission(PERMISSIONS.settlementsRead),
+  async (req: AuthedRequest, res: Response) => {
+    const branchId = await resolveBranchId(req, req.query.branchId);
+    if (branchId === null) {
+      res.status(400).json({ ok: false, error: "حدّد الفرع أولاً" });
+      return;
+    }
+
+    const timezone = await branchTimezone(branchId);
+    const today = isoDateInZone(new Date(), timezone);
+    const period = parseMonthKey(req.query.month) ?? {
+      year: Number.parseInt(today.slice(0, 4), 10),
+      month: Number.parseInt(today.slice(5, 7), 10),
+    };
+    if (!isValidPeriod(period.year, period.month)) {
+      res.status(400).json({ ok: false, error: "الشهر المطلوب غير صالح" });
+      return;
+    }
+
+    const monthKey = monthKeyOf(period.year, period.month);
+    const { from, to } = monthBounds(period.year, period.month);
+    const next = nextMonth(period.year, period.month);
+    const nextKey = monthKeyOf(next.year, next.month);
+
+    const sections = [];
+    let allRows: MonthlyProviderRow[] = [];
+
+    for (const providerType of PROVIDER_TYPES) {
+      const data = await monthlyProviderRows(
+        branchId,
+        providerType,
+        period.year,
+        period.month,
+      );
+      allRows = allRows.concat(data.rows);
+      sections.push({
+        providerType,
+        label: PROVIDER_TYPE_LABEL[providerType],
+        providers: data.rows,
+        totals: providerTotals(data.rows),
+        carryForward: data.rows
+          .filter((row) => row.carriedOutAmount > 0)
+          .map((row) => ({
+            providerName: row.providerName,
+            amount: row.carriedOutAmount,
+            alreadyCarried: row.carriedToMonth === nextKey,
+          })),
+      });
+    }
+
+    const totals = providerTotals(allRows);
+    const pendingCarry = round2(
+      allRows
+        .filter((row) => row.carriedToMonth !== nextKey)
+        .reduce((total, row) => total + row.carriedOutAmount, 0),
+    );
+
+    const branch = await getDb()
+      .select({ name: branches.name })
+      .from(branches)
+      .where(eq(branches.id, branchId))
+      .limit(1);
+
+    res.json({
+      ok: true,
+      branchId,
+      branchName: branch[0]?.name ?? "",
+      month: monthKey,
+      from,
+      to,
+      nextMonth: nextKey,
+      today,
+      /** التسوية النهائية عند آخر يوم في الشهر */
+      isMonthEnded: today > to,
+      sections,
+      totals,
+      /** ما لم يُرحَّل بعد إلى الشهر الجديد — زر الترحيل يعالجه */
+      pendingCarry,
+      canCarryForward: await hasAnyPermission(req, [
+        PERMISSIONS.settlementsManage,
+      ]),
+      generatedAt: new Date().toISOString(),
     });
   },
 );
@@ -1480,6 +2504,11 @@ financeRouter.get(
         count: settlements.length,
         pending: settlements.length - confirmed.length,
         salesAmount: sumBy(settlements, (item) => item.salesAmount),
+        carriedInAmount: sumBy(settlements, (item) => item.carriedInAmount),
+        carriedOutAmount: sumBy(settlements, (item) => item.carriedOutAmount),
+        expectedAmount: sumBy(settlements, (item) => item.expectedAmount),
+        actualDeducted: sumBy(settlements, (item) => item.actualDeducted),
+        varianceAmount: sumBy(settlements, (item) => item.varianceAmount),
         receivedAmount: sumBy(confirmed, (item) => item.receivedAmount),
         commissionAmount: sumBy(confirmed, (item) => item.commissionAmount),
         vatAmount: sumBy(confirmed, (item) => item.vatAmount),
@@ -1606,7 +2635,10 @@ financeRouter.post(
   },
 );
 
-/** تعديل تسوية لم تُؤكَّد بعد. المؤكَّدة لا تُعدَّل — تُحذف وتُعاد إن لزم. */
+/**
+ * تعديل تسوية لم تُؤكَّد بعد: يقبل نسبة العقد والمخصوم الفعلي فيُعاد حساب
+ * المتوقع والفرق والمرحّل. والمؤكَّدة لا تُعدَّل — تُحذف وتُعاد إن لزم.
+ */
 financeRouter.patch(
   "/finance/settlements/:id",
   requireAuth,
@@ -1645,14 +2677,43 @@ financeRouter.patch(
 
     const salesAmount =
       typeof input.salesAmount === "string" ? before.salesAmount : input.salesAmount;
-    const receivedAmount =
-      body.receivedAmount === undefined || typeof input.receivedAmount === "string"
-        ? before.receivedAmount
-        : input.receivedAmount;
 
-    const figures = settlementFigures({
-      salesAmount,
+    // المستلم من الدفعات إن سُجِّلت: مجموعها أصدق من رقم يُكتب فوقها
+    const paymentRows = await settlementPaymentRows(id);
+    const receivedAmount =
+      paymentRows.length > 0
+        ? paymentsTotal(paymentRows)
+        : body.receivedAmount === undefined ||
+            typeof input.receivedAmount === "string"
+          ? before.receivedAmount
+          : input.receivedAmount;
+
+    const contractRate =
+      body.contractRate === undefined
+        ? Number(before.contractRate) || 0
+        : normalizeRate(body.contractRate);
+
+    // غياب «المخصوم الفعلي» يُبقي الصف على سلوكه السابق حرفياً
+    let actualDeducted: number | null = storedActualDeducted(before);
+    if (
+      body.actualDeducted !== undefined &&
+      body.actualDeducted !== null &&
+      body.actualDeducted !== ""
+    ) {
+      const value = moneyOrError(body.actualDeducted);
+      if (typeof value === "string") {
+        res.status(400).json({ ok: false, error: value });
+        return;
+      }
+      actualDeducted = value;
+    }
+
+    const figures = monthlySettlementFigures({
+      monthlySales: salesAmount,
+      carriedInAmount: Number(before.carriedInAmount) || 0,
       receivedAmount,
+      actualDeducted,
+      contractRate,
       vatRate: body.vatRate === undefined ? before.vatRate : input.vatRate,
       vatIncluded:
         body.vatIncluded === undefined ? before.vatIncluded : input.vatIncluded,
@@ -1665,7 +2726,7 @@ financeRouter.patch(
         providerName: input.providerName ?? before.providerName,
         periodFrom: input.periodFrom ?? before.periodFrom,
         periodTo: input.periodTo ?? before.periodTo,
-        salesAmount: figures.salesAmount,
+        salesAmount: figures.monthlySales,
         receivedAmount: figures.receivedAmount,
         commissionAmount: figures.commissionAmount,
         commissionRate: figures.commissionRate,
@@ -1673,6 +2734,11 @@ financeRouter.patch(
         vatAmount: figures.vatAmount,
         vatIncluded: figures.vatIncluded,
         commissionBeforeVat: figures.commissionBeforeVat,
+        contractRate: figures.contractRate,
+        expectedAmount: figures.expectedAmount,
+        actualDeducted: figures.actualDeducted,
+        varianceAmount: figures.varianceAmount,
+        carriedOutAmount: figures.carriedOutAmount,
         reference: body.reference === undefined ? before.reference : input.reference,
         notes: body.notes === undefined ? before.notes : input.notes,
         updatedAt: new Date(),
@@ -1690,7 +2756,15 @@ financeRouter.patch(
       ipAddress: clientIp(req),
     });
 
-    res.json({ ok: true, settlement: updated, message: "تم تعديل التسوية" });
+    res.json({
+      ok: true,
+      settlement: updated,
+      figures,
+      payments: paymentRows,
+      message:
+        "تم تعديل التسوية — المرحّل للشهر الجديد " +
+        String(figures.carriedOutAmount),
+    });
   },
 );
 
@@ -1732,10 +2806,19 @@ financeRouter.post(
     if (await blockedByMonthLock(before.branchId, before.periodFrom, res)) return;
 
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const received = moneyOrError(body.receivedAmount);
-    if (typeof received === "string") {
-      res.status(400).json({ ok: false, error: received });
-      return;
+
+    // المستلم = مجموع الدفعات إن سُجِّلت، وإلا الرقم المُدخل عند التأكيد
+    const paymentRows = await settlementPaymentRows(id);
+    let received = 0;
+    if (paymentRows.length > 0) {
+      received = paymentsTotal(paymentRows);
+    } else {
+      const value = moneyOrError(body.receivedAmount);
+      if (typeof value === "string") {
+        res.status(400).json({ ok: false, error: value });
+        return;
+      }
+      received = value;
     }
 
     const vatRateRaw = asNumber(body.vatRate);
@@ -1744,9 +2827,32 @@ financeRouter.post(
         ? before.vatRate
         : vatRateRaw;
 
-    const figures = settlementFigures({
-      salesAmount: before.salesAmount,
+    const contractRate =
+      body.contractRate === undefined
+        ? Number(before.contractRate) || 0
+        : normalizeRate(body.contractRate);
+
+    // غياب «المخصوم الفعلي» يُبقي الحساب على سلوكه السابق حرفياً
+    let actualDeducted: number | null = storedActualDeducted(before);
+    if (
+      body.actualDeducted !== undefined &&
+      body.actualDeducted !== null &&
+      body.actualDeducted !== ""
+    ) {
+      const value = moneyOrError(body.actualDeducted);
+      if (typeof value === "string") {
+        res.status(400).json({ ok: false, error: value });
+        return;
+      }
+      actualDeducted = value;
+    }
+
+    const figures = monthlySettlementFigures({
+      monthlySales: before.salesAmount,
+      carriedInAmount: Number(before.carriedInAmount) || 0,
       receivedAmount: received,
+      actualDeducted,
+      contractRate,
       vatRate,
       vatIncluded:
         body.vatIncluded === undefined ? before.vatIncluded : body.vatIncluded !== false,
@@ -1762,6 +2868,11 @@ financeRouter.post(
         vatAmount: figures.vatAmount,
         vatIncluded: figures.vatIncluded,
         commissionBeforeVat: figures.commissionBeforeVat,
+        contractRate: figures.contractRate,
+        expectedAmount: figures.expectedAmount,
+        actualDeducted: figures.actualDeducted,
+        varianceAmount: figures.varianceAmount,
+        carriedOutAmount: figures.carriedOutAmount,
         status: "confirmed",
         reference: asString(body.reference, 120) ?? before.reference,
         notes: asString(body.notes, 500) ?? before.notes,
@@ -1793,7 +2904,14 @@ financeRouter.post(
       ok: true,
       settlement: updated,
       figures,
-      message: "تم تأكيد السداد واحتساب العمولة والضريبة",
+      payments: paymentRows,
+      message:
+        "تم تأكيد السداد — مخصوم فعلي " +
+        String(figures.actualDeducted) +
+        " مقابل متوقع " +
+        String(figures.expectedAmount) +
+        "، والمرحّل للشهر الجديد " +
+        String(figures.carriedOutAmount),
     });
   },
 );
