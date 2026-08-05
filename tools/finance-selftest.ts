@@ -11,14 +11,21 @@
 import assert from "node:assert/strict";
 import {
   aggregateMonthlySales,
+  carryOverAmount,
   commissionOf,
   commissionRateOf,
   decisionOutcome,
+  deductionVariance,
+  expectedDeduction,
   invoiceTotal,
   monthBounds,
   monthlyNet,
+  monthlySettlementFigures,
+  normalizeRate,
   parseMonthKey,
+  paymentsTotal,
   remainingCash,
+  settlementBase,
   settlementFigures,
   unsettledSales,
 } from "../server/finance.js";
@@ -425,6 +432,243 @@ check("من لا بند له لا يرى المتبقي ولا الرصيد ال
   ]);
   assert.equal(none.size, 0);
   return "صفر رمز";
+});
+
+/* ── 10) نسبة العقد والمتوقع والمخصوم الفعلي والفرق ───────────── */
+
+section("١٠) نسبة العقد والمبلغ المتوقع والمخصوم الفعلي والفرق");
+
+/** مدى: مبيعات الشهر 10000، عقدها 2%، وصل 9750 وكشفها يقول خُصم 250. */
+const madaContract = monthlySettlementFigures({
+  monthlySales: 10000,
+  receivedAmount: 9750,
+  actualDeducted: 250,
+  contractRate: 2,
+  vatRate: 15,
+  vatIncluded: true,
+});
+
+check("الأساس المستحق = مبيعات الشهر + المرحّل من السابق", () => {
+  assert.equal(settlementBase(10000, 0), 10000);
+  assert.equal(settlementBase(8000, 3800), 11800);
+  assert.equal(madaContract.settlementBase, 10000);
+  return "8000 + 3800 = 11800";
+});
+
+check("المتوقع خصمه = الأساس × نسبة العقد ÷ 100", () => {
+  assert.equal(expectedDeduction(10000, 2), 200);
+  assert.equal(expectedDeduction(11800, 2), 236);
+  assert.equal(madaContract.expectedAmount, 200);
+  return "10000 × 2% = 200";
+});
+
+check("الفرق = المخصوم الفعلي − المتوقع (موجب = خُصم أكثر من العقد)", () => {
+  assert.equal(deductionVariance(250, 200), 50);
+  assert.equal(madaContract.actualDeducted, 250);
+  assert.equal(madaContract.varianceAmount, 50);
+  return "250 − 200 = 50 مطالبة على مدى";
+});
+
+check("العمولة = المخصوم الفعلي بالضبط، والنسبة عمولة ÷ الأساس × 100", () => {
+  assert.equal(madaContract.commissionAmount, 250);
+  assert.equal(madaContract.commissionRate, 2.5);
+  return "250 ÷ 10000 = 2.5% مقابل عقد 2%";
+});
+
+check("ضريبة العمولة تُستخرج من المخصوم الفعلي لا من فرق الحوالة", () => {
+  assert.equal(madaContract.vatAmount, 32.61);
+  assert.equal(madaContract.commissionBeforeVat, 217.39);
+  return "250 = 217.39 + 32.61";
+});
+
+check("نسبة العقد تُقصّ داخل 0..100 ولا تقبل عبثاً", () => {
+  assert.equal(normalizeRate(2.5), 2.5);
+  assert.equal(normalizeRate(120), 100);
+  assert.equal(normalizeRate(-5), 0);
+  assert.equal(normalizeRate(null), 0);
+  assert.equal(normalizeRate("abc"), 0);
+  return "120 ← 100 و−5 ← 0";
+});
+
+check("جاهز (تطبيق توصيل) بعقد 15%: الفعلي مطابق للمتوقع فلا فرق", () => {
+  const jahez = monthlySettlementFigures({
+    monthlySales: 5000,
+    receivedAmount: 4250,
+    actualDeducted: 750,
+    contractRate: 15,
+    vatRate: 15,
+    vatIncluded: true,
+  });
+  assert.equal(jahez.expectedAmount, 750);
+  assert.equal(jahez.varianceAmount, 0);
+  assert.equal(jahez.commissionRate, 15);
+  assert.equal(jahez.vatAmount, 97.83);
+  return "5000 × 15% = 750 = المخصوم الفعلي";
+});
+
+/* ── 11) ترحيل ما لم يُحوَّل إلى الشهر الجديد ──────────────────── */
+
+section("١١) ترحيل المبالغ التي لم تتم تحويلها إلى الشهر الجديد");
+
+/** الشهر الأول: مبيعات 10000، عقد 2%، وصل 6000 فقط والمخصوم الفعلي 200. */
+const monthOne = monthlySettlementFigures({
+  monthlySales: 10000,
+  receivedAmount: 6000,
+  actualDeducted: 200,
+  contractRate: 2,
+});
+
+check("المرحّل = الأساس − المحوّل − المخصوم الفعلي", () => {
+  assert.equal(carryOverAmount(10000, 6000, 200), 3800);
+  assert.equal(monthOne.carriedOutAmount, 3800);
+  return "10000 − 6000 − 200 = 3800";
+});
+
+check("نقص الحوالة يُفسَّر جزءين: خصمٌ معروف ومبلغ لم يُحوَّل بعد", () => {
+  assert.equal(monthOne.actualDeducted, 200);
+  assert.equal(monthOne.commissionAmount, 200);
+  assert.equal(
+    monthOne.settlementBase - monthOne.receivedAmount,
+    monthOne.actualDeducted + monthOne.carriedOutAmount,
+  );
+  return "4000 = 200 خصماً + 3800 مرحّلاً";
+});
+
+check("الشهر الجديد: المرحّل يدخل أساسه ولا يُضاف إلى مبيعاته", () => {
+  const monthTwo = monthlySettlementFigures({
+    monthlySales: 8000,
+    carriedInAmount: monthOne.carriedOutAmount,
+    receivedAmount: 11564,
+    actualDeducted: 236,
+    contractRate: 2,
+  });
+  assert.equal(monthTwo.monthlySales, 8000);
+  assert.equal(monthTwo.carriedInAmount, 3800);
+  assert.equal(monthTwo.settlementBase, 11800);
+  assert.equal(monthTwo.expectedAmount, 236);
+  assert.equal(monthTwo.varianceAmount, 0);
+  assert.equal(monthTwo.carriedOutAmount, 0);
+  return "8000 + 3800 = 11800 سُدّد كاملاً فأُغلق الترحيل";
+});
+
+check("جهة لم يصل منها شيء: كل الأساس يُرحَّل ولا عمولة تُحتسب", () => {
+  const nothing = monthlySettlementFigures({
+    monthlySales: 5000,
+    receivedAmount: 0,
+    actualDeducted: 0,
+  });
+  assert.equal(nothing.carriedOutAmount, 5000);
+  assert.equal(nothing.commissionAmount, 0);
+  assert.equal(nothing.commissionRate, 0);
+  return "5000 كلها تنتظر التحويل";
+});
+
+check("وصول أكثر من المستحق لا يُنشئ ترحيلاً بالسالب", () => {
+  assert.equal(carryOverAmount(1000, 1200, 0), 0);
+  const over = monthlySettlementFigures({
+    monthlySales: 1000,
+    receivedAmount: 1200,
+    actualDeducted: 0,
+  });
+  assert.equal(over.carriedOutAmount, 0);
+  return "الترحيل لا يقلّ عن صفر";
+});
+
+check("الترحيل مرة واحدة: المرحّل الداخل لا يتضاعف مهما أُعيد الحساب", () => {
+  const input = {
+    monthlySales: 8000,
+    carriedInAmount: 3800,
+    receivedAmount: 5000,
+    actualDeducted: 100,
+    contractRate: 2,
+  };
+  const first = monthlySettlementFigures(input);
+  const second = monthlySettlementFigures(input);
+  assert.equal(first.settlementBase, 11800);
+  assert.deepEqual(first, second);
+  return "11800 في الحسابين لا 15600";
+});
+
+/* ── 12) دفعات التحويل والتوافق مع السلوك السابق ──────────────── */
+
+section("١٢) إضافة مبالغ التحويل على دفعات، والتوافق مع البيانات السابقة");
+
+check("المستلم = مجموع الدفعات لا رقماً مكتوباً فوقها", () => {
+  assert.equal(paymentsTotal([{ amount: 3000 }, { amount: 1250 }]), 4250);
+  assert.equal(paymentsTotal([]), 0);
+  assert.equal(paymentsTotal([{ amount: 1000 }, { amount: null }]), 1000);
+  return "3000 + 1250 = 4250";
+});
+
+check("إضافة دفعة تُنقص المرحّل بمقدارها بالضبط", () => {
+  const before = monthlySettlementFigures({
+    monthlySales: 10000,
+    receivedAmount: paymentsTotal([{ amount: 6000 }]),
+    actualDeducted: 200,
+  });
+  const after = monthlySettlementFigures({
+    monthlySales: 10000,
+    receivedAmount: paymentsTotal([{ amount: 6000 }, { amount: 1800 }]),
+    actualDeducted: 200,
+  });
+  assert.equal(before.carriedOutAmount, 3800);
+  assert.equal(after.receivedAmount, 7800);
+  assert.equal(after.carriedOutAmount, 2000);
+  return "3800 − 1800 = 2000";
+});
+
+check("بلا مخصوم فعلي: النتيجة مطابقة للسلوك السابق حرفياً ولا ترحيل", () => {
+  const legacy = settlementFigures({ salesAmount: 10000, receivedAmount: 9750 });
+  const upgraded = monthlySettlementFigures({
+    monthlySales: 10000,
+    receivedAmount: 9750,
+  });
+  assert.equal(upgraded.commissionAmount, legacy.commissionAmount);
+  assert.equal(upgraded.commissionRate, legacy.commissionRate);
+  assert.equal(upgraded.vatAmount, legacy.vatAmount);
+  assert.equal(upgraded.expectedAmount, 0);
+  assert.equal(upgraded.varianceAmount, 0);
+  assert.equal(upgraded.carriedOutAmount, 0);
+  return "عمولة 250 بنسبة 2.5% كما كانت، ولا مبلغ مرحّل";
+});
+
+check("بلا نسبة عقد لا مبلغ متوقع ولا فرق (الحقل اختياري)", () => {
+  const noContract = monthlySettlementFigures({
+    monthlySales: 10000,
+    receivedAmount: 9800,
+    actualDeducted: 150,
+  });
+  assert.equal(noContract.contractRate, 0);
+  assert.equal(noContract.expectedAmount, 0);
+  assert.equal(noContract.varianceAmount, 0);
+  assert.equal(noContract.carriedOutAmount, 50);
+  return "خصم 150 ومرحّل 50 بلا عقد";
+});
+
+check("مجاميع تقرير نهاية الشهر: الشبكات والتطبيقات يُجمعان بلا اختلاط", () => {
+  const networkRow = monthlySettlementFigures({
+    monthlySales: 10000,
+    receivedAmount: 6000,
+    actualDeducted: 200,
+    contractRate: 2,
+  });
+  const appRow = monthlySettlementFigures({
+    monthlySales: 5000,
+    receivedAmount: 4250,
+    actualDeducted: 750,
+    contractRate: 15,
+  });
+  const baseTotal = networkRow.settlementBase + appRow.settlementBase;
+  const expectedTotal = networkRow.expectedAmount + appRow.expectedAmount;
+  const actualTotal = networkRow.actualDeducted + appRow.actualDeducted;
+  const carryTotal = networkRow.carriedOutAmount + appRow.carriedOutAmount;
+  assert.equal(baseTotal, 15000);
+  assert.equal(expectedTotal, 950);
+  assert.equal(actualTotal, 950);
+  assert.equal(carryTotal, 3800);
+  assert.equal(networkRow.commissionRate, 2);
+  assert.equal(appRow.commissionRate, 15);
+  return "أساس 15000، متوقع 950، فعلي 950، مرحّل 3800";
 });
 
 /* ── التقرير ──────────────────────────────────────────────────── */
