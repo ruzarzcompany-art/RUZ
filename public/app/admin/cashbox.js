@@ -15,6 +15,11 @@
  *   الفرق          = المخصوم الفعلي − المتوقع
  *   المرحّل        = الأساس − المحوّل − المخصوم الفعلي
  * والمحوّل = مجموع دفعات التحويل إن سُجِّلت دفعات لا رقماً يكتبه أحد.
+ *
+ * والإجراءات مفصولة كما يفصلها الخادم بندَاً بندَاً، فلا يظهر زرٌّ سيُرفَض عند
+ * الضغط: «إضافة» درجة 2، و«تعديل» درجة 3، و«اعتماد» درجة 4، و«حذف» خانة
+ * مستقلة عن السلّم كله — ودفعات التحويل بندها المستقل عن بند التسوية نفسها.
+ * ودخول الشاشة نفسه يُسجَّل في سجل التدقيق بمن دخل ومتى ومن أي عنوان.
  */
 
 import {
@@ -54,6 +59,25 @@ const state = {
   monthClosings: [],
   openPayments: { network: null, delivery_app: null },
 };
+
+/**
+ * القدرة الفعلية على إجراء بعينه. الخادم يرسل الإجراءات مفصولة لكل بند
+ * (اطلاع/إضافة/تعديل/اعتماد/حذف) فلا يُعرض زرٌّ سيُرفَض عند الضغط. وإن جاء
+ * ردٌّ قديم بلا هذا التفصيل رجعنا إلى القدرة العامة حتى لا تختفي الأزرار
+ * أثناء نشرٍ نصفه قديم.
+ */
+function can(name, fallbackName) {
+  const caps = state.caps || {};
+  if (typeof caps[name] === "boolean") return caps[name];
+  return fallbackName ? Boolean(caps[fallbackName]) : false;
+}
+
+/** الحذف خانة مستقلة عن سلّم الدرجات: علم الخادم أولاً ثم درجة البند. */
+function canDelete(name, moduleKey) {
+  const caps = state.caps || {};
+  if (typeof caps[name] === "boolean") return caps[name];
+  return state.canDeleteIn(moduleKey);
+}
 
 /* ── أدوات صغيرة ─────────────────────────────────────────────── */
 
@@ -431,27 +455,29 @@ async function loadPayments(type, provider) {
 
   const payments = result.payments || [];
   const body = el("cashbox-" + meta.key + "-payments-table").querySelector("tbody");
-  const canEdit = state.caps.manageSettlements && provider.status !== "confirmed";
+  const editable = provider.status !== "confirmed";
+  const mayEditPayment = editable && can("editPayments", "manageSettlements");
+  const mayDeletePayment = editable && canDelete("deletePayments", "settlements");
 
   body.replaceChildren(
     ...payments.map((payment) => {
       const actions = document.createElement("span");
       actions.className = "row-actions";
-      if (canEdit) {
+      if (mayEditPayment) {
         actions.append(
           button("تعديل", {
             className: "btn btn--ghost btn--xs",
             onClick: () => editPayment(type, provider, payment),
           }),
         );
-        if (state.canDeleteIn("settlements")) {
-          actions.append(
-            button("حذف", {
-              className: "btn btn--danger btn--xs",
-              onClick: () => removePayment(type, provider, payment),
-            }),
-          );
-        }
+      }
+      if (mayDeletePayment) {
+        actions.append(
+          button("حذف", {
+            className: "btn btn--danger btn--xs",
+            onClick: () => removePayment(type, provider, payment),
+          }),
+        );
       }
       return row([
         payment.paymentDate,
@@ -501,19 +527,66 @@ async function loadMonthlySection(type) {
       const actions = document.createElement("span");
       actions.className = "row-actions";
 
-      if (state.caps.manageSettlements && provider.status !== "confirmed") {
+      // المؤكَّدة لا تُعدَّل، والتسجيل أول مرة «إضافة» وما بعده «تعديل»
+      const editable = provider.status !== "confirmed";
+      const mayWrite = provider.settlementId
+        ? can("editSettlements", "manageSettlements")
+        : can("addSettlements", "manageSettlements");
+      const pendingRow = provider.status === "pending";
+
+      if (editable && mayWrite) {
         actions.append(
-          button(provider.status === "pending" ? "تعديل التسوية" : "تسوية الشهر", {
+          button(provider.settlementId ? "تعديل التسوية" : "إضافة تسوية الشهر", {
             className: "btn btn--primary btn--xs",
             onClick: () => settleMonth(type, provider),
           }),
+        );
+      }
+      if (editable && can("addPayments", "manageSettlements")) {
+        actions.append(
           button("إضافة مبلغ", {
             className: "btn btn--ghost btn--xs",
             onClick: () => addPayment(type, provider),
           }),
         );
       }
-      if (provider.settlementId) {
+      if (
+        provider.settlementId &&
+        pendingRow &&
+        can("approveSettlements", "confirmSettlements")
+      ) {
+        actions.append(
+          button("اعتماد", {
+            className: "btn btn--primary btn--xs",
+            onClick: () =>
+              approveSettlement(
+                {
+                  id: provider.settlementId,
+                  providerName: provider.providerName,
+                  receivedAmount: provider.receivedAmount,
+                },
+                "cashbox-" + meta.key + "-result",
+              ),
+          }),
+        );
+      }
+      if (
+        provider.settlementId &&
+        pendingRow &&
+        canDelete("deleteSettlements", "settlements")
+      ) {
+        actions.append(
+          button("حذف", {
+            className: "btn btn--danger btn--xs",
+            onClick: () =>
+              removeSettlement({
+                id: provider.settlementId,
+                providerName: provider.providerName,
+              }),
+          }),
+        );
+      }
+      if (provider.settlementId && can("viewPayments", "readSettlements")) {
         actions.append(
           button("الدفعات (" + String(provider.paymentsCount || 0) + ")", {
             className: "btn btn--ghost btn--xs",
@@ -645,7 +718,7 @@ async function loadReport() {
 
   const carryButton = el("cashbox-report-carry");
   if (carryButton) {
-    carryButton.hidden = !state.caps.manageSettlements;
+    carryButton.hidden = !can("addSettlements", "manageSettlements");
     carryButton.disabled = Number(result.pendingCarry || 0) <= 0;
   }
 
@@ -699,6 +772,91 @@ async function carryForwardSettlements() {
   if (result.ok) await refreshSettlementSections();
 }
 
+/* ══ الاعتماد والتعديل والحذف — كل إجراء ببنده ═════════════════════ */
+
+/**
+ * اعتماد تسوية: الدرجة الرابعة في بند التسويات وحدها تفتحه. وبعد الاعتماد
+ * تُقفَل التسوية فلا تُعدَّل، فيُعرض على المعتمِد رقم المحوّل ليؤكّد أنه ما
+ * وصل البنك فعلاً — ومع وجود دفعات مسجّلة يُهمَل الرقم ويُعتمد مجموعها.
+ */
+async function approveSettlement(settlement, resultNodeId) {
+  const received = window.prompt(
+    "اعتماد تسوية " +
+      settlement.providerName +
+      ":\nالمبلغ المحوّل للبنك (يُهمَل إن كانت هناك دفعات مسجّلة):",
+    String(settlement.receivedAmount || 0),
+  );
+  if (received === null) return;
+  if (
+    !window.confirm(
+      "بعد الاعتماد تُقفَل التسوية ولا تُعدَّل، ويُسجَّل الاعتماد باسمك في سجل التدقيق.\nمتابعة اعتماد " +
+        settlement.providerName +
+        "؟",
+    )
+  ) {
+    return;
+  }
+
+  const result = await api("/finance/settlements/" + settlement.id + "/confirm", {
+    method: "POST",
+    body: { receivedAmount: Number(received || 0) },
+  });
+  setAlert(
+    el(resultNodeId || "cashbox-settlements-result"),
+    result.ok ? (result.message || "تم الاعتماد") : (result.error || "تعذّر الاعتماد"),
+    result.ok ? "ok" : "error",
+  );
+  if (result.ok) await refreshSettlementSections();
+}
+
+/**
+ * تعديل تسوية قائمة من السجل: نسبة العقد والمخصوم الفعلي والمحوّل والضريبة.
+ * درجة «تعديل» وحدها تفتحه، والمؤكَّدة لا تُعدَّل — تُحذف وتُعاد إن لزم.
+ */
+async function editSettlementRow(settlement) {
+  const rate = window.prompt(
+    "نسبة العقد % لـ" + settlement.providerName + " (صفر = بلا نسبة):",
+    String(settlement.contractRate || 0),
+  );
+  if (rate === null) return;
+
+  const actual = window.prompt(
+    "المخصوم الفعلي كما في كشف الجهة (اتركه فارغاً لإبقاء الحساب على سلوكه):",
+    String(settlement.actualDeducted || ""),
+  );
+  if (actual === null) return;
+
+  const received = window.prompt(
+    "المحوّل للبنك (يُهمَل إن كانت هناك دفعات مسجّلة):",
+    String(settlement.receivedAmount || 0),
+  );
+  if (received === null) return;
+
+  const vat = window.prompt(
+    "نسبة الضريبة على العمولة % (صفر = بلا ضريبة):",
+    String(settlement.vatRate || 0),
+  );
+  if (vat === null) return;
+
+  const body = {
+    contractRate: Number(rate || 0),
+    receivedAmount: Number(received || 0),
+    vatRate: Number(vat || 0),
+  };
+  if (String(actual).trim() !== "") body.actualDeducted = Number(actual);
+
+  const result = await api("/finance/settlements/" + settlement.id, {
+    method: "PATCH",
+    body,
+  });
+  setAlert(
+    el("cashbox-settlements-result"),
+    result.ok ? (result.message || "تم التعديل") : (result.error || "تعذّر التعديل"),
+    result.ok ? "ok" : "error",
+  );
+  if (result.ok) await refreshSettlementSections();
+}
+
 /* ══ سجل التسويات ═════════════════════════════════════════════════ */
 
 async function removeSettlement(settlement) {
@@ -741,11 +899,25 @@ export async function loadSettlements() {
     const actions = document.createElement("span");
     actions.className = "row-actions";
 
-    if (
-      settlement.status === "pending" &&
-      state.caps.manageSettlements &&
-      state.canDeleteIn("settlements")
-    ) {
+    // الإجراءات الثلاثة على السجل، كلٌّ ببنده ودرجته — والمؤكَّدة لا تُمَس
+    const pending = settlement.status === "pending";
+    if (pending && can("editSettlements", "manageSettlements")) {
+      actions.append(
+        button("تعديل", {
+          className: "btn btn--ghost btn--xs",
+          onClick: () => editSettlementRow(settlement),
+        }),
+      );
+    }
+    if (pending && can("approveSettlements", "confirmSettlements")) {
+      actions.append(
+        button("اعتماد", {
+          className: "btn btn--primary btn--xs",
+          onClick: () => approveSettlement(settlement, "cashbox-settlements-result"),
+        }),
+      );
+    }
+    if (pending && canDelete("deleteSettlements", "settlements")) {
       actions.append(
         button("حذف", {
           className: "btn btn--danger btn--xs",
@@ -949,6 +1121,12 @@ function applyCapabilities() {
   el("cashbox-settlements-card").hidden = !state.caps.readSettlements;
   el("cashbox-months-card").hidden = !state.caps.viewMonthlySummary;
   el("cashbox-prepare-row").hidden = !state.caps.viewMonthlySummary;
+
+  // «إضافة مبلغ» في رأس لوحة الدفعات بندها المستقل عن بند التسوية
+  const mayAddPayment = can("addPayments", "manageSettlements");
+  for (const type of ["network", "delivery_app"]) {
+    el("cashbox-" + SECTIONS[type].key + "-payments-add").hidden = !mayAddPayment;
+  }
 }
 
 export function initCashboxModule({ can, levelOf, canDeleteIn }) {
