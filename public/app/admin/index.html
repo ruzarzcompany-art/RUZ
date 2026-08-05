@@ -1376,12 +1376,16 @@
               <tr>
                 <th>الشبكة (مدى، فيزا، فودكس...)</th>
                 <th>مبيعات الشهر (مجمّعة)</th>
-                <th>المستلم في البنك</th>
-                <th>العمولة</th>
-                <th>النسبة</th>
-                <th>الضريبة</th>
+                <th>مرحّل من السابق</th>
+                <th>الأساس المستحق</th>
+                <th>نسبة العقد</th>
+                <th>المتوقع خصمه</th>
+                <th>المخصوم الفعلي</th>
+                <th>الفرق (فعلي − متوقع)</th>
+                <th>المحوّل فعلاً (دفعات)</th>
+                <th>المرحّل للشهر الجديد</th>
+                <th>النسبة الفعلية</th>
                 <th>الحالة</th>
-                <th>المحاسب</th>
                 <th></th>
               </tr>
             </thead>
@@ -1392,11 +1396,59 @@
           لا توجد مبيعات في هذا الشهر.
         </p>
         <p id="cashbox-network-result" class="alert" role="status" hidden></p>
+        <section class="card" id="cashbox-network-payments" hidden>
+          <div class="card__head">
+            <h3
+              class="card__title card__title--sm"
+              id="cashbox-network-payments-title"
+            >
+              دفعات التحويل
+            </h3>
+            <button
+              id="cashbox-network-payments-add"
+              class="btn btn--primary btn--xs"
+              type="button"
+            >
+              إضافة مبلغ
+            </button>
+            <button
+              id="cashbox-network-payments-close"
+              class="btn btn--ghost btn--xs"
+              type="button"
+            >
+              إغلاق
+            </button>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="cashbox-network-payments-table">
+              <thead>
+                <tr>
+                  <th>تاريخ وصول الدفعة</th>
+                  <th>المبلغ</th>
+                  <th>المرجع / رقم الحوالة</th>
+                  <th>ملاحظات</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="cashbox-network-payments-empty" class="empty" hidden>
+            لا دفعات مسجّلة بعد — المحوّل يبقى على الرقم المحفوظ حتى تُضاف أول دفعة.
+          </p>
+          <p id="cashbox-network-payments-result" class="alert" role="status" hidden></p>
+          <p class="hint">
+            كل دفعة صفٌّ بتاريخها ومرجعها، و«المحوّل فعلاً» = مجموعها لا رقماً
+            يكتبه أحد. وبعد كل إضافة أو تعديل يُعيد الخادم حساب المخصوم الفعلي
+            والفرق والمرحّل إلى الشهر الجديد.
+          </p>
+        </section>
         <p class="hint">قسم مستقل للشبكات وحدها.
-          المبالغ تتجمّع طوال الشهر من التقفيلات اليومية، والتسوية تقع على
-          المجمَّع الشهري عند وصول الحوالة إلى البنك — فالتحويلات ليست يومية.
-          العمولة = المبيعات − المستلم، والنسبة = العمولة ÷ المبيعات × 100،
-          يحسبهما الخادم من المجمَّع الشهري فتخرج النسبة دقيقة.
+          الأساس المستحق = مبيعات الشهر المجمّعة + المرحّل من الشهر السابق.
+          المتوقع خصمه = الأساس × نسبة العقد ÷ 100، والفرق = المخصوم الفعلي −
+          المتوقع، والمرحّل إلى الشهر الجديد = الأساس − المحوّل − المخصوم الفعلي.
+          والتسوية النهائية تقع في نهاية الشهر، وما لم يُحوَّل يُرحَّل فلا يضيع
+          ولا يُحسب مرتين.
         </p>
       </section>
 
@@ -1423,12 +1475,16 @@
               <tr>
                 <th>التطبيق (هنجرستيشن، جاهز...)</th>
                 <th>مبيعات الشهر (مجمّعة)</th>
-                <th>المستلم في البنك</th>
-                <th>العمولة</th>
-                <th>النسبة</th>
-                <th>الضريبة</th>
+                <th>مرحّل من السابق</th>
+                <th>الأساس المستحق</th>
+                <th>نسبة العقد</th>
+                <th>المتوقع خصمه</th>
+                <th>المخصوم الفعلي</th>
+                <th>الفرق (فعلي − متوقع)</th>
+                <th>المحوّل فعلاً (دفعات)</th>
+                <th>المرحّل للشهر الجديد</th>
+                <th>النسبة الفعلية</th>
                 <th>الحالة</th>
-                <th>المحاسب</th>
                 <th></th>
               </tr>
             </thead>
@@ -1439,11 +1495,115 @@
           لا توجد مبيعات في هذا الشهر.
         </p>
         <p id="cashbox-delivery-result" class="alert" role="status" hidden></p>
+        <section class="card" id="cashbox-delivery-payments" hidden>
+          <div class="card__head">
+            <h3
+              class="card__title card__title--sm"
+              id="cashbox-delivery-payments-title"
+            >
+              دفعات التحويل
+            </h3>
+            <button
+              id="cashbox-delivery-payments-add"
+              class="btn btn--primary btn--xs"
+              type="button"
+            >
+              إضافة مبلغ
+            </button>
+            <button
+              id="cashbox-delivery-payments-close"
+              class="btn btn--ghost btn--xs"
+              type="button"
+            >
+              إغلاق
+            </button>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="cashbox-delivery-payments-table">
+              <thead>
+                <tr>
+                  <th>تاريخ وصول الدفعة</th>
+                  <th>المبلغ</th>
+                  <th>المرجع / رقم الحوالة</th>
+                  <th>ملاحظات</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="cashbox-delivery-payments-empty" class="empty" hidden>
+            لا دفعات مسجّلة بعد — المحوّل يبقى على الرقم المحفوظ حتى تُضاف أول دفعة.
+          </p>
+          <p id="cashbox-delivery-payments-result" class="alert" role="status" hidden></p>
+          <p class="hint">
+            كل دفعة صفٌّ بتاريخها ومرجعها، و«المحوّل فعلاً» = مجموعها لا رقماً
+            يكتبه أحد. وبعد كل إضافة أو تعديل يُعيد الخادم حساب المخصوم الفعلي
+            والفرق والمرحّل إلى الشهر الجديد.
+          </p>
+        </section>
         <p class="hint">قسم مستقل لتطبيقات التوصيل وحدها.
-          المبالغ تتجمّع طوال الشهر من التقفيلات اليومية، والتسوية تقع على
-          المجمَّع الشهري عند وصول الحوالة إلى البنك — فالتحويلات ليست يومية.
-          العمولة = المبيعات − المستلم، والنسبة = العمولة ÷ المبيعات × 100،
-          يحسبهما الخادم من المجمَّع الشهري فتخرج النسبة دقيقة.
+          الأساس المستحق = مبيعات الشهر المجمّعة + المرحّل من الشهر السابق.
+          المتوقع خصمه = الأساس × نسبة العقد ÷ 100، والفرق = المخصوم الفعلي −
+          المتوقع، والمرحّل إلى الشهر الجديد = الأساس − المحوّل − المخصوم الفعلي.
+          والتسوية النهائية تقع في نهاية الشهر، وما لم يُحوَّل يُرحَّل فلا يضيع
+          ولا يُحسب مرتين.
+        </p>
+      </section>
+
+      <section class="card" id="cashbox-report-card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">
+            تقرير نهاية الشهر — الشبكات وتطبيقات التوصيل
+          </h2>
+          <label class="field field--sm">
+            <span class="field__label">الشهر</span>
+            <input id="cashbox-report-month" type="month" />
+          </label>
+          <button id="cashbox-report-run" class="btn btn--ghost btn--sm" type="button">
+            توليد التقرير
+          </button>
+          <button
+            id="cashbox-report-carry"
+            class="btn btn--primary btn--sm"
+            type="button"
+          >
+            ترحيل غير المحوّل إلى الشهر الجديد
+          </button>
+        </div>
+
+        <p id="cashbox-report-chips" class="row row--wrap"></p>
+        <div class="table-wrap">
+          <table class="table" id="cashbox-report-table">
+            <thead>
+              <tr>
+                <th>النوع</th>
+                <th>الجهة</th>
+                <th>مبيعات الشهر</th>
+                <th>مرحّل من السابق</th>
+                <th>الأساس المستحق</th>
+                <th>نسبة العقد</th>
+                <th>المتوقع خصمه</th>
+                <th>المخصوم الفعلي</th>
+                <th>الفرق</th>
+                <th>المحوّل فعلاً</th>
+                <th>المرحّل للشهر الجديد</th>
+                <th>الحالة</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="cashbox-report-empty" class="empty" hidden>
+          لا توجد مبيعات ولا تسويات في هذا الشهر.
+        </p>
+        <p id="cashbox-report-result" class="alert" role="status" hidden></p>
+        <p class="hint">
+          تقرير واحد في نهاية كل شهر يجمع القسمين بلا اختلاط: لكل جهة مبيعاتها
+          المجمّعة، والمرحّل الداخل، والأساس المستحق، ونسبة العقد، والمتوقع
+          خصمه، والمخصوم الفعلي، والفرق بينهما، والمحوّل فعلاً، وما سيُرحَّل إلى
+          الشهر الجديد. وزر الترحيل ينقل غير المحوّل إلى تسوية الشهر التالي لكل
+          الشبكات والتطبيقات — إضافةً بلا حذف، وتكراره لا يضاعف مبلغاً.
         </p>
       </section>
 
@@ -1481,7 +1641,14 @@
                 <th>النوع</th>
                 <th>المدة</th>
                 <th>المبيعات</th>
+                <th>مرحّل داخل</th>
+                <th>الأساس المستحق</th>
+                <th>نسبة العقد</th>
+                <th>المتوقع</th>
+                <th>المخصوم الفعلي</th>
+                <th>الفرق</th>
                 <th>المستلم</th>
+                <th>مرحّل للشهر التالي</th>
                 <th>العمولة</th>
                 <th>النسبة</th>
                 <th>الضريبة</th>
@@ -1497,8 +1664,10 @@
         <p id="cashbox-settlements-empty" class="empty" hidden>لا توجد تسويات مطابقة.</p>
         <p id="cashbox-settlements-result" class="alert" role="status" hidden></p>
         <p class="hint">
-          العمولة = المبيعات − المستلم، والنسبة المئوية منها، والضريبة على العمولة
-          اختيارية — يحسبها الخادم عند تأكيد السداد ويثبّت تاريخه واسم المحاسب.
+          الأساس المستحق = المبيعات + المرحّل الداخل، والمتوقع = الأساس × نسبة
+          العقد ÷ 100، والفرق = المخصوم الفعلي − المتوقع، والمرحّل للشهر التالي =
+          الأساس − المستلم − المخصوم الفعلي. والضريبة على العمولة اختيارية —
+          يحسبها الخادم عند التأكيد ويثبّت تاريخه واسم المحاسب.
         </p>
       </section>
 
