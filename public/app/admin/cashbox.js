@@ -658,7 +658,7 @@ async function loadReport() {
           (result.nextMonth || "") +
           (result.isMonthEnded
             ? ""
-            : " — والشهر لم ينته بعد، والتسوية النهائية تقع في نهايته."),
+            : " — والشهر لم ينته بعد، والتسوية النهائية تقع في نهايته.")
       : "",
     Number(result.pendingCarry || 0) > 0 ? "warn" : "ok",
   );
