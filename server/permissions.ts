@@ -83,6 +83,8 @@ export const PERMISSIONS = {
   settlementsManage: "settlements.manage",
   /** تأكيد وصول المبلغ إلى البنك وإقفال التسوية */
   settlementsConfirm: "settlements.confirm",
+  /** إلغاء تأكيد تسوية مؤكَّدة وإعادتها إلى «بانتظار السداد» للتعديل */
+  settlementsUnconfirm: "settlements.unconfirm",
   /** عرض ملخّص إقفال الشهر والرصيد النقدي الشهري */
   monthlySummaryView: "monthly.summary_view",
   /** اعتماد ترحيل صافي الشهر إلى بداية الشهر الجديد */
@@ -171,6 +173,10 @@ export const PERMISSION_CATALOG: Array<{ code: string; description: string }> = 
   { code: PERMISSIONS.settlementsRead, description: "عرض تسويات الشبكات وتطبيقات التوصيل" },
   { code: PERMISSIONS.settlementsManage, description: "تسجيل وتعديل تسوية شبكة أو تطبيق" },
   { code: PERMISSIONS.settlementsConfirm, description: "تأكيد سداد التسوية وإقفالها" },
+  {
+    code: PERMISSIONS.settlementsUnconfirm,
+    description: "إلغاء تأكيد التسوية وإعادتها إلى بانتظار السداد",
+  },
   { code: PERMISSIONS.monthlySummaryView, description: "عرض ملخص إقفال الشهر" },
   { code: PERMISSIONS.monthlyCarryForward, description: "اعتماد الترحيل الشهري" },
   { code: PERMISSIONS.monthlyReset, description: "تصفير الرصيد الشهري" },
@@ -356,6 +362,12 @@ export const SECTION_CATALOG: Array<{
     code: PERMISSIONS.settlementsConfirm,
     label: "تأكيد سداد التسوية",
     hint: "تأكيد وصول المبلغ إلى البنك وإقفال التسوية",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.settlementsUnconfirm,
+    label: "إلغاء تأكيد التسوية",
+    hint: "إرجاع تسوية مؤكَّدة إلى «بانتظار السداد» لإضافة دفعات الشهر نفسه",
     group: "صلاحيات التنفيذ",
   },
   {
@@ -984,6 +996,26 @@ export const MODULE_CATALOG: AccessModule[] = [
         level: 1,
         codes: [P.monthlyReset, P.monthlySummaryView, P.sectionCashBook],
         hint: "إظهار زر «تصفير» والضغط عليه",
+      },
+    ],
+  },
+  /*
+   * بند مستقل بخانة صح واحدة: «إلغاء تأكيد التسوية».
+   *
+   * لا يمنحه بند «تسوية الشبكات» ولا درجته الرابعة، ولا يرث من بندٍ آخر —
+   * فمن لم تُمنح له هذه الخانة لا يرى زر «إلغاء التأكيد» إطلاقاً، والخادم
+   * يرفض المسار لو استُدعي مباشرة.
+   */
+  {
+    key: "settlement_unconfirm",
+    label: "إلغاء تأكيد التسوية",
+    hint: "إرجاع تسوية مؤكَّدة إلى «بانتظار السداد» لإضافة دفعات الشهر نفسه",
+    group: "الكاشير والمالية",
+    levels: [
+      {
+        level: 1,
+        codes: [P.settlementsUnconfirm, P.settlementsRead, P.sectionCashBook],
+        hint: "إظهار زر «إلغاء التأكيد» على التسوية المؤكَّدة والضغط عليه",
       },
     ],
   },
