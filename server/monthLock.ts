@@ -1,7 +1,8 @@
 /**
- * قفل الشهر: ما إن يُجهَّز ملخّص إقفال شهر حتى يصير الشهر مقفلاً فلا يُعدّل
- * عليه — لا تقفيلة، ولا فاتورة مصروف، ولا تسوية. يبقى كذلك بحالة «بانتظار
- * الاعتماد» حتى يُتخذ القرار (ترحيل أو تصفير)، ثم يبقى مقفلاً بعده أيضاً.
+ * قفل الشهر: الإقفال يقع في نهاية الشهر لا قبلها، وبعدها تبقى مهلة عشرة
+ * أيام يُصحَّح فيها ما تأخّر. فإذا انقضت المهلة أو اتُّخذ قرار الشهر (ترحيل
+ * أو تصفير) صار الشهر مقفلاً فلا يُعدّل عليه — لا تقفيلة، ولا فاتورة مصروف،
+ * ولا تسوية.
  *
  * الحارس في وحدة مستقلة صغيرة كي يستدعيه مسار الكاشير ومسار النقدية معاً
  * بلا استيراد دائري بينهما.
@@ -9,8 +10,23 @@
 
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../db/index.js";
-import { monthlyCashClosings } from "../db/schema.js";
-import { MONTH_STATUS_LABELS } from "./finance.js";
+import { branches, monthlyCashClosings } from "../db/schema.js";
+import { MONTH_STATUS_LABELS, monthBounds } from "./finance.js";
+import { isoDateInZone, safeTimeZone } from "./time.js";
+
+/**
+ * مهلة تصحيح بعد نهاية الشهر: الإقفال يقع في نهاية الشهر لا قبلها، ويبقى
+ * الشهر بعدها مفتوحاً عشرة أيام لتصحيح تقفيلة تأخّرت أو دفعة وصلت متأخّرة.
+ * فإذا انقضت المهلة أو اتُّخذ قرار الشهر عاد القفل كما كان حرفياً.
+ */
+export const MONTH_CLOSE_GRACE_DAYS = 10;
+
+/** آخر يوم تُقبل فيه تصحيحات الشهر (نهاية الشهر + المهلة). */
+export function monthCloseWindowEnd(periodTo: string): string {
+  const end = new Date(String(periodTo).slice(0, 10) + "T00:00:00Z");
+  end.setUTCDate(end.getUTCDate() + MONTH_CLOSE_GRACE_DAYS);
+  return end.toISOString().slice(0, 10);
+}
 
 export interface MonthLock {
   id: number;
@@ -57,6 +73,27 @@ export async function monthLockFor(
     .limit(1);
 
   if (!row || row.lockedAt === null) return null;
+
+  /*
+   * القفل لا يسري قبل أوانه: ما دام الشهر «بانتظار الاعتماد» واليوم داخل
+   * مهلته (نهاية الشهر + المهلة) فالشهر مفتوح للتصحيح، فلا يُغلق شهر جارٍ
+   * في وجه تقفيلات أيامه ولا تسوياته. وبانقضاء المهلة أو باتخاذ القرار
+   * يعود القفل كما كان بلا استثناء.
+   */
+  if (row.status === "pending_approval") {
+    const [branch] = await db
+      .select({ timezone: branches.timezone })
+      .from(branches)
+      .where(eq(branches.id, row.branchId))
+      .limit(1);
+    const today = isoDateInZone(
+      new Date(),
+      safeTimeZone(branch?.timezone ?? "Asia/Riyadh"),
+    );
+    const bounds = monthBounds(row.periodYear, row.periodMonth);
+    if (today <= monthCloseWindowEnd(bounds.to)) return null;
+  }
+
   return row;
 }
 
