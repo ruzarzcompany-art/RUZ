@@ -2937,6 +2937,132 @@ financeRouter.post(
   },
 );
 
+/**
+ * فترة التسوية: شهر التسوية يبقى مفتوحاً بعد نهايته مهلةً قصيرة تصل فيها
+ * الحوالات المتأخّرة، فتُسجَّل الدفعة على شهرها الصحيح لا على الشهر التالي.
+ */
+const SETTLEMENT_GRACE_DAYS = 10;
+
+/** آخر يوم تقبل فيه تسويةُ شهرٍ فتحاً من جديد (نهاية الشهر + المهلة). */
+function settlementWindowEnd(periodTo: string): string {
+  const end = new Date(String(periodTo).slice(0, 10) + "T00:00:00Z");
+  end.setUTCDate(end.getUTCDate() + SETTLEMENT_GRACE_DAYS);
+  return end.toISOString().slice(0, 10);
+}
+
+/**
+ * إلغاء تأكيد تسوية مؤكَّدة — بندها المستقل بخانة صح وحده يفتحه.
+ *
+ * تعود التسوية إلى «بانتظار السداد» فتُفتح لإضافة المبالغ وتعديل التسوية
+ * واعتمادها من جديد، وتبقى كل دفعاتها المسجّلة كما هي بلا حذف: الإلغاء
+ * يفتح الصف ولا يمسح بياناته، ثم يُعاد حساب المحوّل والفرق والمرحّل من
+ * الدفعات نفسها فلا يبقى رقم قديم.
+ *
+ * ويُسمح بذلك ما دام شهر التسوية داخل فترتها (نهاية الشهر + عشرة أيام)،
+ * فدفعات الشهر تُسجَّل على شهرها لا على الشهر التالي. وبعد انقضائها يبقى
+ * السلوك السابق كما هو: المتأخّر يُسجَّل على تسوية الشهر التالي.
+ */
+financeRouter.post(
+  "/finance/settlements/:id/unconfirm",
+  requireAuth,
+  requirePermission(PERMISSIONS.settlementsUnconfirm),
+  requireModuleLevel("settlement_unconfirm", 1),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const actor = req.employee!;
+    const id = asId(req.params.id);
+    if (id === null) {
+      res.status(400).json({ ok: false, error: "معرّف التسوية غير صالح" });
+      return;
+    }
+
+    const [before] = await db
+      .select()
+      .from(providerSettlements)
+      .where(eq(providerSettlements.id, id))
+      .limit(1);
+
+    if (!before) {
+      res.status(404).json({ ok: false, error: "التسوية غير موجودة" });
+      return;
+    }
+    if (before.status !== "confirmed") {
+      res.status(409).json({ ok: false, error: "التسوية ليست مؤكَّدة أصلاً" });
+      return;
+    }
+    if (await blockedByMonthLock(before.branchId, before.periodFrom, res)) return;
+
+    const timezone = await branchTimezone(before.branchId);
+    const today = isoDateInZone(new Date(), timezone);
+    const windowEnd = settlementWindowEnd(before.periodTo);
+    if (today > windowEnd) {
+      res.status(409).json({
+        ok: false,
+        error:
+          "انتهت فترة تسوية هذا الشهر في " +
+          windowEnd +
+          " — سجّل المبالغ المتأخّرة على تسوية الشهر التالي.",
+      });
+      return;
+    }
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const note = asString(body.reason, 500) ?? "";
+    const keptPayments = await settlementPaymentRows(id);
+
+    const [reopened] = await db
+      .update(providerSettlements)
+      .set({
+        status: "pending",
+        confirmedByEmployeeId: null,
+        confirmedByName: "",
+        confirmedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(providerSettlements.id, id))
+      .returning();
+
+    // الدفعات المسجّلة تبقى كما هي، والأرقام تُعاد من مجموعها لا من رقم قديم
+    const result = await recomputeSettlement(id);
+    const after = result?.settlement ?? reopened;
+
+    await recordAudit({
+      actorEmployeeId: actor.id,
+      action: "settlement.unconfirm",
+      entityType: "provider_settlements",
+      entityId: id,
+      before,
+      after,
+      reason:
+        "إلغاء تأكيد تسوية " +
+        before.providerName +
+        " لشهر " +
+        String(before.periodFrom).slice(0, 7) +
+        ": الحالة قبل «مؤكَّدة» وبعد «بانتظار السداد»" +
+        (note ? " — " + note : "") +
+        " — بقيت " +
+        String(keptPayments.length) +
+        " دفعة مسجّلة بلا حذف، وفترة التسوية حتى " +
+        windowEnd,
+      ipAddress: clientIp(req),
+    });
+
+    res.json({
+      ok: true,
+      settlement: after,
+      figures: result?.figures ?? null,
+      payments: result?.payments ?? keptPayments,
+      windowEnd,
+      message:
+        "أُلغي تأكيد تسوية " +
+        before.providerName +
+        " — عادت إلى «بانتظار السداد» وفُتحت للإضافة والتعديل حتى " +
+        windowEnd +
+        "، والدفعات المسجّلة سابقاً باقية كما هي.",
+    });
+  },
+);
+
 /** حذف تسوية لم تُؤكَّد — خانة الحذف المستقلة. */
 financeRouter.delete(
   "/finance/settlements/:id",
@@ -3508,6 +3634,8 @@ financeRouter.get(
       editSettlements: await hasModuleLevel(req, "settlements", 3),
       approveSettlements: await hasModuleLevel(req, "settlements", 4),
       deleteSettlements: await hasModuleDelete(req, "settlements"),
+      /** «إلغاء التأكيد»: بند مستقل بخانة صح لا يمنحه بند التسويات */
+      unconfirmSettlements: await hasModuleLevel(req, "settlement_unconfirm", 1),
       viewPayments: await hasModuleLevel(req, "settlement_payments", 1),
       addPayments: await hasModuleLevel(req, "settlement_payments", 2),
       editPayments: await hasModuleLevel(req, "settlement_payments", 3),
