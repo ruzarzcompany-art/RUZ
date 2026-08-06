@@ -583,6 +583,29 @@ async function blockedByMonthLock(
   return true;
 }
 
+/**
+ * قفل الشهر يمنع الكتابة على شهرٍ أُقفل، غير أنّ تسوية الشهر تبقى داخل
+ * فترتها (نهاية الشهر + المهلة) مفتوحةً لدفعاتها المتأخّرة كي تُسجَّل على
+ * شهرها الصحيح لا على الشهر التالي. فما دام اليوم داخل الفترة يُستثنى عمل
+ * التسوية وحده، وبعد انقضائها يعود قفل الشهر كما كان بلا استثناء.
+ */
+async function blockedBySettlementLock(
+  branchId: number | null,
+  periodFrom: string | null,
+  periodTo: string | null,
+  res: Response,
+): Promise<boolean> {
+  const lock = await monthLockFor(branchId, periodFrom);
+  if (!lock) return false;
+  if (periodTo) {
+    const timezone = await branchTimezone(branchId);
+    const today = isoDateInZone(new Date(), timezone);
+    if (today <= settlementWindowEnd(periodTo)) return false;
+  }
+  res.status(409).json({ ok: false, error: monthLockMessage(lock) });
+  return true;
+}
+
 /* ══ أولاً: السجل الموحّد للمصاريف والمشتريات النقدية ═══════════════ */
 
 /**
@@ -1908,7 +1931,14 @@ financeRouter.post(
       });
       return;
     }
-    if (await blockedByMonthLock(settlement.branchId, settlement.periodFrom, res))
+    if (
+      await blockedBySettlementLock(
+        settlement.branchId,
+        settlement.periodFrom,
+        settlement.periodTo,
+        res,
+      )
+    )
       return;
 
     const amount = moneyOrError(body.amount, false);
@@ -2691,7 +2721,15 @@ financeRouter.patch(
       });
       return;
     }
-    if (await blockedByMonthLock(before.branchId, before.periodFrom, res)) return;
+    if (
+      await blockedBySettlementLock(
+        before.branchId,
+        before.periodFrom,
+        before.periodTo,
+        res,
+      )
+    )
+      return;
 
     const body = (req.body ?? {}) as Record<string, unknown>;
     const input = readSettlementBody(body);
@@ -2824,7 +2862,15 @@ financeRouter.post(
       res.status(409).json({ ok: false, error: "التسوية مؤكَّدة مسبقاً" });
       return;
     }
-    if (await blockedByMonthLock(before.branchId, before.periodFrom, res)) return;
+    if (
+      await blockedBySettlementLock(
+        before.branchId,
+        before.periodFrom,
+        before.periodTo,
+        res,
+      )
+    )
+      return;
 
     const body = (req.body ?? {}) as Record<string, unknown>;
 
@@ -2990,7 +3036,15 @@ financeRouter.post(
       res.status(409).json({ ok: false, error: "التسوية ليست مؤكَّدة أصلاً" });
       return;
     }
-    if (await blockedByMonthLock(before.branchId, before.periodFrom, res)) return;
+    if (
+      await blockedBySettlementLock(
+        before.branchId,
+        before.periodFrom,
+        before.periodTo,
+        res,
+      )
+    )
+      return;
 
     const timezone = await branchTimezone(before.branchId);
     const today = isoDateInZone(new Date(), timezone);
