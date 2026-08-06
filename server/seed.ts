@@ -432,6 +432,7 @@ const CASH_CLOSING_GRANTS: Array<{
 }> = [
   { moduleKey: "cash_expenses", level: 3, canDelete: true },
   { moduleKey: "settlements", level: 4, canDelete: true },
+  { moduleKey: "settlement_unconfirm", level: 1, canDelete: false },
   { moduleKey: "monthly_summary", level: 1, canDelete: false },
   { moduleKey: "monthly_carry_forward", level: 1, canDelete: false },
   { moduleKey: "monthly_reset", level: 1, canDelete: false },
