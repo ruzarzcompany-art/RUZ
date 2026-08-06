@@ -71,7 +71,12 @@ import {
   type MonthDecision,
   type ProviderType,
 } from "../finance.js";
-import { monthLockFor, monthLockMessage } from "../monthLock.js";
+import {
+  MONTH_CLOSE_GRACE_DAYS,
+  monthCloseWindowEnd,
+  monthLockFor,
+  monthLockMessage,
+} from "../monthLock.js";
 import {
   DEFAULT_DELIVERY_APPS,
   DEFAULT_NETWORK_LINES,
@@ -3261,7 +3266,19 @@ async function ensureMonthPrepared(options: {
     )
     .limit(1);
 
-  if (existing) return { row: existing, created: false };
+  if (existing) return { row: existing, created: false, tooEarly: false };
+
+  /*
+   * لا يُقفل شهر لم ينته بعد: الإقفال إجراء نهاية الشهر، ولو جُهّز ملخّصه في
+   * وسطه لأُغلق الشهر في وجه تقفيلات أيامه الباقية. والمهلة بعد نهايته تُترك
+   * للتصحيح لا للإقفال المبكّر.
+   */
+  const timezone = await branchTimezone(options.branchId);
+  const today = isoDateInZone(new Date(), timezone);
+  const bounds = monthBounds(options.year, options.month);
+  if (today <= bounds.to) {
+    return { row: null, created: false, tooEarly: true };
+  }
 
   const summary = await monthlySummaryFor(
     options.branchId,
@@ -3274,7 +3291,7 @@ async function ensureMonthPrepared(options: {
     summary.expensesCount === 0 &&
     summary.openingBalance === 0
   ) {
-    return { row: null, created: false };
+    return { row: null, created: false, tooEarly: false };
   }
 
   const [saved] = await db
@@ -3325,7 +3342,7 @@ async function ensureMonthPrepared(options: {
     });
   }
 
-  return { row: saved ?? null, created: true };
+  return { row: saved ?? null, created: true, tooEarly: false };
 }
 
 /**
@@ -3360,6 +3377,8 @@ financeRouter.get(
     for (let month = 1; month <= 12; month += 1) {
       const ended = year < currentYear || (year === currentYear && month < currentMonth);
       if (!ended) continue;
+      // التجهيز التلقائي بعد انقضاء مهلة التصحيح لا قبلها
+      if (today <= monthCloseWindowEnd(monthBounds(year, month).to)) continue;
       const result = await ensureMonthPrepared({
         branchId,
         year,
@@ -3429,6 +3448,24 @@ financeRouter.post(
       actorEmployeeId: actor.id,
       ipAddress: clientIp(req),
     });
+
+    if (result.tooEarly) {
+      const bounds = monthBounds(period.year, period.month);
+      res.status(409).json({
+        ok: false,
+        error:
+          "شهر " +
+          monthKeyOf(period.year, period.month) +
+          " لم ينته بعد — إقفاله يبدأ بعد نهايته في " +
+          bounds.to +
+          " وله مهلة " +
+          String(MONTH_CLOSE_GRACE_DAYS) +
+          " أيام حتى " +
+          monthCloseWindowEnd(bounds.to) +
+          ".",
+      });
+      return;
+    }
 
     if (!result.row) {
       res.status(400).json({
@@ -3502,6 +3539,24 @@ financeRouter.post(
 
     if (!before) {
       res.status(404).json({ ok: false, error: "ملخّص الإقفال غير موجود" });
+      return;
+    }
+
+    const timezone = await branchTimezone(before.branchId);
+    const today = isoDateInZone(new Date(), timezone);
+    const bounds = monthBounds(before.periodYear, before.periodMonth);
+    if (today <= bounds.to) {
+      res.status(409).json({
+        ok: false,
+        error:
+          "شهر " +
+          monthKeyOf(before.periodYear, before.periodMonth) +
+          " لم ينته بعد — قرار الشهر يُتخذ بعد نهايته في " +
+          bounds.to +
+          " وخلال مهلته حتى " +
+          monthCloseWindowEnd(bounds.to) +
+          ".",
+      });
       return;
     }
 
