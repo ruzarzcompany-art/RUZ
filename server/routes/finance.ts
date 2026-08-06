@@ -1587,7 +1587,7 @@ financeRouter.post(
 
     const { from, to } = monthBounds(period.year, period.month);
     const monthKey = monthKeyOf(period.year, period.month);
-    if (await blockedByMonthLock(branchId, from, res)) return;
+    if (await blockedBySettlementLock(branchId, from, to, res)) return;
 
     const sales = await monthlyProviderSales(branchId, from, to, providerType);
     const salesAmount = round2(sales.get(providerName) ?? 0);
@@ -2040,7 +2040,14 @@ financeRouter.patch(
       });
       return;
     }
-    if (await blockedByMonthLock(settlement.branchId, settlement.periodFrom, res))
+    if (
+      await blockedBySettlementLock(
+        settlement.branchId,
+        settlement.periodFrom,
+        settlement.periodTo,
+        res,
+      )
+    )
       return;
 
     const patch: Record<string, unknown> = { updatedAt: new Date() };
@@ -2138,7 +2145,14 @@ financeRouter.delete(
       });
       return;
     }
-    if (await blockedByMonthLock(settlement.branchId, settlement.periodFrom, res))
+    if (
+      await blockedBySettlementLock(
+        settlement.branchId,
+        settlement.periodFrom,
+        settlement.periodTo,
+        res,
+      )
+    )
       return;
 
     await db
@@ -2636,7 +2650,15 @@ financeRouter.post(
       return;
     }
 
-    if (await blockedByMonthLock(branchId, input.periodFrom, res)) return;
+    if (
+      await blockedBySettlementLock(
+        branchId,
+        input.periodFrom,
+        input.periodTo,
+        res,
+      )
+    )
+      return;
 
     const figures = settlementFigures({
       salesAmount: input.salesAmount,
