@@ -586,6 +586,25 @@ async function loadMonthlySection(type) {
           }),
         );
       }
+      if (
+        provider.settlementId &&
+        provider.status === "confirmed" &&
+        can("unconfirmSettlements")
+      ) {
+        actions.append(
+          button("إلغاء التأكيد", {
+            className: "btn btn--ghost btn--xs",
+            onClick: () =>
+              unconfirmSettlement(
+                {
+                  id: provider.settlementId,
+                  providerName: provider.providerName,
+                },
+                "cashbox-" + meta.key + "-result",
+              ),
+          }),
+        );
+      }
       if (provider.settlementId && can("viewPayments", "readSettlements")) {
         actions.append(
           button("الدفعات (" + String(provider.paymentsCount || 0) + ")", {
@@ -810,6 +829,41 @@ async function approveSettlement(settlement, resultNodeId) {
 }
 
 /**
+ * إلغاء تأكيد تسوية مؤكَّدة — زره لا يظهر إلا لمن مُنح بند «إلغاء تأكيد
+ * التسوية» المستقل. تعود التسوية إلى «بانتظار السداد» فتُفتح من جديد أزرارُ
+ * «إضافة مبلغ» و«تعديل التسوية» و«اعتماد»، ولا تُحذف أي دفعة مسجّلة.
+ */
+async function unconfirmSettlement(settlement, resultNodeId) {
+  if (
+    !window.confirm(
+      "إلغاء تأكيد تسوية " +
+        settlement.providerName +
+        "؟\n\nتعود إلى «بانتظار السداد» وتُفتح لإضافة الدفعات وتعديل التسوية" +
+        " واعتمادها من جديد، ولا تُحذف أي دفعة مسجّلة — وتُسجَّل العملية باسمك" +
+        " في سجل المراجعة.",
+    )
+  )
+    return;
+
+  const reason =
+    window.prompt("سبب إلغاء التأكيد (يُسجَّل في سجل المراجعة):", "") || "";
+
+  const result = await api("/finance/settlements/" + settlement.id + "/unconfirm", {
+    method: "POST",
+    body: { reason },
+  });
+
+  setAlert(
+    el(resultNodeId || "cashbox-settlements-result"),
+    result.ok
+      ? (result.message || "أُلغي تأكيد التسوية")
+      : (result.error || "تعذّر إلغاء التأكيد"),
+    result.ok ? "ok" : "error",
+  );
+  if (result.ok) await refreshSettlementSections();
+}
+
+/**
  * تعديل تسوية قائمة من السجل: نسبة العقد والمخصوم الفعلي والمحوّل والضريبة.
  * درجة «تعديل» وحدها تفتحه، والمؤكَّدة لا تُعدَّل — تُحذف وتُعاد إن لزم.
  */
@@ -922,6 +976,15 @@ export async function loadSettlements() {
         button("حذف", {
           className: "btn btn--danger btn--xs",
           onClick: () => removeSettlement(settlement),
+        }),
+      );
+    }
+
+    if (settlement.status === "confirmed" && can("unconfirmSettlements")) {
+      actions.append(
+        button("إلغاء التأكيد", {
+          className: "btn btn--ghost btn--xs",
+          onClick: () => unconfirmSettlement(settlement, "cashbox-settlements-result"),
         }),
       );
     }
