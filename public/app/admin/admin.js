@@ -370,6 +370,7 @@ function resetManualForm() {
   el("manual-submit").textContent = "حفظ السجل";
   el("manual-reset").hidden = true;
   el("manual-reason").value = "";
+  el("manual-override").checked = false;
   el("manual-deduct").value = "0";
   el("manual-time").value = toLocalInputValue();
 }
@@ -399,6 +400,7 @@ function startCorrection(log) {
   el("correct-time").value = toLocalInputValue(new Date(log.serverTime));
   el("correct-deduct").value = String(log.deductedHours ?? 0);
   el("correct-reason").value = "";
+  el("correct-override").checked = false;
   setAlert(el("correct-result"), "");
   el("correct-card").scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -1116,6 +1118,8 @@ el("manual-form").addEventListener("submit", async (event) => {
     status: el("manual-status").value,
     deductedHours: Number(el("manual-deduct").value || 0),
     reason: el("manual-reason").value.trim(),
+    // تجاوز موثّق لسياسة أقل مدة قبل الانصراف — يُضاف إلى سبب الإدخال في الخادم.
+    overrideMinShift: el("manual-override").checked,
   };
 
   const result = state.editingLogId
@@ -1147,6 +1151,7 @@ el("correct-form").addEventListener("submit", async (event) => {
       actualCheckOut: new Date(el("correct-time").value).toISOString(),
       deductHours: Number(el("correct-deduct").value || 0),
       reason: el("correct-reason").value.trim(),
+      overrideMinShift: el("correct-override").checked,
     },
   });
 
