@@ -395,6 +395,14 @@ const ENTITY_SPECS: EntitySpec[] = [
         min: 20,
         maxValue: 5000,
       },
+      {
+        key: "minShiftHours",
+        label: "أقل مدة قبل الانصراف (ساعة)",
+        kind: "number",
+        min: 0,
+        maxValue: 24,
+        hint: "لا يُقبل تسجيل الانصراف قبل مرور هذه المدة على الحضور — تمنع تكرار الدخول والخروج المتقارب. الافتراضي 4 ساعات، و0 يُعطّل القاعدة",
+      },
       { key: "timezone", label: "المنطقة الزمنية", kind: "timezone", max: 60 },
       {
         key: "managerEmployeeId",

@@ -49,6 +49,84 @@ export async function lastEffectiveLog(employeeId: number): Promise<LastLog | nu
   return row ?? null;
 }
 
+/* ── سياسة أقل مدة بين الحضور والانصراف ────────────────────────
+ * تمنع تكرار الدخول والخروج المتقارب: لا يُقبل تسجيل انصراف قبل مرور
+ * المدة المحدَّدة في `branches.min_shift_hours` على الحضور المفتوح.
+ * القيمة تُضبط لكل فرع من لوحة الإعدادات (بند «الفروع» في شاشة الصلاحيات)،
+ * والافتراضي أربع ساعات، والقيمة 0 تُعطّل القاعدة.
+ */
+
+/** الافتراضي حين لا تحمل قاعدة البيانات قيمة صالحة. */
+export const DEFAULT_MIN_SHIFT_HOURS = 4;
+
+/** تطبيع قيمة الإعداد: رقم بين 0 و24، و0 يعني تعطيل القاعدة. */
+export function normalizeMinShiftHours(raw: unknown): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return DEFAULT_MIN_SHIFT_HOURS;
+  if (value <= 0) return 0;
+  return Math.min(value, 24);
+}
+
+/** «لقد تم الحضور في الساعة … بتاريخ …» بتوقيت الفرع. */
+export function checkInNotice(checkInAt: Date, timezone: string | null): string {
+  const zone = safeTimeZone(timezone ?? undefined);
+  const time = checkInAt.toLocaleTimeString("ar", {
+    timeZone: zone,
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const date = checkInAt.toLocaleDateString("ar", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return `لقد تم الحضور في الساعة ${time} بتاريخ ${date}`;
+}
+
+export interface MinShiftVerdict {
+  /** هل يُمنع الانصراف الآن؟ */
+  blocked: boolean;
+  /** المدة المطلوبة بالساعات كما هي مضبوطة للفرع (0 = القاعدة معطّلة). */
+  minHours: number;
+  /** المتبقي بالدقائق حتى يُسمح بالانصراف. */
+  remainingMinutes: number;
+  /** رسالة عربية جاهزة للعرض تذكر وقت الحضور وتاريخه. */
+  message: string;
+}
+
+/** يقرّر هل مضت المدة الدنيا على الحضور المفتوح أم لا. */
+export function evaluateMinShift(options: {
+  checkInAt: Date;
+  minShiftHours: unknown;
+  timezone: string | null;
+  now?: Date;
+}): MinShiftVerdict {
+  const minHours = normalizeMinShiftHours(options.minShiftHours);
+  const now = options.now ?? new Date();
+  const elapsedMs = now.getTime() - options.checkInAt.getTime();
+  const requiredMs = minHours * 60 * 60 * 1000;
+
+  if (minHours <= 0 || elapsedMs >= requiredMs) {
+    return { blocked: false, minHours, remainingMinutes: 0, message: "" };
+  }
+
+  const remainingMinutes = Math.max(1, Math.ceil((requiredMs - elapsedMs) / 60000));
+  const hours = Math.floor(remainingMinutes / 60);
+  const minutes = remainingMinutes % 60;
+  const remainingText =
+    hours > 0
+      ? `${hours} ساعة${minutes > 0 ? ` و${minutes} دقيقة` : ""}`
+      : `${remainingMinutes} دقيقة`;
+
+  return {
+    blocked: true,
+    minHours,
+    remainingMinutes,
+    message: `${checkInNotice(options.checkInAt, options.timezone)} — لا يمكن تسجيل الانصراف قبل مرور ${minHours} ساعة على الحضور. المتبقي ${remainingText}.`,
+  };
+}
+
 export interface ClosedShift {
   employeeId: number;
   checkInLogId: number;
