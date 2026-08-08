@@ -23,6 +23,7 @@ import {
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
 import { getSeedPassword } from "../config.js";
+import { DEMO_PURGED_FLAG, setFlag } from "../flags.js";
 import { hashPassword } from "../passwords.js";
 import {
     accessRulesByEmployee,
@@ -56,6 +57,14 @@ import {
 } from "../validate.js";
 
 export const peopleRouter = Router();
+
+/**
+ * أكواد الحسابات التجريبية المبذورة عند أول تشغيل.
+ *
+ * حذف أي منها من ملف الموظفين يضبط علم `demo_data_purged` فلا تُعاد بذرتها
+ * في أي إقلاع لاحق للخادم.
+ */
+const DEMO_EMPLOYEE_CODES = new Set(["EMP-1000", "EMP-1001", "EMP-1002"]);
 
 /**
  * من يملك رمزاً صلاحياً معيّناً فعلاً، محسوباً من `access_rules` وحدها
@@ -534,6 +543,17 @@ peopleRouter.delete(
     });
 
     await db.delete(employees).where(eq(employees.id, employeeId));
+
+    /**
+     * حذف حساب تجريبي يمنع إعادة بذره تلقائياً: البذر يُنفّذ مع كل إقلاع
+     * جديد للخادم، فبدون هذا العلم يعود الحساب المحذوف مع أول طلب لاحق.
+     */
+    if (DEMO_EMPLOYEE_CODES.has(before.employeeCode)) {
+      await setFlag(DEMO_PURGED_FLAG, "1", {
+        note: `حُذف الحساب التجريبي ${before.employeeCode} من ملف الموظفين`,
+        setByEmployeeId: actor.id,
+      });
+    }
 
     res.json({
       ok: true,
