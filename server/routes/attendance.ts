@@ -23,8 +23,10 @@ import { PERMISSIONS, requirePermission } from "../rbac.js";
 import {
   CHECK_IN,
   CHECK_OUT,
+  checkInNotice,
   closeStaleShifts,
   EFFECTIVE_STATUSES,
+  evaluateMinShift,
   lastEffectiveLog,
 } from "../shifts.js";
 import { safeTimeZone, startOfTodayInZone } from "../time.js";
@@ -302,7 +304,7 @@ const handleAttendance = (forcedType?: string) =>
     if (type === CHECK_IN && lastLog?.type === CHECK_IN) {
       res.status(409).json({
         ok: false,
-        error: "لديك حضور مفتوح بالفعل. سجّل الانصراف أولاً.",
+        error: `${checkInNotice(lastLog.serverTime, branch.timezone)} — لديك وردية مفتوحة، سجّل الانصراف أولاً.`,
       });
       return;
     }
@@ -313,6 +315,25 @@ const handleAttendance = (forcedType?: string) =>
         error: "لا توجد وردية مفتوحة لتسجيل الانصراف منها.",
       });
       return;
+    }
+
+    // سياسة أقل مدة قبل الانصراف — تمنع تكرار الدخول والخروج المتقارب
+    if (type === CHECK_OUT && lastLog?.type === CHECK_IN) {
+      const minShift = evaluateMinShift({
+        checkInAt: lastLog.serverTime,
+        minShiftHours: branch.minShiftHours,
+        timezone: branch.timezone,
+      });
+
+      if (minShift.blocked) {
+        res.status(409).json({
+          ok: false,
+          error: minShift.message,
+          minShiftHours: minShift.minHours,
+          retryAfterSeconds: minShift.remainingMinutes * 60,
+        });
+        return;
+      }
     }
 
     // مطابقة الوجه — القالب فقط يصل الخادم، ولا صورة إطلاقاً
