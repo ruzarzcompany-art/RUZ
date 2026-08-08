@@ -185,7 +185,9 @@ function seedNumber(name: string, fallback: number): number {
  * بذر البيانات الأساسية. العملية idempotent بالكامل: تستخدم
  * `ON CONFLICT DO NOTHING` فلا تُكرّر الصفوف ولا تُعيد كتابة أي تعديل لاحق.
  */
-async function runSeed(): Promise<void> {
+async function runSeed(
+  options: { forceDemoAccounts?: boolean } = {},
+): Promise<void> {
   const db = getDb();
 
   // الفرع الافتراضي — إحداثياته قابلة للتعديل عبر متغيّرات البيئة أو الواجهة
@@ -217,7 +219,20 @@ async function runSeed(): Promise<void> {
    */
   const demoPurged = await isFlagOn(DEMO_PURGED_FLAG);
 
-  if (!demoPurged) {
+  /**
+   * حارس إضافي: إن وُجد أي موظف في الملف فالنظام قيد الاستخدام فعلاً،
+   * فلا تُبذر الحسابات التجريبية مرة أخرى. هذا يمنع عودة EMP-1000/1001/1002
+   * بعد حذفها يدوياً من شاشة الموظفين ولو لم يُضبط العلم لأي سبب.
+   */
+  const [anyEmployee] = await db
+    .select({ id: employees.id })
+    .from(employees)
+    .limit(1);
+
+  const skipDemoAccounts =
+    demoPurged || (!options.forceDemoAccounts && Boolean(anyEmployee));
+
+  if (!skipDemoAccounts) {
     await db
       .insert(employees)
       .values([
@@ -474,8 +489,14 @@ export async function ensureCashClosingGrants(): Promise<void> {
 }
 
 export async function reseedNow(): Promise<void> {
-  seedPromise = undefined;
-  await ensureSeeded();
+  // إعادة البيانات التجريبية طلب صريح من لوحة الإعدادات، فيتجاوز حارس «وجود موظفين».
+  seedPromise = runSeed({ forceDemoAccounts: true })
+    .then(ensureCashClosingGrants)
+    .catch((error) => {
+      seedPromise = undefined;
+      throw error;
+    });
+  await seedPromise;
 }
 
 let seedPromise: Promise<void> | undefined;
