@@ -18,7 +18,13 @@ import { getPunchCooldownSeconds } from "../config.js";
 import { identifyFace } from "../face.js";
 import { haversineDistanceMeters, isValidCoordinates } from "../geo.js";
 import { verifyPassword } from "../passwords.js";
-import { CHECK_IN, CHECK_OUT, closeStaleShifts, lastEffectiveLog } from "../shifts.js";
+import {
+  CHECK_IN,
+  CHECK_OUT,
+  closeStaleShifts,
+  evaluateMinShift,
+  lastEffectiveLog,
+} from "../shifts.js";
 import { safeTimeZone } from "../time.js";
 
 export const kioskRouter = Router();
@@ -148,7 +154,26 @@ async function finalizeKioskPunch(
           return;
     }
 
-    const distanceMeters = haversineDistanceMeters(coordinates, {
+    // سياسة أقل مدة قبل الانصراف — نفس القاعدة المطبَّقة في تطبيق الموظف
+  if (type === CHECK_OUT && lastLog?.type === CHECK_IN) {
+    const minShift = evaluateMinShift({
+      checkInAt: lastLog.serverTime,
+      minShiftHours: branch.minShiftHours,
+      timezone: branch.timezone,
+    });
+
+    if (minShift.blocked) {
+      res.status(409).json({
+        ok: false,
+        error: minShift.message,
+        minShiftHours: minShift.minHours,
+        retryAfterSeconds: minShift.remainingMinutes * 60,
+      });
+      return;
+    }
+  }
+
+  const distanceMeters = haversineDistanceMeters(coordinates, {
           latitude: branch.latitude,
           longitude: branch.longitude,
     });
