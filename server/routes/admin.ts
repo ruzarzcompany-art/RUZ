@@ -16,15 +16,23 @@ import { demoDataStatus, purgeDemoData } from "../demo.js";
 import { DEMO_PURGED_FLAG, isFlagOn, setFlag } from "../flags.js";
 import { issueResetCodeByAdmin, maskEmail } from "../reset.js";
 import {
+  hasAnyPermission,
   PERMISSIONS,
   requireAnyPermission,
   requireModuleDelete,
   requirePermission,
 } from "../rbac.js";
 import { reseedNow } from "../seed.js";
-import { CHECK_IN, CHECK_OUT, closeStaleShifts } from "../shifts.js";
+import {
+  CHECK_IN,
+  CHECK_OUT,
+  closeStaleShifts,
+  EFFECTIVE_STATUSES,
+  evaluateMinShift,
+} from "../shifts.js";
 import { isoDateInZone, safeTimeZone } from "../time.js";
 import {
+  asBool,
   asDateTime,
   asEnum,
   asId,
@@ -201,7 +209,12 @@ adminRouter.post(
     }
 
     const [branch] = await db
-      .select({ id: branches.id, name: branches.name, timezone: branches.timezone })
+      .select({
+        id: branches.id,
+        name: branches.name,
+        timezone: branches.timezone,
+        minShiftHours: branches.minShiftHours,
+      })
       .from(branches)
       .where(eq(branches.id, branchId))
       .limit(1);
@@ -212,6 +225,55 @@ adminRouter.post(
     }
 
     const status = asEnum(req.body?.status, ATTENDANCE_STATUSES) ?? "approved";
+
+    /**
+     * سياسة أقل مدة قبل الانصراف تسري على الإدخال اليدوي أيضاً: لا يُقبل سجل
+     * انصراف يقع قبل مرور المدة المحدّدة للفرع على الحضور المفتوح الذي يسبقه.
+     * ولمن يملك `attendance.manual_write` تجاوز صريح بإرسال `overrideMinShift`،
+     * ويُحفظ التجاوز في نص السبب وسجل التدقيق.
+     */
+    const overrideMinShift = asBool(req.body?.overrideMinShift) === true;
+
+    if (type === CHECK_OUT && !overrideMinShift) {
+      const [previous] = await db
+        .select({
+          type: attendanceLogs.type,
+          serverTime: attendanceLogs.serverTime,
+        })
+        .from(attendanceLogs)
+        .where(
+          and(
+            eq(attendanceLogs.employeeId, employeeId),
+            inArray(attendanceLogs.status, [...EFFECTIVE_STATUSES]),
+            lt(attendanceLogs.serverTime, time),
+          ),
+        )
+        .orderBy(desc(attendanceLogs.serverTime))
+        .limit(1);
+
+      if (previous && previous.type === CHECK_IN) {
+        const verdict = evaluateMinShift({
+          checkInAt: previous.serverTime,
+          minShiftHours: branch.minShiftHours,
+          timezone: branch.timezone,
+          now: time,
+        });
+
+        if (verdict.blocked) {
+          res.status(409).json({
+            ok: false,
+            error: verdict.message,
+            minShiftHours: verdict.minHours,
+            canOverride: true,
+          });
+          return;
+        }
+      }
+    }
+
+    const entryReason = overrideMinShift
+      ? `${reason} | تجاوز سياسة أقل مدة قبل الانصراف`.slice(0, 1000)
+      : reason;
     const deductedHours = Math.max(0, asNumber(req.body?.deductedHours) ?? 0);
 
     const [log] = await db
@@ -222,7 +284,7 @@ adminRouter.post(
         type,
         serverTime: time,
         status,
-        reason,
+        reason: entryReason,
         source: "manual",
         withinGeofence: false,
         deductedHours: roundHours(deductedHours),
@@ -238,7 +300,7 @@ adminRouter.post(
       entityType: "attendance_logs",
       entityId: log.id,
       after: log,
-      reason,
+      reason: entryReason,
       ipAddress: clientIp(req),
     });
 
@@ -445,6 +507,43 @@ adminRouter.patch(
       return;
     }
 
+    /**
+     * سياسة أقل مدة قبل الانصراف تسري على التصحيح أيضاً: لا يُعتمد وقت
+     * انصراف يقع قبل مرور المدة المحدّدة للفرع على الحضور المقابل.
+     * والتجاوز الصريح متاح لمن يملك `attendance.manual_write` وحده — مدير الفرع
+     * الذي يملك صلاحية التصحيح وحدها لا يستطيع تجاوز السياسة.
+     */
+    const overrideMinShift =
+      asBool(req.body?.overrideMinShift) === true &&
+      (await hasAnyPermission(req, [PERMISSIONS.attendanceManualWrite]));
+
+    if (precedingCheckIn && !overrideMinShift) {
+      const [logBranch] = await db
+        .select({
+          timezone: branches.timezone,
+          minShiftHours: branches.minShiftHours,
+        })
+        .from(branches)
+        .where(eq(branches.id, before.branchId))
+        .limit(1);
+
+      const verdict = evaluateMinShift({
+        checkInAt: precedingCheckIn.serverTime,
+        minShiftHours: logBranch?.minShiftHours,
+        timezone: logBranch?.timezone ?? null,
+        now: actualCheckOut,
+      });
+
+      if (verdict.blocked) {
+        res.status(409).json({
+          ok: false,
+          error: verdict.message,
+          minShiftHours: verdict.minHours,
+        });
+        return;
+      }
+    }
+
     const [after] = await db
       .update(attendanceLogs)
       .set({
@@ -455,6 +554,8 @@ adminRouter.patch(
         correctedAt: new Date(),
         status: "approved",
         reason: `${before.reason ? `${before.reason} | ` : ""}تصحيح يدوي: ${reason}${
+          overrideMinShift ? " | تجاوز سياسة أقل مدة قبل الانصراف" : ""
+        }${
           deductHours > 0 ? ` (خصم ${roundHours(deductHours)} ساعة)` : ""
         }`.slice(0, 1000),
       })

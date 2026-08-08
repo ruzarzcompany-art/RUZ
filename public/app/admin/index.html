@@ -112,6 +112,12 @@
             </label>
           </div>
           <div class="row row--wrap">
+            <label class="check">
+              <input id="manual-override" type="checkbox" />
+              <span>تجاوز سياسة أقل مدة قبل الانصراف (يُوثّق في السبب)</span>
+            </label>
+          </div>
+          <div class="row row--wrap">
             <button id="manual-submit" class="btn btn--primary btn--sm" type="submit">حفظ السجل</button>
             <button id="manual-reset" class="btn btn--ghost btn--sm" type="button" hidden>
               إلغاء التعديل
@@ -202,6 +208,12 @@
             <label class="field field--sm field--wide">
               <span class="field__label">سبب التصحيح *</span>
               <textarea id="correct-reason" rows="2" required></textarea>
+            </label>
+          </div>
+          <div class="row row--wrap">
+            <label class="check">
+              <input id="correct-override" type="checkbox" />
+              <span>تجاوز سياسة أقل مدة قبل الانصراف (للموارد البشرية فقط)</span>
             </label>
           </div>
           <div class="row row--wrap">
