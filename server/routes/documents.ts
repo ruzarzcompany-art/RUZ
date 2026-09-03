@@ -167,6 +167,19 @@ export const DOC_CATALOG: DocSpec[] = [
     legal: true,
   },
   {
+    key: "salary_certificate",
+    title: "نموذج تعريف بالراتب",
+    group: "المالية",
+    description:
+      "تعريف بالراتب يُصدر بناءً على طلب الموظف لجهة خارجية (بنك، سفارة، جهة تمويل) " +
+      "بأجره الأساسي وبدلاته وإجمالي أجره الشهري ومدة خدمته، والجهة والغرض يُكتبان على الورقة.",
+    needsEmployee: true,
+    refType: null,
+    refLabel: "",
+    needsMonth: false,
+    legal: true,
+  },
+  {
     key: "receipt_voucher",
     title: "سند قبض",
     group: "المالية",

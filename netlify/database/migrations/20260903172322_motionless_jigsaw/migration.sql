@@ -1,0 +1,15 @@
+-- Snapshot baseline only — no schema changes.
+--
+-- The three preceding migrations (20260804090000_cash_closing_system,
+-- 20260805120000_settlement_payments_carry_forward and
+-- 20260808120000_branch_min_shift_hours) were written by hand and shipped
+-- without a drizzle snapshot.json. Because of that, the next generated
+-- migration re-emitted every object they already create (cash_expenses,
+-- cash_notifications, monthly_cash_closings, provider_settlements,
+-- provider_settlement_payments and branches.min_shift_hours), which fails
+-- with 42P07 "relation already exists".
+--
+-- The accompanying snapshot.json is kept so it acts as the drizzle baseline
+-- for the current schema and future generated migrations only contain real
+-- diffs. The SQL itself is intentionally a no-op.
+SELECT 1;
