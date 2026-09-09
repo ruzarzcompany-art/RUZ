@@ -46,6 +46,8 @@ const state = {
   /** درجة الحذف المستقلة في هذين البندين. */
   canDeleteIn: () => false,
   documents: [],
+  /** خيارات جهة إنهاء العقد كما يرسلها الخادم (المخالصة النهائية) */
+  terminationParties: [],
   current: null,
   actions: [],
   issues: [],
@@ -94,6 +96,15 @@ async function onDocChange() {
   el("doc-date-field").hidden = !doc.needsDate;
   el("doc-from-field").hidden = !doc.needsRange;
   el("doc-to-field").hidden = !doc.needsRange;
+  el("doc-date-label").textContent = doc.dateLabel ?? "التاريخ";
+
+  /*
+   * المخالصة النهائية: جهة طلب إنهاء العقد شرط لإصدارها، فتُعرض قائمتها
+   * فارغة ولا تُفتح صفحة الطباعة قبل اختيار الجهة.
+   */
+  el("doc-termination-field").hidden = !doc.needsTerminationParty;
+  el("doc-termination-hint").hidden = !doc.needsTerminationParty;
+  if (doc.needsTerminationParty) el("doc-termination").value = "";
 
   if (doc.refType) {
     el("doc-ref-label").textContent = doc.refLabel;
@@ -137,6 +148,17 @@ function printSelected() {
     return;
   }
 
+  const terminationBy = doc.needsTerminationParty ? el("doc-termination").value : "";
+  if (doc.needsTerminationParty && !terminationBy) {
+    setAlert(
+      el("doc-result"),
+      "حدّد جهة طلب إنهاء العقد (الموظف أم المنشأة) قبل إرسال المخالصة للطباعة.",
+      "warn",
+    );
+    el("doc-termination").focus();
+    return;
+  }
+
   const opened = openDocument(doc.key, {
     employeeId: doc.needsEmployee ? employeeId : "",
     refId: doc.refType ? el("doc-ref").value : "",
@@ -145,6 +167,7 @@ function printSelected() {
     date: doc.needsDate ? el("doc-date").value : "",
     from: doc.needsRange ? el("doc-from").value : "",
     to: doc.needsRange ? el("doc-to").value : "",
+    terminationBy,
   });
 
   setAlert(
@@ -397,6 +420,24 @@ export async function loadIssues() {
   renderIssues();
 }
 
+/** خيارات جهة إنهاء العقد تُبنى من الخادم لتبقى القيم مطابقة لما يقبله. */
+function fillTerminationPicker() {
+  const picker = el("doc-termination");
+  picker.textContent = "";
+
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "— حدّد الجهة قبل الإرسال —";
+  picker.append(none);
+
+  for (const party of state.terminationParties) {
+    const option = document.createElement("option");
+    option.value = party.value;
+    option.textContent = party.label;
+    picker.append(option);
+  }
+}
+
 function fillIssuesKindPicker() {
   const picker = el("doc-issues-kind");
   picker.textContent = "";
@@ -422,6 +463,7 @@ export function initDocumentsModule({ can, levelOf, canDeleteIn }) {
 
   el("doc-kind").addEventListener("change", onDocChange);
   el("doc-employee").addEventListener("change", loadReferences);
+  el("doc-termination").addEventListener("change", () => setAlert(el("doc-result"), ""));
   el("doc-print").addEventListener("click", printSelected);
 
   el("disc-form").addEventListener("submit", submitAction);
@@ -451,7 +493,9 @@ export async function refreshDocumentsPanel() {
     }
 
     state.documents = catalog.documents ?? [];
+    state.terminationParties = catalog.terminationParties ?? [];
     fillCatalog();
+    fillTerminationPicker();
     fillIssuesKindPicker();
     el("doc-legal-notice").textContent = catalog.legalNotice ?? "";
 
