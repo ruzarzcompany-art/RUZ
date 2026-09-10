@@ -1275,7 +1275,115 @@ function inventoryMovementsRange(data) {
   return nodes.filter(Boolean);
 }
 
-/* ── 16) مخالصة نهائية ─────────────────────────────────────────── */
+/* ── 16) نموذج تعريف بالراتب ────────────────────────────────────── */
+
+/**
+ * تعريف بالراتب: شهادة تُصدرها المنشأة بناءً على طلب الموظف ليقدّمها لجهة
+ * خارجية (بنك، سفارة، جهة تمويل). الأجر الأساسي وبدلاته وإجمالي الأجر
+ * تُقرأ من تعريف راتب الموظف، أما الجهة الموجَّه إليها التعريف وغرضه
+ * فيبقيان خانتين تُعبّآن على الورقة لأن النموذج واحد يُطبع لكل الجهات.
+ */
+function salaryCertificate(data) {
+  const currency = currencyOf(data);
+  const salary = data.salary;
+  const blank = "................................";
+  const employeeName = data.employee?.fullName ?? "";
+  const companyName = data.company?.companyName ?? "المنشأة";
+  // الموظف المنتهية خدمته يُعرَّف بصيغة الماضي: التعريف يصف خدمة سابقة لا قائمة
+  const onDuty = data.employee?.isActive !== false;
+
+  const nodes = [
+    pairs([
+      ["تاريخ النموذج", data.today],
+      ["الجهة الموجَّه إليها التعريف", blank],
+      ["الغرض من التعريف", blank],
+      ...employeeRows(data),
+      ...employeeContactRows(data),
+    ]),
+    section("إلى من يهمّه الأمر", [
+      `تشهد ${companyName}${
+        data.company?.commercialRegister
+          ? `، سجل تجاري رقم ${data.company.commercialRegister}`
+          : ""
+      } بأن ${employeeName}${
+        data.employee?.nationalId
+          ? `، بموجب الهوية/الإقامة رقم ${data.employee.nationalId}`
+          : ""
+      } ${onDuty ? "يعمل" : "كان يعمل"} لديها بوظيفة «${
+        data.employee?.jobTitle ?? "—"
+      }»${data.branch?.name ? ` في ${data.branch.name}` : ""}${
+        data.employee?.hiredAt ? ` منذ ${formatDate(data.employee.hiredAt)}` : ""
+      }، ${
+        onDuty
+          ? "ولا يزال على رأس العمل حتى تاريخ إصدار هذا التعريف، ويتقاضى"
+          : "وقد انتهت علاقته العمالية بالمنشأة، وكان يتقاضى"
+      } الأجر الشهري الموضح تفصيله أدناه.`,
+    ]),
+  ];
+
+  if (salary) {
+    nodes.push(
+      table(
+        ["مكوّنات الأجر الشهري", "القيمة"],
+        [
+          ["الراتب الأساسي", formatMoney(salary.basicSalary ?? 0, currency)],
+          ["بدل السكن", formatMoney(salary.housingAllowance ?? 0, currency)],
+          ["بدل النقل", formatMoney(salary.transportAllowance ?? 0, currency)],
+          ["بدلات أخرى", formatMoney(salary.otherAllowances ?? 0, currency)],
+          ["إجمالي البدلات", formatMoney(salary.allowancesTotal ?? 0, currency)],
+          {
+            className: "is-total",
+            cells: ["إجمالي الأجر الشهري", formatMoney(salary.totalPackage ?? 0, currency)],
+          },
+        ],
+      ),
+      note(
+        salary.effectiveFrom
+          ? `تعريف الراتب المعتمد ساري اعتباراً من ${formatDate(salary.effectiveFrom)}.`
+          : "",
+      ),
+    );
+  } else {
+    // لا تعريف راتب محفوظ: تُترك المبالغ خانات تُكتب باليد بدل طباعة أصفار
+    nodes.push(
+      note(
+        "لا يوجد تعريف راتب محفوظ لهذا الموظف — يُسجَّل راتبه في ملف الموظف ليُملأ " +
+          "التعريف تلقائياً، أو تُكتب المبالغ باليد أدناه قبل الاعتماد.",
+      ),
+      pairs([
+        ["الراتب الأساسي", blank],
+        ["إجمالي البدلات", blank],
+        ["إجمالي الأجر الشهري", blank],
+      ]),
+    );
+  }
+
+  nodes.push(
+    clauses([
+      [
+        "سبب الإصدار",
+        `صدر هذا التعريف بناءً على طلب الموظف ${employeeName} لتقديمه للجهة الموضحة أعلاه، ولا يُستخدم لغير الغرض المذكور فيه.`,
+      ],
+      [
+        "حدود التعريف",
+        "لا يُعدّ هذا التعريف التزاماً أو ضماناً من المنشأة تجاه أي جهة، ولا تعهداً باستمرار العلاقة العمالية أو بتحويل الأجر إلى جهة معيّنة، ولا يُنشئ أي حق لطرف ثالث.",
+      ],
+      [
+        "الأجر قبل الخصومات",
+        "المبالغ الموضحة أعلاه هي مكوّنات الأجر الشهري قبل أي خصومات نظامية أو سلف أو جزاءات، وقد يختلف الصافي المصروف فعلياً في مسير كل شهر.",
+      ],
+      [
+        "مدة السريان",
+        "هذا التعريف صالح لمدة ثلاثين يوماً من تاريخ إصداره، ولا يُعتدّ به بعد انقضائها إلا بتعريف جديد.",
+      ],
+    ]),
+    note("لا يُعتدّ بهذا التعريف إلا بختم المنشأة وتوقيع المفوَّض بالتوقيع."),
+  );
+
+  return nodes.filter(Boolean);
+}
+
+/* ── 17) مخالصة نهائية ─────────────────────────────────────────── */
 
 /**
  * مخالصة نهائية: إقرار الموظف باستلام جميع مستحقاته وإبراء المنشأة عند
@@ -1464,6 +1572,10 @@ export const TEMPLATES = {
   salary_receipt: {
     signatures: ["الموظف (المستلم)", "القسم المالي", "الموارد البشرية"],
     render: salaryReceipt,
+  },
+  salary_certificate: {
+    signatures: ["الموارد البشرية", "القسم المالي", "المفوَّض بالتوقيع والختم"],
+    render: salaryCertificate,
   },
   receipt_voucher: {
     signatures: ["المستلم", "أمين الصندوق", "الاعتماد"],
