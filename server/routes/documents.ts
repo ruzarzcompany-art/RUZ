@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import { and, asc, desc, eq, gte, inArray, lt, lte, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, lte, ne, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { getDb } from "../../db/index.js";
 import {
@@ -77,6 +77,40 @@ export const LEGAL_NOTICE =
 const WARNING_LEVELS = ["notice", "first", "second", "final", "suspension"] as const;
 const DISCIPLINARY_STATUSES = ["draft", "issued", "acknowledged", "cancelled"] as const;
 
+/**
+ * جهة إنهاء العقد في المخالصة النهائية. المخالصة إبراء متبادل، ومن طلب
+ * الإنهاء يغيّر أثرها النظامي (استقالة الموظف مقابل إنهاء من المنشأة)،
+ * فلا تُصدر المخالصة قبل تحديد الجهة.
+ */
+export const TERMINATION_PARTIES = ["employee", "employer"] as const;
+type TerminationParty = (typeof TERMINATION_PARTIES)[number];
+
+export const TERMINATION_PARTY_OPTIONS: Array<{
+  value: TerminationParty;
+  label: string;
+  /** صياغة السبب كما تظهر في متن المخالصة */
+  statement: string;
+}> = [
+  {
+    value: "employee",
+    label: "بطلب من الموظف (استقالة)",
+    statement:
+      "انتهت العلاقة العمالية بناءً على طلب الموظف بإنهاء العقد (استقالة) المقدَّم منه، " +
+      "وقبلت المنشأة الطلب.",
+  },
+  {
+    value: "employer",
+    label: "بطلب من المنشأة (إنهاء من صاحب العمل)",
+    statement:
+      "انتهت العلاقة العمالية بناءً على قرار المنشأة بإنهاء العقد وإشعار الموظف بذلك " +
+      "وفق المدد النظامية.",
+  },
+];
+
+const TERMINATION_BY_VALUE = new Map(
+  TERMINATION_PARTY_OPTIONS.map((option) => [option.value, option]),
+);
+
 interface DocSpec {
   key: string;
   title: string;
@@ -95,6 +129,10 @@ interface DocSpec {
   needsBranch?: boolean;
   /** هل يحتاج تاريخ يوم واحد؟ */
   needsDate?: boolean;
+  /** تسمية حقل التاريخ في الشاشة (الافتراض «التاريخ») */
+  dateLabel?: string;
+  /** هل يجب تحديد جهة إنهاء العقد قبل الإصدار (المخالصة النهائية)؟ */
+  needsTerminationParty?: boolean;
   /** هل يحتاج مدى تاريخي (من / إلى)؟ */
   needsRange?: boolean;
   /** لا يظهر في قائمة حزمة النماذج — تفتحه شاشته الخاصة (زر طباعة) */
@@ -220,6 +258,23 @@ export const DOC_CATALOG: DocSpec[] = [
     refLabel: "عهدة",
     needsMonth: false,
     legal: true,
+  },
+  {
+    key: "final_settlement",
+    title: "مخالصة نهائية",
+    group: "إنهاء الخدمة",
+    description:
+      "مخالصة نهائية بإقرار الموظف استلام جميع مستحقاته وإبراء المنشأة، تُملأ من ملف " +
+      "الموظف (آخر مسير راتب، رصيد السلف، العهد غير المُعادة، مدة الخدمة). " +
+      "يجب تحديد جهة طلب إنهاء العقد — الموظف أم المنشأة — قبل الإرسال للطباعة.",
+    needsEmployee: true,
+    refType: "payroll_slips",
+    refLabel: "مسير الراتب الأخير (اختياري)",
+    needsMonth: false,
+    legal: true,
+    needsDate: true,
+    dateLabel: "تاريخ آخر يوم عمل",
+    needsTerminationParty: true,
   },
   {
     key: "leave",
@@ -528,6 +583,240 @@ async function loadReference(
     default:
       return null;
   }
+}
+
+/* ── المخالصة النهائية ─────────────────────────────────────────── */
+
+/** ترتيب الشهر على محور زمني متصل (`YYYY-MM` → عدد الأشهر). */
+function monthIndexOf(period: string): number | null {
+  const match = /^(\d{4})-(\d{2})$/.exec(period);
+  if (!match) return null;
+  const month = Number.parseInt(match[2] ?? "", 10);
+  if (!Number.isInteger(month) || month < 1 || month > 12) return null;
+  return Number.parseInt(match[1] ?? "", 10) * 12 + (month - 1);
+}
+
+/**
+ * رصيد السلفة غير المسدَّد حتى شهر المخالصة.
+ *
+ * السلفة المخصومة من الراتب تُقسَّط بالتساوي بدءاً من شهر الخصم (نفس قاعدة
+ * `advanceInstallmentFor` في الرواتب)، فالمتبقي = المبلغ ناقص الأقساط التي
+ * حلّ شهرها. والسلفة التي لا تُخصم من الراتب تبقى مستحقة كاملة حتى تُسدَّد
+ * نقداً، فتظهر في المخالصة بكامل مبلغها.
+ */
+export function advanceOutstanding(
+  advance: {
+    amount: number | null;
+    requestDate: string | null;
+    deductionMonth: string | null;
+    deductFromPayroll: boolean;
+    installmentMonths?: number | null;
+  },
+  uptoMonth: string,
+): number {
+  const total = round2(advance.amount ?? 0);
+  if (total <= 0) return 0;
+  if (!advance.deductFromPayroll) return total;
+
+  const first = advance.deductionMonth || (advance.requestDate ?? "").slice(0, 7);
+  const firstIndex = monthIndexOf(first);
+  const uptoIndex = monthIndexOf(uptoMonth);
+  if (firstIndex === null || uptoIndex === null) return total;
+
+  const months = Math.max(1, Math.round(advance.installmentMonths ?? 1));
+  const paidCount = Math.min(Math.max(uptoIndex - firstIndex + 1, 0), months);
+  if (paidCount >= months) return 0;
+
+  const installment = round2(total / months);
+  return round2(total - installment * paidCount);
+}
+
+/**
+ * صياغة عدد بالعربية على المطبوعات: مفرد، مثنى، جمع (3–10)، ثم تمييز مفرد
+ * منصوب. المخالصة مستند قانوني يُقرأ ويُوقَّع، فمدة الخدمة تُكتب فيه بصيغة
+ * سليمة لا «2 سنة و5 شهر».
+ */
+function arabicCount(
+  value: number,
+  [single, dual, plural, many]: [string, string, string, string],
+): string {
+  if (value === 1) return single;
+  if (value === 2) return dual;
+  if (value <= 10) return `${value} ${plural}`;
+  return `${value} ${many}`;
+}
+
+/** مدة الخدمة بالسنوات والأشهر والأيام بين تاريخ المباشرة وآخر يوم عمل. */
+export function serviceDuration(
+  hiredAt: string | null,
+  lastWorkingDay: string,
+): { years: number; months: number; days: number; totalDays: number; text: string } | null {
+  if (!hiredAt) return null;
+
+  const start = new Date(`${hiredAt}T00:00:00Z`);
+  const end = new Date(`${lastWorkingDay}T00:00:00Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  if (end.getTime() < start.getTime()) return null;
+
+  let years = end.getUTCFullYear() - start.getUTCFullYear();
+  let months = end.getUTCMonth() - start.getUTCMonth();
+  let days = end.getUTCDate() - start.getUTCDate();
+
+  if (days < 0) {
+    months -= 1;
+    // عدد أيام الشهر السابق ليوم الانتهاء
+    days += new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 0)).getUTCDate();
+  }
+  if (months < 0) {
+    years -= 1;
+    months += 12;
+  }
+
+  // آخر يوم عمل محسوب من ضمن مدة الخدمة
+  const totalDays = Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1;
+
+  const parts = [
+    years > 0 ? arabicCount(years, ["سنة", "سنتان", "سنوات", "سنة"]) : "",
+    months > 0 ? arabicCount(months, ["شهر", "شهران", "أشهر", "شهراً"]) : "",
+    days > 0 ? arabicCount(days, ["يوم", "يومان", "أيام", "يوماً"]) : "",
+  ].filter(Boolean);
+
+  return {
+    years,
+    months,
+    days,
+    totalDays,
+    text: parts.length > 0 ? parts.join(" و") : "يوم واحد",
+  };
+}
+
+/**
+ * بيانات المخالصة النهائية: آخر مسير راتب، والمكافآت المعتمدة التي لم
+ * يشملها مسير، ورصيد السلف غير المسدَّد، والعهد التي لم تُعَد، ومدة الخدمة.
+ *
+ * ما لا يحسبه النظام (مكافأة نهاية الخدمة، بدل الإجازة غير المستحقة) يبقى
+ * خانات تُعبّأ يدوياً في المطبوعة، ويظهر الصافي المحسوب من المسجَّل فقط
+ * كي لا يوحي الرقم بأنه يشمل بنوداً لم تُحسب.
+ */
+async function loadFinalSettlement(options: {
+  employeeId: number;
+  hiredAt: string | null;
+  lastWorkingDay: string;
+  reference: Record<string, unknown> | null;
+  currency: string;
+}) {
+  const db = getDb();
+  const settlementMonth = options.lastWorkingDay.slice(0, 7);
+
+  let slip = options.reference;
+  if (!slip) {
+    const [latest] = await db
+      .select()
+      .from(payrollSlips)
+      .where(eq(payrollSlips.employeeId, options.employeeId))
+      .orderBy(desc(payrollSlips.periodYear), desc(payrollSlips.periodMonth))
+      .limit(1);
+    slip = latest ?? null;
+  }
+
+  const slipMonth =
+    slip && typeof slip.periodYear === "number" && typeof slip.periodMonth === "number"
+      ? monthKey(slip.periodYear, slip.periodMonth)
+      : null;
+
+  const [advanceRows, custodyRows, bonusRows] = await Promise.all([
+    db
+      .select({
+        id: advances.id,
+        amount: advances.amount,
+        requestDate: advances.requestDate,
+        reason: advances.reason,
+        deductionMonth: advances.deductionMonth,
+        deductFromPayroll: advances.deductFromPayroll,
+        installmentMonths: advances.installmentMonths,
+      })
+      .from(advances)
+      .where(and(eq(advances.employeeId, options.employeeId), eq(advances.status, "approved")))
+      .orderBy(asc(advances.requestDate))
+      .limit(100),
+    db
+      .select({
+        id: custodyItems.id,
+        itemName: custodyItems.itemName,
+        itemType: custodyItems.itemType,
+        serialNumber: custodyItems.serialNumber,
+        quantity: custodyItems.quantity,
+        estimatedValue: custodyItems.estimatedValue,
+        issuedAt: custodyItems.issuedAt,
+        status: custodyItems.status,
+      })
+      .from(custodyItems)
+      .where(
+        and(eq(custodyItems.employeeId, options.employeeId), ne(custodyItems.status, "returned")),
+      )
+      .orderBy(asc(custodyItems.issuedAt))
+      .limit(100),
+    db
+      .select({
+        id: bonuses.id,
+        amount: bonuses.amount,
+        bonusDate: bonuses.bonusDate,
+        reason: bonuses.reason,
+      })
+      .from(bonuses)
+      .where(
+        and(
+          eq(bonuses.employeeId, options.employeeId),
+          eq(bonuses.status, "approved"),
+          lte(bonuses.bonusDate, options.lastWorkingDay),
+        ),
+      )
+      .orderBy(asc(bonuses.bonusDate))
+      .limit(100),
+  ]);
+
+  const openAdvances = advanceRows
+    .map((row) => ({ ...row, outstanding: advanceOutstanding(row, settlementMonth) }))
+    .filter((row) => row.outstanding > 0);
+
+  const openCustody = custodyRows.map((row) => ({
+    ...row,
+    value: round2((row.estimatedValue ?? 0) * Math.max(1, row.quantity ?? 1)),
+  }));
+
+  // المكافآت المعتمدة بعد شهر آخر مسير لم يُصرف مقابلها راتب بعد
+  const unpaidBonuses = bonusRows.filter(
+    (row) => slipMonth === null || row.bonusDate.slice(0, 7) > slipMonth,
+  );
+
+  const slipNet = slip && typeof slip.netPay === "number" ? round2(slip.netPay) : 0;
+  const bonusesTotal = round2(unpaidBonuses.reduce((sum, row) => sum + (row.amount ?? 0), 0));
+  const advancesTotal = round2(openAdvances.reduce((sum, row) => sum + row.outstanding, 0));
+  const custodyTotal = round2(openCustody.reduce((sum, row) => sum + row.value, 0));
+
+  const duesTotal = round2(slipNet + bonusesTotal);
+  const deductionsTotal = round2(advancesTotal + custodyTotal);
+
+  return {
+    lastWorkingDay: options.lastWorkingDay,
+    settlementMonth,
+    currency: options.currency,
+    service: serviceDuration(options.hiredAt, options.lastWorkingDay),
+    slip,
+    slipMonth,
+    bonuses: unpaidBonuses,
+    advances: openAdvances,
+    custody: openCustody,
+    totals: {
+      slipNet,
+      bonuses: bonusesTotal,
+      dues: duesTotal,
+      advances: advancesTotal,
+      custody: custodyTotal,
+      deductions: deductionsTotal,
+      net: round2(duesTotal - deductionsTotal),
+    },
+  };
 }
 
 /**
@@ -975,6 +1264,11 @@ documentsRouter.get(
       legalNotice: LEGAL_NOTICE,
       canPrintForOthers: canPrint,
       warningLevels: WARNING_LEVELS,
+      // خيارات جهة إنهاء العقد — الشاشة تبني منها قائمة المخالصة النهائية
+      terminationParties: TERMINATION_PARTY_OPTIONS.map((option) => ({
+        value: option.value,
+        label: option.label,
+      })),
     });
   },
 );
@@ -1135,6 +1429,20 @@ documentsRouter.get(
       return;
     }
 
+    /*
+     * المخالصة النهائية إبراء نهائي، فجهة طلب الإنهاء شرط لإصدارها لا خياراً
+     * يُترك فارغاً: بلا تحديدها لا تُبنى الورقة أصلاً، فلا يمكن إرسالها
+     * للطباعة أو تسجيلها في النماذج المُصدرة ناقصةً.
+     */
+    const terminationBy = asEnum(req.query.terminationBy, TERMINATION_PARTIES);
+    if (doc.needsTerminationParty && terminationBy === null) {
+      res.status(400).json({
+        ok: false,
+        error: "حدّد جهة طلب إنهاء العقد (الموظف أم المنشأة) قبل إصدار المخالصة النهائية",
+      });
+      return;
+    }
+
     const requestedEmployeeId = asId(req.query.employeeId);
     const employeeId = requestedEmployeeId ?? (doc.needsEmployee ? actor.id : null);
 
@@ -1249,6 +1557,21 @@ documentsRouter.get(
     }
 
     const sheetToday = isoDateInZone(new Date(), sheetTimezone);
+
+    /* المخالصة النهائية: مستحقات الموظف المسجَّلة حتى آخر يوم عمل */
+    let settlement: Awaited<ReturnType<typeof loadFinalSettlement>> | null = null;
+    if (doc.key === "final_settlement" && employeeId !== null) {
+      const hiredAt = bundle?.employee.hiredAt ?? null;
+      settlement = await loadFinalSettlement({
+        employeeId,
+        hiredAt: hiredAt ? isoDateInZone(new Date(hiredAt), timezone) : null,
+        lastWorkingDay: asDateOnly(req.query.date) ?? isoDateInZone(new Date(), timezone),
+        reference,
+        currency: bundle?.salary?.currency ?? company.currency ?? "SAR",
+      });
+      // آخر مسير راتب يُستعمل مرجعاً للورقة وإن لم يُختر يدوياً
+      reference = (settlement.slip as Record<string, unknown> | null) ?? null;
+    }
 
     let rosterSheet: Awaited<ReturnType<typeof loadRosterSheet>> | null = null;
     if (doc.key === "attendance_roster_sheet") {
@@ -1368,6 +1691,15 @@ documentsRouter.get(
       rosterSheet,
       cashier,
       inventory,
+      settlement,
+      termination:
+        terminationBy === null
+          ? null
+          : {
+              by: terminationBy,
+              label: TERMINATION_BY_VALUE.get(terminationBy)?.label ?? "",
+              statement: TERMINATION_BY_VALUE.get(terminationBy)?.statement ?? "",
+            },
       reference,
       ...(bundle ?? { employee: null, branch: null, salary: null, schedule: null }),
       // كشوف الفرع لا تملك حزمة موظف، فيُملأ الفرع من الكشف نفسه ليظهر في الترويسة
@@ -1564,6 +1896,22 @@ documentsRouter.post(
 
     if (!isSelf && !canPrintOthers) {
       res.status(403).json({ ok: false, error: "لا تملك صلاحية إصدار نماذج موظف آخر" });
+      return;
+    }
+
+    /*
+     * سجل المخالصة النهائية يحفظ جهة طلب الإنهاء معه: بها يُعرف لاحقاً على
+     * أي أساس صُدرت المخالصة، فلا يُقبل السجل بدونها كما لا تُبنى الورقة.
+     */
+    const issuePayload = (body.payload ?? {}) as Record<string, unknown>;
+    if (
+      doc.needsTerminationParty &&
+      asEnum(issuePayload.terminationBy, TERMINATION_PARTIES) === null
+    ) {
+      res.status(400).json({
+        ok: false,
+        error: "لا يُسجَّل إصدار المخالصة النهائية دون تحديد جهة طلب إنهاء العقد",
+      });
       return;
     }
 
