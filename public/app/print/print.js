@@ -4,6 +4,7 @@
  * تدعم مسارين:
  *  1) حزمة النماذج الجديدة:
  *     `?doc=<key>&employeeId=&refId=&month=&branchId=&date=&from=&to=&closingId=`
+ *     (والمخالصة النهائية تضيف `terminationBy=employee|employer` وهو شرط لبنائها)
  *     — تُملأ تلقائياً من `GET /api/documents/data` وتُسجَّل في «النماذج المُصدرة».
  *     الكشوف غير المرتبطة بموظف (كشف التحضير والانصراف، تقفيلات الكاشير)
  *     تستخدم `branchId` + `date` أو `from`/`to`.
@@ -211,6 +212,7 @@ async function renderPackaged(company) {
     "closingId",
     "itemId",
     "movementType",
+    "terminationBy",
   ]) {
     const value = params.get(key);
     if (value) query.set(key, value);
@@ -256,6 +258,8 @@ async function renderPackaged(company) {
       ? `حركة رقم ${result.inventory.movement?.id ?? ""}`
       : "",
     result.inventory?.kind === "countSheet" ? `جرد يوم ${result.inventory.date}` : "",
+    // جهة إنهاء العقد تظهر في عنوان المخالصة نفسها لا في متنها وحده
+    result.termination ? result.termination.label : "",
   ].filter(Boolean);
 
   compose(identity, {
@@ -286,6 +290,9 @@ async function renderPackaged(company) {
         date: result.rosterSheet?.date ?? null,
         from: result.cashier?.from ?? null,
         to: result.cashier?.to ?? null,
+        // المخالصة النهائية: جهة طلب الإنهاء وآخر يوم عمل يُحفظان مع السجل
+        terminationBy: result.termination?.by ?? null,
+        lastWorkingDay: result.settlement?.lastWorkingDay ?? null,
       },
     },
   }).catch(() => {});

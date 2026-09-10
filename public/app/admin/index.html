@@ -826,8 +826,14 @@
             <select id="doc-branch"></select>
           </label>
           <label class="field field--sm" id="doc-date-field" hidden>
-            <span class="field__label">التاريخ</span>
+            <span class="field__label" id="doc-date-label">التاريخ</span>
             <input id="doc-date" type="date" />
+          </label>
+          <label class="field field--sm" id="doc-termination-field" hidden>
+            <span class="field__label">جهة طلب إنهاء العقد</span>
+            <select id="doc-termination" required>
+              <option value="">— حدّد الجهة قبل الإرسال —</option>
+            </select>
           </label>
           <label class="field field--sm" id="doc-from-field" hidden>
             <span class="field__label">من تاريخ</span>
@@ -843,6 +849,11 @@
         </div>
 
         <p id="doc-description" class="hint"></p>
+        <p id="doc-termination-hint" class="hint" hidden>
+          المخالصة النهائية إبراء نهائي: لا تُفتح للطباعة قبل تحديد أن إنهاء العقد
+          كان بطلب الموظف أم بطلب المنشأة، وتُحفظ الجهة المختارة في سجل النماذج
+          المُصدرة.
+        </p>
         <p id="doc-legal-hint" class="hint" hidden>
           هذا النموذج يحمل إشعاراً قانونياً: <span id="doc-legal-notice"></span>
         </p>
