@@ -1482,3 +1482,349 @@ export const cashNotifications = pgTable(
     index("cash_notifications_employee_idx").on(table.employeeId, table.isRead),
   ],
 );
+
+/* ══════════════════════════════════════════════════════════════════
+ * وحدة الرقابة والكاميرات — جداول مستقلة تماماً عن بقية النظام.
+ *
+ * لا تُعدّل هذه الوحدة أي جدول قائم ولا تحذف منه شيئاً؛ تقرأ فقط من
+ * الفروع والموظفين والحضور وتقفيل الكاشير والمخزون لبناء التقرير اليومي.
+ * كل حالة اشتباه تبقى «اشتباهاً يحتاج مراجعة» حتى يحسمها إنسان مخوَّل.
+ * ══════════════════════════════════════════════════════════════════ */
+
+/**
+ * surveillance_cameras — سجل الكاميرات ومواقعها وحالتها الحالية.
+ * المناطق محصورة بقائمة مسموحة: لا تُسجَّل كاميرا في دورات المياه أو غرف
+ * التبديل أو أماكن الصلاة أو الاستراحة الخاصة.
+ */
+export const surveillanceCameras = pgTable(
+  "surveillance_cameras",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** رقم الكاميرا كما في جهاز التسجيل (مثال: CAM-03) */
+    cameraNumber: text("camera_number").notNull(),
+    name: text().notNull().default(""),
+    /** dining | kitchen | cashier | warehouse | fridge | back_door | entrance | delivery | outdoor */
+    zone: text().notNull().default("dining"),
+    location: text().notNull().default(""),
+    /** online | offline | covered | moved | unknown */
+    status: text().notNull().default("unknown"),
+    isRecording: boolean("is_recording").notNull().default(true),
+    lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
+    /** النقاط العمياء المرصودة حول الكاميرا ومقترحات التغطية */
+    blindSpots: text("blind_spots").notNull().default(""),
+    notes: text().notNull().default(""),
+    isActive: boolean("is_active").notNull().default(true),
+    /* ── الكشف الآلي بالذكاء الاصطناعي ── */
+    /** تشغيل الكشف الآلي على هذه الكاميرا */
+    autoDetect: boolean("auto_detect").notNull().default(false),
+    /** agent = جهاز الربط داخل المطعم يجلب الصورة، pull = الخادم يجلبها من رابط عام */
+    connectionMode: text("connection_mode").notNull().default("agent"),
+    /** رابط لقطة الكاميرا (Snapshot) كما في جهاز التسجيل */
+    snapshotUrl: text("snapshot_url").notNull().default(""),
+    snapshotUsername: text("snapshot_username").notNull().default(""),
+    /** كلمة مرور الكاميرا مشفّرة AES-256-GCM */
+    snapshotPasswordEnc: text("snapshot_password_enc").notNull().default(""),
+    /** كل كم دقيقة تُحلَّل لقطة */
+    intervalMinutes: integer("interval_minutes").notNull().default(5),
+    /** مفتاح الصورة المرجعية (الزاوية المعتمدة) لكشف التحريك */
+    referenceKey: text("reference_key").notNull().default(""),
+    lastFrameAt: timestamp("last_frame_at", { withTimezone: true }),
+    lastAnalysisAt: timestamp("last_analysis_at", { withTimezone: true }),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    lastError: text("last_error").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("surveillance_cameras_branch_number_idx").on(
+      table.branchId,
+      table.cameraNumber,
+    ),
+  ],
+);
+
+/** surveillance_camera_checks — سجل الفحص اليومي لكل كاميرا. */
+export const surveillanceCameraChecks = pgTable(
+  "surveillance_camera_checks",
+  {
+    id: serial().primaryKey(),
+    cameraId: integer("camera_id")
+      .notNull()
+      .references(() => surveillanceCameras.id, { onDelete: "cascade" }),
+    status: text().notNull().default("online"),
+    isRecording: boolean("is_recording").notNull().default(true),
+    note: text().notNull().default(""),
+    /** manual | webhook */
+    source: text().notNull().default("manual"),
+    checkedByEmployeeId: integer("checked_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("surveillance_camera_checks_camera_idx").on(table.cameraId, table.checkedAt)],
+);
+
+/**
+ * surveillance_alerts — التنبيهات والملاحظات الرقابية بالصيغة المعتمدة:
+ * النوع، الموقع والكاميرا، الوقت، الموظفون، درجة الثقة، مرجع المقطع،
+ * والإجراء المقترح. القرار النهائي (`confirmed`/`dismissed`) لا يُتّخذ إلا
+ * بمراجعة بشرية من صاحب درجة الموافقة.
+ */
+export const surveillanceAlerts = pgTable(
+  "surveillance_alerts",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    cameraId: integer("camera_id").references(() => surveillanceCameras.id, {
+      onDelete: "set null",
+    }),
+    alertType: text("alert_type").notNull(),
+    /** gm = المدير العام، warehouse = مدير المستودعات، camera = مراقب الكاميرات */
+    role: text().notNull().default("gm"),
+    /** هل هي حالة تنبيه فوري (لا ملاحظة عادية)؟ */
+    isUrgent: boolean("is_urgent").notNull().default(false),
+    /** هل هي حالة اشتباه مخالفة/سرقة؟ — تبقى اشتباهاً حتى المراجعة */
+    isSuspicion: boolean("is_suspicion").notNull().default(false),
+    /** 1 = عالية، 2 = متوسطة، 3 = منخفضة */
+    severity: integer().notNull().default(2),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    location: text().notNull().default(""),
+    employeeIds: integer("employee_ids").array().notNull().default(sql`'{}'::integer[]`),
+    /** وصف الظاهرين في المقطع إن تعذّر التعرف عليهم */
+    peopleNote: text("people_note").notNull().default(""),
+    /** high | medium | low */
+    confidence: text().notNull().default("medium"),
+    clipRef: text("clip_ref").notNull().default(""),
+    details: text().notNull().default(""),
+    suggestedAction: text("suggested_action").notNull().default(""),
+    /** open | needs_review | confirmed | dismissed */
+    status: text().notNull().default("open"),
+    reviewNote: text("review_note").notNull().default(""),
+    reviewedByEmployeeId: integer("reviewed_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    /** manual | webhook | auto */
+    source: text().notNull().default("manual"),
+    /** مفتاح منع التكرار للتنبيهات الآلية */
+    sourceRef: text("source_ref").notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("surveillance_alerts_branch_time_idx").on(table.branchId, table.occurredAt),
+    index("surveillance_alerts_status_idx").on(table.status),
+    index("surveillance_alerts_source_ref_idx").on(table.sourceRef),
+  ],
+);
+
+/**
+ * surveillance_orders — توقيت تجهيز الطلبات: من تسجيله في نقطة البيع إلى
+ * تسليمه، مع علامة وجود الفاتورة المقابلة.
+ */
+export const surveillanceOrders = pgTable(
+  "surveillance_orders",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    orderRef: text("order_ref").notNull(),
+    itemName: text("item_name").notNull().default(""),
+    /** dine_in | takeaway | delivery */
+    channel: text().notNull().default("dine_in"),
+    registeredAt: timestamp("registered_at", { withTimezone: true }).notNull(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    prepSeconds: integer("prep_seconds"),
+    hasInvoice: boolean("has_invoice").notNull().default(true),
+    preparedByEmployeeId: integer("prepared_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    cameraId: integer("camera_id").references(() => surveillanceCameras.id, {
+      onDelete: "set null",
+    }),
+    source: text().notNull().default("manual"),
+    notes: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("surveillance_orders_ref_item_idx").on(
+      table.branchId,
+      table.orderRef,
+      table.itemName,
+    ),
+    index("surveillance_orders_branch_time_idx").on(table.branchId, table.registeredAt),
+  ],
+);
+
+/**
+ * surveillance_pos_events — أحداث الكاشير الحساسة: فتح الدرج بلا بيع،
+ * الإلغاء، الخصم، الاسترجاع.
+ */
+export const surveillancePosEvents = pgTable(
+  "surveillance_pos_events",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** drawer_no_sale | void | discount | refund */
+    eventType: text("event_type").notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    cashierEmployeeId: integer("cashier_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    cashierName: text("cashier_name").notNull().default(""),
+    amount: money("amount"),
+    orderRef: text("order_ref").notNull().default(""),
+    cameraId: integer("camera_id").references(() => surveillanceCameras.id, {
+      onDelete: "set null",
+    }),
+    source: text().notNull().default("manual"),
+    notes: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("surveillance_pos_events_branch_time_idx").on(table.branchId, table.occurredAt)],
+);
+
+/** surveillance_waste — الهدر المرصود: الكمية والسبب والمحطة. */
+export const surveillanceWaste = pgTable(
+  "surveillance_waste",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    itemName: text("item_name").notNull(),
+    quantity: doublePrecision().notNull().default(0),
+    unit: text().notNull().default(""),
+    /** spoiled | over_prep | dropped | returned | over_recipe | expired | other */
+    reason: text().notNull().default("other"),
+    station: text().notNull().default(""),
+    cameraId: integer("camera_id").references(() => surveillanceCameras.id, {
+      onDelete: "set null",
+    }),
+    employeeId: integer("employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    notes: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("surveillance_waste_branch_time_idx").on(table.branchId, table.occurredAt)],
+);
+
+/** surveillance_prep_targets — الحد المعتمد لوقت تجهيز كل صنف (بالدقائق). */
+export const surveillancePrepTargets = pgTable("surveillance_prep_targets", {
+  id: serial().primaryKey(),
+  itemName: text("item_name").notNull().unique(),
+  maxMinutes: doublePrecision("max_minutes").notNull().default(15),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** surveillance_settings — حدود الرقابة لكل فرع. */
+export const surveillanceSettings = pgTable("surveillance_settings", {
+  branchId: integer("branch_id")
+    .primaryKey()
+    .references(() => branches.id, { onDelete: "cascade" }),
+  /** الحد الافتراضي لتجهيز صنف بلا حد خاص */
+  defaultPrepMinutes: doublePrecision("default_prep_minutes").notNull().default(15),
+  /** أقصى انتظار للعميل بلا خدمة */
+  customerWaitMinutes: doublePrecision("customer_wait_minutes").notNull().default(10),
+  /** عدد الإلغاءات/الخصومات/الاسترجاعات من نفس الكاشير في اليوم قبل التنبيه */
+  repeatPosThreshold: integer("repeat_pos_threshold").notNull().default(3),
+  /** ساعات عمل الفرع (HH:MM) — الدخول للمستودع خارجها تنبيه فوري */
+  openTime: text("open_time").notNull().default("06:00"),
+  closeTime: text("close_time").notNull().default("02:00"),
+  /** بريد (أو أكثر مفصولة بفاصلة) يستلم التنبيهات الفورية */
+  alertEmails: text("alert_emails").notNull().default(""),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * surveillance_daily_reports — لقطة محفوظة من التقرير اليومي لكل فرع، حتى
+ * يبقى تقرير الأمس كما صدر ولو تغيّرت البيانات لاحقاً.
+ */
+export const surveillanceDailyReports = pgTable(
+  "surveillance_daily_reports",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    businessDate: date("business_date").notNull(),
+    reportJson: text("report_json").notNull(),
+    generatedByEmployeeId: integer("generated_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("surveillance_daily_reports_branch_date_idx").on(
+      table.branchId,
+      table.businessDate,
+    ),
+  ],
+);
+
+/**
+ * surveillance_frames — سجل كل لقطة حُلِّلت آلياً ونتيجة تحليلها.
+ * الصورة نفسها تُحفظ في Netlify Blobs فقط عند وجود ملاحظة أو خلل في
+ * الكاميرا (دليلاً للمراجعة)، واللقطات السليمة يُحفظ تحليلها بلا صورة.
+ */
+export const surveillanceFrames = pgTable(
+  "surveillance_frames",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    cameraId: integer("camera_id")
+      .notNull()
+      .references(() => surveillanceCameras.id, { onDelete: "cascade" }),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull().defaultNow(),
+    /** agent | pull | test */
+    source: text().notNull().default("agent"),
+    /** مفتاح الصورة في Blobs — فارغ إن لم تُحفظ */
+    imageKey: text("image_key").notNull().default(""),
+    /** ok | covered | dark | blurry | moved | unreachable | error */
+    cameraState: text("camera_state").notNull().default("ok"),
+    peopleCount: integer("people_count").notNull().default(0),
+    /** عملاء ينتظرون بلا خدمة في هذه اللقطة — لحساب مدة الانتظار عبر اللقطات */
+    waiting: boolean().notNull().default(false),
+    findingsCount: integer("findings_count").notNull().default(0),
+    analysisJson: text("analysis_json").notNull().default(""),
+    alertIds: integer("alert_ids").array().notNull().default(sql`'{}'::integer[]`),
+    error: text().notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("surveillance_frames_camera_time_idx").on(table.cameraId, table.capturedAt),
+    index("surveillance_frames_branch_time_idx").on(table.branchId, table.capturedAt),
+  ],
+);

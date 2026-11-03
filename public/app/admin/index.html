@@ -41,6 +41,7 @@
       <button class="tab" type="button" data-panel="cashier">تقفيل الكاشير</button>
       <button class="tab" type="button" data-panel="cashbox">النقدية والإقفال</button>
       <button class="tab" type="button" data-panel="inventory">المخزون</button>
+      <button class="tab" type="button" data-panel="surveillance">الرقابة والكاميرات</button>
       <button class="tab" type="button" data-panel="reports">التقارير</button>
       <button class="tab" type="button" data-panel="settings">الإعدادات</button>
       <button class="tab" type="button" data-panel="access">إدارة الصلاحيات</button>
@@ -2263,6 +2264,606 @@
         </div>
         <p id="access-preview-empty" class="empty" hidden>
           اختر موظفاً لعرض محصّلة صلاحياته.
+        </p>
+      </section>
+    </main>
+
+    <!-- ── الرقابة والكاميرات ─────────────────────────────────── -->
+    <main id="panel-surveillance" class="panel" hidden>
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">الرقابة والكاميرات</h2>
+          <div class="row row--wrap">
+            <label class="field field--sm">
+              <span class="field__label">الفرع</span>
+              <select id="sv-branch"></select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">التاريخ</span>
+              <input id="sv-date" type="date" />
+            </label>
+            <button id="sv-refresh" class="btn btn--ghost btn--xs" type="button">تحديث</button>
+          </div>
+        </div>
+        <p id="sv-summary" class="row row--wrap"></p>
+        <p class="hint">
+          أي حالة اشتباه سرقة أو مخالفة هي «اشتباه يحتاج مراجعة» وليست حكماً نهائياً، ولا
+          يُتّخذ إجراء ضد موظف إلا بعد مراجعة المالك أو المدير للمقطع. الثقة المنخفضة تُحال
+          دائماً إلى مراجعة بشرية. ولا تُرصد دورات المياه أو غرف تبديل الملابس أو أماكن
+          الصلاة أو الاستراحة الخاصة.
+        </p>
+        <div class="tabs" id="sv-tabs" role="tablist">
+          <button class="tab is-active" type="button" data-sv="alerts">التنبيهات</button>
+          <button class="tab" type="button" data-sv="new" data-sv-write>تسجيل حالة</button>
+          <button class="tab" type="button" data-sv="orders">الطلبات والكاشير</button>
+          <button class="tab" type="button" data-sv="waste">الهدر</button>
+          <button class="tab" type="button" data-sv="cameras">الكاميرات</button>
+          <button class="tab" type="button" data-sv="report">التقرير اليومي</button>
+          <button class="tab" type="button" data-sv="limits">الحدود المعتمدة</button>
+          <button class="tab" type="button" data-sv="connect">ربط الكاميرات</button>
+        </div>
+        <p id="sv-result" class="alert" role="status" hidden></p>
+        <p id="sv-live-note" class="hint"></p>
+      </section>
+
+      <section class="card" id="sv-frame-viewer" hidden>
+        <div class="card__head">
+          <h3 class="card__title card__title--sm" id="sv-frame-title">لقطة الكاميرا</h3>
+          <button id="sv-frame-close" class="btn btn--ghost btn--xs" type="button">إغلاق</button>
+        </div>
+        <img id="sv-frame-img" alt="لقطة الكاميرا" style="max-width:100%;border-radius:8px" hidden />
+        <p id="sv-frame-text" class="hint"></p>
+      </section>
+
+      <!-- التنبيهات -->
+      <section class="card" data-sv-section="alerts">
+        <div class="filters">
+          <label class="field field--sm">
+            <span class="field__label">من</span>
+            <input id="sv-alerts-from" type="date" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">إلى</span>
+            <input id="sv-alerts-to" type="date" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الحالة</span>
+            <select id="sv-alerts-status">
+              <option value="">الكل</option>
+              <option value="needs_review">يحتاج مراجعة بشرية</option>
+              <option value="open">مفتوح</option>
+              <option value="confirmed">مؤكَّد بعد المراجعة</option>
+              <option value="dismissed">مستبعد بعد المراجعة</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الدور</span>
+            <select id="sv-alerts-role">
+              <option value="">الكل</option>
+              <option value="gm">المدير العام</option>
+              <option value="warehouse">مدير المستودعات</option>
+              <option value="camera">مراقب الكاميرات</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">النوع</span>
+            <select id="sv-alerts-urgent">
+              <option value="">كل الحالات</option>
+              <option value="1">التنبيهات الفورية فقط</option>
+            </select>
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="sv-alerts-table">
+            <thead>
+              <tr>
+                <th>التاريخ والوقت</th>
+                <th>نوع الحالة</th>
+                <th>الموقع والكاميرا</th>
+                <th>الموظفون الظاهرون</th>
+                <th>الثقة</th>
+                <th>مرجع المقطع</th>
+                <th>الإجراء المقترح</th>
+                <th>الحالة</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="sv-alerts-empty" class="empty" hidden>لا توجد تنبيهات في المدة المختارة.</p>
+
+        <form id="sv-review-form" class="form-grid" hidden>
+          <p id="sv-review-title" class="field--wide"></p>
+          <label class="field field--sm">
+            <span class="field__label">نتيجة المراجعة البشرية</span>
+            <select id="sv-review-decision">
+              <option value="confirmed">مؤكَّد بعد مراجعة المقطع</option>
+              <option value="dismissed">مستبعد — لا مخالفة</option>
+              <option value="needs_review">يبقى قيد المراجعة</option>
+            </select>
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">ما الذي شوهد في المقطع؟ (إلزامي)</span>
+            <input id="sv-review-note" type="text" required />
+          </label>
+          <div class="row row--wrap">
+            <button id="sv-review-submit" class="btn btn--primary btn--sm" type="submit">حفظ المراجعة</button>
+            <button id="sv-review-cancel" class="btn btn--ghost btn--sm" type="button">إلغاء</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- تسجيل حالة -->
+      <section class="card" data-sv-section="new" hidden>
+        <form id="sv-alert-form" class="form-grid">
+          <label class="field field--sm">
+            <span class="field__label">الدور</span>
+            <select id="sv-alert-role">
+              <option value="gm">المدير العام</option>
+              <option value="warehouse">مدير المستودعات</option>
+              <option value="camera">مراقب الكاميرات</option>
+            </select>
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">نوع الحالة</span>
+            <select id="sv-alert-type" required></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">التاريخ والوقت (بالثانية)</span>
+            <input id="sv-alert-time" type="datetime-local" step="1" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الكاميرا</span>
+            <select id="sv-alert-camera"></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الموقع</span>
+            <input id="sv-alert-location" type="text" placeholder="يُؤخذ من الكاميرا إن تُرك فارغاً" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">درجة الثقة</span>
+            <select id="sv-alert-confidence">
+              <option value="high">عالية</option>
+              <option value="medium" selected>متوسطة</option>
+              <option value="low">منخفضة — تُحال لمراجعة بشرية</option>
+            </select>
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">الموظفون الظاهرون (اختيار متعدد)</span>
+            <select id="sv-alert-employees" multiple size="5"></select>
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">وصف من لم يُتعرّف عليه</span>
+            <input id="sv-alert-people" type="text" placeholder="مثال: شخص بزي المطبخ، وجهه غير ظاهر" />
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">رابط أو مرجع المقطع</span>
+            <input id="sv-alert-clip" type="text" placeholder="يُولَّد تلقائياً: رقم الكاميرا + التاريخ + الوقت" />
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">التفاصيل</span>
+            <input id="sv-alert-details" type="text" />
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">الإجراء المقترح</span>
+            <input id="sv-alert-action" type="text" placeholder="يُقترح تلقائياً حسب النوع إن تُرك فارغاً" />
+          </label>
+          <div class="row row--wrap">
+            <button id="sv-alert-submit" class="btn btn--primary btn--sm" type="submit">تسجيل الحالة</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- الطلبات وأحداث الكاشير -->
+      <section class="card" data-sv-section="orders" hidden>
+        <h3 class="card__title card__title--sm">توقيت الطلبات (من فودكس إلى التسليم)</h3>
+        <form id="sv-order-form" class="form-grid" data-sv-write>
+          <label class="field field--sm">
+            <span class="field__label">رقم الطلب</span>
+            <input id="sv-order-ref" type="text" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الصنف</span>
+            <input id="sv-order-item" type="text" list="sv-items-list" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">القناة</span>
+            <select id="sv-order-channel">
+              <option value="dine_in">محلي</option>
+              <option value="takeaway">سفري</option>
+              <option value="delivery">توصيل</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">وقت التسجيل في فودكس</span>
+            <input id="sv-order-registered" type="datetime-local" step="1" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">وقت التسليم</span>
+            <input id="sv-order-delivered" type="datetime-local" step="1" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">المجهِّز</span>
+            <select id="sv-order-employee"></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الكاميرا</span>
+            <select id="sv-order-camera"></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">له فاتورة في فودكس؟</span>
+            <select id="sv-order-invoice">
+              <option value="true">نعم</option>
+              <option value="false">لا — خرج بدون فاتورة</option>
+            </select>
+          </label>
+          <div class="row row--wrap">
+            <button id="sv-order-submit" class="btn btn--primary btn--sm" type="submit">تسجيل الطلب</button>
+          </div>
+        </form>
+        <datalist id="sv-items-list"></datalist>
+        <div class="table-wrap">
+          <table class="table" id="sv-orders-table">
+            <thead>
+              <tr>
+                <th>الطلب</th>
+                <th>الصنف</th>
+                <th>القناة</th>
+                <th>التسجيل</th>
+                <th>التسليم</th>
+                <th>مدة التجهيز</th>
+                <th>الفاتورة</th>
+                <th>المجهِّز</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="sv-orders-empty" class="empty" hidden>لا توجد طلبات مسجّلة لهذا اليوم.</p>
+
+        <h3 class="card__title card__title--sm">أحداث الكاشير الحساسة</h3>
+        <form id="sv-pos-form" class="form-grid" data-sv-write>
+          <label class="field field--sm">
+            <span class="field__label">الحدث</span>
+            <select id="sv-pos-type">
+              <option value="drawer_no_sale">فتح درج بلا بيع</option>
+              <option value="void">إلغاء</option>
+              <option value="discount">خصم</option>
+              <option value="refund">استرجاع</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الوقت</span>
+            <input id="sv-pos-time" type="datetime-local" step="1" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الكاشير</span>
+            <select id="sv-pos-employee"></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">المبلغ</span>
+            <input id="sv-pos-amount" type="number" step="any" min="0" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">رقم الطلب</span>
+            <input id="sv-pos-order" type="text" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الكاميرا</span>
+            <select id="sv-pos-camera"></select>
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">ملاحظات</span>
+            <input id="sv-pos-notes" type="text" />
+          </label>
+          <div class="row row--wrap">
+            <button id="sv-pos-submit" class="btn btn--primary btn--sm" type="submit">تسجيل الحدث</button>
+          </div>
+        </form>
+        <div class="table-wrap">
+          <table class="table" id="sv-pos-table">
+            <thead>
+              <tr>
+                <th>الوقت</th>
+                <th>الحدث</th>
+                <th>الكاشير</th>
+                <th>المبلغ</th>
+                <th>الطلب</th>
+                <th>ملاحظات</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="sv-pos-empty" class="empty" hidden>لا توجد أحداث كاشير لهذا اليوم.</p>
+        <p class="hint">
+          فتح الدرج بلا بيع يُنشئ تنبيهاً فورياً، وتكرار الإلغاء أو الخصم أو الاسترجاع من نفس
+          الكاشير يُنشئ تنبيهاً عند بلوغ الحد المعتمد، والطلب بلا فاتورة أو المتجاوز لحد
+          التجهيز يُنشئ تنبيهه تلقائياً.
+        </p>
+      </section>
+
+      <!-- الهدر -->
+      <section class="card" data-sv-section="waste" hidden>
+        <form id="sv-waste-form" class="form-grid" data-sv-write>
+          <label class="field field--sm">
+            <span class="field__label">الصنف</span>
+            <input id="sv-waste-item" type="text" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الكمية التقريبية</span>
+            <input id="sv-waste-qty" type="number" step="any" min="0" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الوحدة</span>
+            <input id="sv-waste-unit" type="text" placeholder="كجم، حبة، طبق..." />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">السبب</span>
+            <select id="sv-waste-reason"></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">المحطة</span>
+            <input id="sv-waste-station" type="text" placeholder="الشواية، التحضير، الثلاجة..." />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الوقت</span>
+            <input id="sv-waste-time" type="datetime-local" step="1" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الموظف</span>
+            <select id="sv-waste-employee"></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الكاميرا</span>
+            <select id="sv-waste-camera"></select>
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">ملاحظات</span>
+            <input id="sv-waste-notes" type="text" />
+          </label>
+          <div class="row row--wrap">
+            <button id="sv-waste-submit" class="btn btn--primary btn--sm" type="submit">تسجيل الهدر</button>
+          </div>
+        </form>
+        <div class="table-wrap">
+          <table class="table" id="sv-waste-table">
+            <thead>
+              <tr>
+                <th>الوقت</th>
+                <th>الصنف</th>
+                <th>الكمية</th>
+                <th>السبب</th>
+                <th>المحطة</th>
+                <th>الموظف</th>
+                <th>ملاحظات</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="sv-waste-empty" class="empty" hidden>لا يوجد هدر مسجّل لهذا اليوم.</p>
+        <p class="hint">التقرير اليومي يضم أيضاً حركات «هدر» المسجّلة في المخزون لنفس اليوم.</p>
+      </section>
+
+      <!-- الكاميرات -->
+      <section class="card" data-sv-section="cameras" hidden>
+        <form id="sv-camera-form" class="form-grid" data-sv-manage>
+          <label class="field field--sm">
+            <span class="field__label">رقم الكاميرا</span>
+            <input id="sv-camera-number" type="text" required placeholder="CAM-01" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الاسم</span>
+            <input id="sv-camera-name" type="text" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">المنطقة</span>
+            <select id="sv-camera-zone"></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الموقع الدقيق</span>
+            <input id="sv-camera-location" type="text" />
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">النقاط العمياء ومقترحات التغطية</span>
+            <input id="sv-camera-blind" type="text" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الكشف الآلي بالذكاء الاصطناعي</span>
+            <select id="sv-camera-auto">
+              <option value="true">مفعّل</option>
+              <option value="false">متوقف</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">طريقة الاتصال</span>
+            <select id="sv-camera-mode">
+              <option value="agent">جهاز الربط داخل المطعم (موصى به)</option>
+              <option value="pull">رابط عام على الإنترنت</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">نوع الجهاز</span>
+            <select id="sv-camera-brand">
+              <option value="hikvision">Hikvision</option>
+              <option value="dahua">Dahua</option>
+              <option value="custom">آخر / رابط مخصّص</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">عنوان IP للكاميرا أو جهاز التسجيل</span>
+            <input id="sv-camera-ip" type="text" placeholder="192.168.1.64" dir="ltr" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">رقم القناة</span>
+            <input id="sv-camera-channel" type="number" min="1" value="1" />
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">رابط اللقطة (Snapshot)</span>
+            <input id="sv-camera-url" type="text" dir="ltr" placeholder="http://192.168.1.64/ISAPI/Streaming/channels/101/picture" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">اسم مستخدم الجهاز</span>
+            <input id="sv-camera-user" type="text" dir="ltr" autocomplete="off" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">كلمة مرور الجهاز</span>
+            <input id="sv-camera-pass" type="password" dir="ltr" autocomplete="new-password" placeholder="تُحفظ مشفّرة" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">التحليل كل (دقيقة)</span>
+            <input id="sv-camera-interval" type="number" min="1" max="120" value="5" />
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">ملاحظات</span>
+            <input id="sv-camera-notes" type="text" />
+          </label>
+          <div class="row row--wrap">
+            <button id="sv-camera-submit" class="btn btn--primary btn--sm" type="submit">إضافة كاميرا</button>
+            <button id="sv-camera-cancel" class="btn btn--ghost btn--sm" type="button" hidden>إلغاء التعديل</button>
+          </div>
+        </form>
+        <div class="table-wrap">
+          <table class="table" id="sv-cameras-table">
+            <thead>
+              <tr>
+                <th>الرقم</th>
+                <th>الاسم</th>
+                <th>المنطقة والموقع</th>
+                <th>الحالة</th>
+                <th>آخر فحص</th>
+                <th>النقاط العمياء</th>
+                <th>الكشف الآلي</th>
+                <th>الفحص اليدوي</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="sv-cameras-empty" class="empty" hidden>لا توجد كاميرات مسجّلة لهذا الفرع.</p>
+        <p class="hint">
+          تسجيل كاميرا متوقفة أو مغطاة أو محرّكة يُنشئ تنبيهاً فورياً لمراقب الكاميرات مع
+          مرجع المقطع (رقم الكاميرا + التاريخ + الوقت بالثانية).
+        </p>
+      </section>
+
+      <!-- التقرير اليومي -->
+      <section class="card" data-sv-section="report" hidden>
+        <div class="row row--wrap">
+          <button id="sv-report-generate" class="btn btn--primary btn--sm" type="button" data-sv-manage>
+            إصدار التقرير وحفظه
+          </button>
+          <button id="sv-report-live" class="btn btn--ghost btn--sm" type="button">معاينة حيّة</button>
+          <button id="sv-report-print" class="btn btn--ghost btn--sm" type="button">طباعة</button>
+        </div>
+        <p id="sv-report-meta" class="hint"></p>
+        <div id="sv-report"></div>
+      </section>
+
+      <!-- الحدود المعتمدة -->
+      <section class="card" data-sv-section="limits" hidden>
+        <form id="sv-settings-form" class="form-grid" data-sv-manage>
+          <label class="field field--sm">
+            <span class="field__label">حد التجهيز الافتراضي (دقيقة)</span>
+            <input id="sv-set-prep" type="number" step="any" min="1" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">أقصى انتظار للعميل (دقيقة)</span>
+            <input id="sv-set-wait" type="number" step="any" min="1" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">حد الإلغاء/الخصم/الاسترجاع اليومي للكاشير</span>
+            <input id="sv-set-pos" type="number" step="1" min="1" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">بداية ساعات العمل</span>
+            <input id="sv-set-open" type="time" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">نهاية ساعات العمل</span>
+            <input id="sv-set-close" type="time" required />
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">بريد استلام التنبيهات الفورية (أكثر من بريد يُفصل بفاصلة)</span>
+            <input id="sv-set-emails" type="text" dir="ltr" placeholder="owner@example.com" />
+          </label>
+          <div class="row row--wrap">
+            <button id="sv-settings-submit" class="btn btn--primary btn--sm" type="submit">حفظ الحدود</button>
+          </div>
+        </form>
+        <h3 class="card__title card__title--sm">حد التجهيز لكل صنف</h3>
+        <form id="sv-target-form" class="form-grid" data-sv-manage>
+          <label class="field field--sm">
+            <span class="field__label">الصنف</span>
+            <input id="sv-target-item" type="text" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الحد (دقيقة)</span>
+            <input id="sv-target-minutes" type="number" step="any" min="1" required />
+          </label>
+          <div class="row row--wrap">
+            <button id="sv-target-submit" class="btn btn--primary btn--sm" type="submit">حفظ الحد</button>
+          </div>
+        </form>
+        <div class="table-wrap">
+          <table class="table" id="sv-targets-table">
+            <thead>
+              <tr><th>الصنف</th><th>الحد (دقيقة)</th><th></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="sv-targets-empty" class="empty" hidden>لا توجد حدود خاصة — يُطبَّق الحد الافتراضي.</p>
+        <p id="sv-webhook-note" class="hint"></p>
+      </section>
+
+      <!-- ربط الكاميرات -->
+      <section class="card" data-sv-section="connect" hidden>
+        <h3 class="card__title card__title--sm">ربط الكاميرات بالكشف الآلي</h3>
+        <p id="sv-connect-status" class="row row--wrap"></p>
+        <ol class="hint">
+          <li>
+            في Netlify ← إعدادات المشروع ← Environment variables أضف المتغيّر
+            <code>SURVEILLANCE_WEBHOOK_SECRET</code> بقيمة سرية طويلة، ثم أعد النشر.
+          </li>
+          <li>
+            حمّل ملفات جهاز الربط وضعها على أي كمبيوتر داخل شبكة المطعم (نفس شبكة جهاز
+            التسجيل)، وثبّت عليه Node.js:
+            <a href="/app/downloads/camera-agent.mjs" download>camera-agent.mjs</a> ·
+            <a href="/app/downloads/config.example.json" download>config.example.json</a> ·
+            <a href="/app/downloads/start-windows.bat" download>start-windows.bat</a>
+          </li>
+          <li>
+            غيّر اسم <code>config.example.json</code> إلى <code>config.json</code>، وضع فيه
+            رابط البرنامج <code id="sv-connect-url"></code> والمفتاح السري نفسه، ثم شغّل
+            <code>start-windows.bat</code> (وضع اختصاره في بدء تشغيل Windows ليعمل دائماً).
+          </li>
+          <li>
+            من تبويب «الكاميرات» أضف كل كاميرا: اختر نوع الجهاز واكتب عنوان IP ورقم القناة
+            واسم المستخدم وكلمة المرور، وفعّل «الكشف الآلي»، ثم اضغط «فحص الآن».
+          </li>
+          <li>
+            أول لقطة سليمة تُعتمد زاويةً مرجعية تلقائياً؛ وأي تحريك للكاميرا بعدها يُنبَّه عنه.
+            ويمكن إعادة اعتماد الزاوية من زر «اعتماد الزاوية».
+          </li>
+        </ol>
+        <p class="hint">
+          ما يكشفه النظام آلياً حسب منطقة الكاميرا: الكاميرا المتوقفة أو المغطاة أو المحرّكة،
+          الدرج النقدي المفتوح بلا عميل، الانشغال بالجوال، ترك المحطة، التجمعات، مخالفات
+          النظافة والزي، رمي الطعام، العميل المنتظر بلا خدمة أكثر من الحد، الدخول للمستودع
+          خارج ساعات العمل، وحمل بضاعة خارج المستودع أو من الباب الخلفي. كل اشتباه يبقى
+          «يحتاج مراجعة» حتى تراجعه أنت أو من تخوّله، والنظام لا يتعرّف على الوجوه، ويوقف
+          الكشف فوراً إن ظهر في الكاميرا مكان خاص.
+        </p>
+        <p class="hint">
+          كل لقطة تُحلَّل تُحتسب من رصيد الذكاء الاصطناعي في حساب Netlify؛ كلما قلّت مدة
+          «التحليل كل» زادت سرعة الكشف وزادت التكلفة.
         </p>
       </section>
     </main>

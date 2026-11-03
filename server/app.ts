@@ -32,6 +32,7 @@ import { peopleRouter } from "./routes/people.js";
 import { kioskRouter } from "./routes/kiosk.js";
 import { reportsRouter } from "./routes/reports.js";
 import { settingsRouter } from "./routes/settings.js";
+import { surveillanceRouter } from "./routes/surveillance.js";
 import { ensureSeeded } from "./seed.js";
 import {
   getAutoCloseHour,
@@ -60,6 +61,8 @@ export function createApp() {
 
   app.disable("x-powered-by");
   // الحد مرفوع إلى 1MB لأن شعار الشركة يُرسل كـData URL داخل JSON.
+  // لقطات الكاميرات من جهاز الربط أكبر من بقية الطلبات (حد دوال Netlify 6MB)
+  app.use("/api/surveillance/snapshots", express.json({ limit: "6mb" }));
   app.use(express.json({ limit: "1mb" }));
 
   /** فحص جاهزية لا يعتمد على قاعدة البيانات. */
@@ -444,6 +447,7 @@ export function createApp() {
   // النقدية والخزينة: المصاريف، المتبقي، التسويات، وإقفال الشهر
   app.use("/api", financeRouter);
   app.use("/api", accessRouter);
+  app.use("/api", surveillanceRouter);
 
   app.use("/api", (_req: Request, res: Response) => {
     res.status(404).json({ ok: false, error: "المسار غير موجود" });
