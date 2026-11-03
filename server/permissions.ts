@@ -97,6 +97,19 @@ export const PERMISSIONS = {
   cashRemainingView: "cash_remaining.view",
   /** الرصيد النقدي الشهري المتراكم أسفل أرقام اليوم في صفحة التقفيل */
   cashMonthlyBalanceView: "cash_monthly_balance.view",
+
+  /* ── الرقابة والكاميرات ─────────────────────────────────────── */
+  /** عرض التنبيهات والكاميرات والتقرير اليومي */
+  surveillanceRead: "surveillance.read",
+  /** تسجيل تنبيه/ملاحظة/هدر/طلب/حدث كاشير/فحص كاميرا */
+  surveillanceWrite: "surveillance.write",
+  /** إدارة الكاميرات والحدود المعتمدة وإصدار التقرير اليومي */
+  surveillanceManage: "surveillance.manage",
+  /** المراجعة البشرية: تأكيد التنبيه أو استبعاده */
+  surveillanceReview: "surveillance.review",
+  /** حذف سجلات الرقابة */
+  surveillanceDelete: "surveillance.delete",
+  sectionSurveillance: "sections.surveillance",
 } as const;
 
 export const PERMISSION_CATALOG: Array<{ code: string; description: string }> = [
@@ -189,6 +202,12 @@ export const PERMISSION_CATALOG: Array<{ code: string; description: string }> = 
     code: PERMISSIONS.cashMonthlyBalanceView,
     description: "رؤية الرصيد النقدي الشهري داخل صفحة التقفيل",
   },
+  { code: PERMISSIONS.surveillanceRead, description: "عرض تنبيهات الرقابة والكاميرات والتقرير اليومي" },
+  { code: PERMISSIONS.surveillanceWrite, description: "تسجيل تنبيهات وملاحظات الرقابة" },
+  { code: PERMISSIONS.surveillanceManage, description: "إدارة الكاميرات وحدود الرقابة وإصدار التقرير اليومي" },
+  { code: PERMISSIONS.surveillanceReview, description: "المراجعة البشرية لتنبيهات الرقابة وحسمها" },
+  { code: PERMISSIONS.surveillanceDelete, description: "حذف سجلات الرقابة" },
+  { code: PERMISSIONS.sectionSurveillance, description: "رؤية شاشة الرقابة والكاميرات" },
 ];
 
 /**
@@ -1019,6 +1038,35 @@ export const MODULE_CATALOG: AccessModule[] = [
       },
     ],
   },
+  /* ── الرقابة والكاميرات ─────────────────────────────────────── */
+  {
+    key: "surveillance",
+    label: "الرقابة والكاميرات",
+    hint: "تنبيهات الكاميرات ونقطة البيع، الهدر، أوقات التجهيز، والتقرير اليومي",
+    group: "الرقابة",
+    levels: [
+      {
+        level: 1,
+        codes: [P.surveillanceRead, P.sectionSurveillance],
+        hint: "عرض التنبيهات والكاميرات والتقارير",
+      },
+      {
+        level: 2,
+        codes: [P.surveillanceWrite],
+        hint: "تسجيل تنبيه أو هدر أو طلب أو فحص كاميرا",
+      },
+      {
+        level: 3,
+        codes: [P.surveillanceManage],
+        hint: "إدارة الكاميرات والحدود المعتمدة وإصدار التقرير اليومي",
+      },
+      {
+        level: 4,
+        codes: [P.surveillanceReview],
+        hint: "مراجعة التنبيهات وتأكيدها أو استبعادها",
+      },
+    ],
+  },
 ];
 
 export const MODULE_INDEX = new Map(MODULE_CATALOG.map((item) => [item.key, item]));
@@ -1077,6 +1125,7 @@ export const MODULE_DELETE_GRADE: Record<string, { codes: string[]; hint: string
     codes: [P.settlementsManage],
     hint: "حذف دفعة أُدخلت خطأً — مستقلة عن حذف التسوية نفسها",
   },
+  surveillance: { codes: [P.surveillanceDelete], hint: "حذف سجل رقابة أُدخل خطأً" },
 };
 
 /** هل لهذا البند خانة حذف أصلاً؟ */

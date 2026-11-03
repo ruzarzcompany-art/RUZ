@@ -545,6 +545,8 @@ const ADMIN_PERMISSIONS = [
   "inventory.write",
   "documents.print",
   "settings.manage",
+  // فريق الرقابة والكاميرات يدخل لشاشة الرقابة فقط
+  "surveillance.read",
 ];
 
 async function loadProfile() {

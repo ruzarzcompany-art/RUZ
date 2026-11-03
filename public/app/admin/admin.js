@@ -50,6 +50,7 @@ import { initSettingsModule, refreshSettingsPanel } from "./settings.js";
 import { initCashierModule, refreshCashierPanel } from "./cashier.js";
 import { initCashboxModule, refreshCashboxPanel } from "./cashbox.js";
 import { initInventoryModule, refreshInventoryPanel } from "./inventory.js";
+import { initSurveillanceModule, refreshSurveillancePanel } from "./surveillance.js";
 import { initDocumentsModule, refreshDocumentsPanel } from "./documents.js";
 import { initAccessModule, refreshAccessPanel } from "./access.js";
 import { createPager } from "../pagination.js";
@@ -1078,6 +1079,7 @@ const PANEL_LOADERS = {
   cashier: refreshCashierPanel,
   cashbox: refreshCashboxPanel,
   inventory: refreshInventoryPanel,
+  surveillance: refreshSurveillancePanel,
   reports: async () => {
     fillPeopleSelects();
   },
@@ -1329,6 +1331,7 @@ const TAB_PERMISSIONS = {
     "sections.cash_book",
   ],
   inventory: ["inventory.read", "inventory.write", "sections.inventory"],
+  surveillance: ["surveillance.read", "sections.surveillance"],
   reports: ["reports.view", "sections.reports"],
   settings: ["settings.manage", "branches.manage", "sections.settings"],
   access: ["permissions.manage"],
@@ -1411,6 +1414,7 @@ async function boot() {
   initCashierModule({ can, levelOf, canDeleteIn });
   initCashboxModule({ can, levelOf, canDeleteIn });
   initInventoryModule({ can, levelOf, canDeleteIn });
+  initSurveillanceModule();
   initDocumentsModule({ can, levelOf, canDeleteIn });
   initAccessModule({ can });
   await loadPeopleMeta();

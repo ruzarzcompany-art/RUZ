@@ -451,6 +451,8 @@ const CASH_CLOSING_GRANTS: Array<{
   { moduleKey: "monthly_summary", level: 1, canDelete: false },
   { moduleKey: "monthly_carry_forward", level: 1, canDelete: false },
   { moduleKey: "monthly_reset", level: 1, canDelete: false },
+  // وحدة الرقابة والكاميرات: كاملة للأونر، ومنه تُمنح لمن يشاء
+  { moduleKey: "surveillance", level: 4, canDelete: true },
 ];
 
 /**

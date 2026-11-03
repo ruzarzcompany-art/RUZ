@@ -32,6 +32,7 @@ import { peopleRouter } from "./routes/people.js";
 import { kioskRouter } from "./routes/kiosk.js";
 import { reportsRouter } from "./routes/reports.js";
 import { settingsRouter } from "./routes/settings.js";
+import { surveillanceRouter } from "./routes/surveillance.js";
 import { ensureSeeded } from "./seed.js";
 import {
   getAutoCloseHour,
@@ -444,6 +445,7 @@ export function createApp() {
   // النقدية والخزينة: المصاريف، المتبقي، التسويات، وإقفال الشهر
   app.use("/api", financeRouter);
   app.use("/api", accessRouter);
+  app.use("/api", surveillanceRouter);
 
   app.use("/api", (_req: Request, res: Response) => {
     res.status(404).json({ ok: false, error: "المسار غير موجود" });
