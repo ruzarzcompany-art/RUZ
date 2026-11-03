@@ -30,6 +30,9 @@ const state = {
   editingCameraId: null,
   tab: "alerts",
   wired: false,
+  /** أعلى رقم تنبيه فوري رآه المستخدم — لإشعار التنبيهات الجديدة */
+  lastUrgentId: null,
+  timer: null,
 };
 
 const STATUS_BADGE = {
@@ -154,7 +157,11 @@ async function loadMeta() {
     el("sv-set-prep").value = meta.settings.defaultPrepMinutes;
     el("sv-set-wait").value = meta.settings.customerWaitMinutes;
     el("sv-set-pos").value = meta.settings.repeatPosThreshold;
+    el("sv-set-open").value = meta.settings.openTime;
+    el("sv-set-close").value = meta.settings.closeTime;
+    el("sv-set-emails").value = meta.settings.alertEmails;
   }
+  renderConnect();
   el("sv-webhook-note").textContent = meta.webhookEnabled
     ? "نقطة الاستقبال الآلية مفعّلة: يرسل نظام الكاميرات أو نقطة البيع أحداثه إلى /api/surveillance/webhook بالمفتاح السرّي."
     : "نقطة الاستقبال الآلية غير مفعّلة. لتفعيلها اضبط متغيّر البيئة SURVEILLANCE_WEBHOOK_SECRET في إعدادات Netlify.";
@@ -242,6 +249,7 @@ async function refreshAlerts() {
     );
     if (alert.isUrgent) typeCell.append(" ", badge("فوري", "badge--disputed"));
     if (alert.isSuspicion) typeCell.append(" ", badge("اشتباه يحتاج مراجعة", "badge--warn"));
+    if (alert.source === "auto") typeCell.append(" ", badge("كشف آلي", "badge--ok"));
 
     const people = [...(alert.employeeIds ?? []).map(employeeName), alert.peopleNote]
       .filter(Boolean)
@@ -258,6 +266,13 @@ async function refreshAlerts() {
 
     const actions = document.createElement("div");
     actions.className = "row row--wrap";
+    if (alert.source === "auto" && alert.clipRef.includes("لقطة #")) {
+      actions.append(
+        button("اللقطة", {
+          onClick: () => showFrame(`/surveillance/alerts/${alert.id}/frame`, spec?.label ?? alert.alertType),
+        }),
+      );
+    }
     if (state.access.canReview) {
       actions.append(button("مراجعة", { onClick: () => openReview(alert, spec) }));
     }
@@ -549,6 +564,41 @@ function renderCameras() {
       }
     }
 
+    const detection = document.createElement("div");
+    if (camera.autoDetect) {
+      detection.append(
+        badge(camera.connectionMode === "pull" ? "مفعّل — رابط عام" : "مفعّل — جهاز الربط", "badge--ok"),
+        document.createElement("br"),
+        document.createTextNode(`كل ${camera.intervalMinutes} د · آخر تحليل: ${formatDateTime(camera.lastAnalysisAt)}`),
+      );
+      if (camera.lastError) {
+        const err = document.createElement("small");
+        err.className = "hint";
+        err.textContent = camera.lastError;
+        detection.append(document.createElement("br"), err);
+      }
+    } else {
+      detection.append(badge("متوقف", "badge--submitted"));
+      if (camera.lastError) {
+        const err = document.createElement("small");
+        err.className = "hint";
+        err.textContent = ` ${camera.lastError}`;
+        detection.append(err);
+      }
+    }
+    if (camera.snapshotUrl) {
+      const tools = document.createElement("div");
+      tools.className = "row row--wrap";
+      if (state.access.canManage) {
+        tools.append(
+          button("فحص الآن", { onClick: (node) => testCamera(camera, node) }),
+          button("اعتماد الزاوية", { onClick: (node) => setReference(camera, node) }),
+        );
+      }
+      tools.append(button("آخر اللقطات", { onClick: () => showFrames(camera) }));
+      detection.append(tools);
+    }
+
     const actions = document.createElement("div");
     actions.className = "row row--wrap";
     if (state.access.canManage) actions.append(button("تعديل", { onClick: () => editCamera(camera) }));
@@ -573,6 +623,7 @@ function renderCameras() {
         status,
         formatDateTime(camera.lastCheckedAt),
         camera.blindSpots || "—",
+        detection,
         checks,
         actions,
       ]),
@@ -614,6 +665,14 @@ function editCamera(camera) {
   el("sv-camera-location").value = camera.location;
   el("sv-camera-blind").value = camera.blindSpots;
   el("sv-camera-notes").value = camera.notes;
+  el("sv-camera-auto").value = String(camera.autoDetect);
+  el("sv-camera-mode").value = camera.connectionMode;
+  el("sv-camera-brand").value = "custom";
+  el("sv-camera-url").value = camera.snapshotUrl;
+  el("sv-camera-user").value = camera.snapshotUsername;
+  el("sv-camera-pass").value = "";
+  el("sv-camera-pass").placeholder = camera.hasPassword ? "محفوظة — اتركها فارغة للإبقاء" : "تُحفظ مشفّرة";
+  el("sv-camera-interval").value = camera.intervalMinutes;
   el("sv-camera-submit").textContent = "حفظ التعديل";
   el("sv-camera-cancel").hidden = false;
   el("sv-camera-number").focus();
@@ -622,6 +681,7 @@ function editCamera(camera) {
 function resetCameraForm() {
   state.editingCameraId = null;
   el("sv-camera-form").reset();
+  el("sv-camera-pass").placeholder = "تُحفظ مشفّرة";
   el("sv-camera-submit").textContent = "إضافة كاميرا";
   el("sv-camera-cancel").hidden = true;
 }
@@ -638,6 +698,12 @@ async function submitCamera(event) {
     location: el("sv-camera-location").value,
     blindSpots: el("sv-camera-blind").value,
     notes: el("sv-camera-notes").value,
+    autoDetect: el("sv-camera-auto").value === "true",
+    connectionMode: el("sv-camera-mode").value,
+    snapshotUrl: el("sv-camera-url").value,
+    snapshotUsername: el("sv-camera-user").value,
+    snapshotPassword: el("sv-camera-pass").value,
+    intervalMinutes: el("sv-camera-interval").value,
   };
   const res = state.editingCameraId
     ? await api(`/surveillance/cameras/${state.editingCameraId}`, { method: "PATCH", body })
@@ -650,6 +716,155 @@ async function submitCamera(event) {
   result(state.editingCameraId ? "حُفظ تعديل الكاميرا." : "أُضيفت الكاميرا.", "ok");
   resetCameraForm();
   await refreshCamerasTab();
+}
+
+/** يبني رابط اللقطة من نوع الجهاز وعنوانه ورقم القناة. */
+function buildSnapshotUrl() {
+  const ip = el("sv-camera-ip").value.trim();
+  const channel = Math.max(1, Number(el("sv-camera-channel").value) || 1);
+  const brand = el("sv-camera-brand").value;
+  if (!ip || brand === "custom") return;
+  const host = /^https?:\/\//i.test(ip) ? ip.replace(/\/$/, "") : `http://${ip}`;
+  el("sv-camera-url").value =
+    brand === "hikvision"
+      ? `${host}/ISAPI/Streaming/channels/${channel}01/picture`
+      : `${host}/cgi-bin/snapshot.cgi?channel=${channel}`;
+}
+
+async function testCamera(camera, node) {
+  setBusy(node, true);
+  const res = await api(`/surveillance/cameras/${camera.id}/test`, { method: "POST" });
+  setBusy(node, false);
+  if (!res.ok) {
+    result(res.error, "error");
+    return;
+  }
+  if (res.queued) {
+    result(res.message, "ok");
+    return;
+  }
+  const r = res.result;
+  const stateText = { ok: "سليمة", covered: "مغطاة", dark: "سوداء", blurry: "غير واضحة", moved: "محرّكة", unreachable: "لا تستجيب", error: "فشل التحليل", private_area: "مكان خاص — أُوقف الكشف" };
+  result(
+    `${camera.cameraNumber}: ${stateText[r.cameraState] ?? r.cameraState}${r.error ? ` — ${r.error}` : ""} · ملاحظات: ${r.findings} · تنبيهات جديدة: ${r.alerts.length}${r.summary ? ` — ${r.summary}` : ""}`,
+    r.alerts.length || r.error ? "warn" : "ok",
+  );
+  if (r.frameId) await showFrame(`/surveillance/frames/${r.frameId}/image`, `فحص ${camera.cameraNumber}`);
+  await refreshCamerasTab();
+}
+
+async function setReference(camera, node) {
+  if (!confirm(`اعتماد آخر لقطة محفوظة للكاميرا ${camera.cameraNumber} زاويةً مرجعية؟`)) return;
+  setBusy(node, true);
+  const res = await api(`/surveillance/cameras/${camera.id}/reference`, { method: "POST" });
+  setBusy(node, false);
+  result(res.ok ? "اعتُمدت الزاوية المرجعية." : res.error, res.ok ? "ok" : "error");
+}
+
+function describeAnalysis(frame) {
+  const a = frame.analysis;
+  const parts = [`${formatDateTime(frame.capturedAt)} — حالة الكاميرا: ${frame.cameraState}`];
+  if (frame.error) parts.push(frame.error);
+  if (a?.summary) parts.push(a.summary);
+  if (a?.cameraNote) parts.push(a.cameraNote);
+  for (const f of a?.findings ?? []) {
+    parts.push(`• ${f.description}${f.people ? ` (${f.people})` : ""} — ثقة ${labels().confidence?.[f.confidence] ?? f.confidence}`);
+  }
+  return parts.join("\n");
+}
+
+async function showFrame(path, title) {
+  const res = await api(path);
+  if (!res.ok) {
+    result(res.error, "error");
+    return;
+  }
+  el("sv-frame-title").textContent = title;
+  el("sv-frame-img").hidden = !res.image;
+  if (res.image) el("sv-frame-img").src = res.image;
+  el("sv-frame-text").textContent = res.image
+    ? describeAnalysis(res.frame)
+    : `${describeAnalysis(res.frame)}\n(لم تُحفظ صورة لهذه اللقطة)`;
+  el("sv-frame-text").style.whiteSpace = "pre-line";
+  el("sv-frame-viewer").hidden = false;
+  el("sv-frame-viewer").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function showFrames(camera) {
+  const res = await api(`/surveillance/frames?cameraId=${camera.id}&limit=20`);
+  if (!res.ok) {
+    result(res.error, "error");
+    return;
+  }
+  el("sv-frame-title").textContent = `آخر لقطات ${camera.cameraNumber}`;
+  el("sv-frame-img").hidden = true;
+  const text = el("sv-frame-text");
+  text.textContent = "";
+  text.style.whiteSpace = "pre-line";
+  if (!res.frames.length) text.textContent = "لا توجد لقطات بعد.";
+  for (const frame of res.frames) {
+    const line = document.createElement("div");
+    line.textContent = describeAnalysis(frame);
+    if (frame.hasImage) {
+      line.append(" ", button("عرض", { onClick: () => showFrame(`/surveillance/frames/${frame.id}/image`, `${camera.cameraNumber}`) }));
+    }
+    line.style.marginBottom = "8px";
+    text.append(line);
+  }
+  el("sv-frame-viewer").hidden = false;
+  el("sv-frame-viewer").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderConnect() {
+  const meta = state.meta;
+  if (!meta) return;
+  el("sv-connect-url").textContent = meta.siteUrl || location.origin;
+  const box = el("sv-connect-status");
+  box.textContent = "";
+  const auto = state.cameras.filter((c) => c.autoDetect);
+  const live = auto.filter((c) => c.lastAnalysisAt && Date.now() - new Date(c.lastAnalysisAt).getTime() < 30 * 60_000);
+  box.append(
+    badge(meta.webhookEnabled ? "المفتاح السري مضبوط" : "المفتاح السري غير مضبوط بعد", meta.webhookEnabled ? "badge--ok" : "badge--disputed"),
+    badge(`كاميرات بالكشف الآلي: ${auto.length}`, auto.length ? "badge--ok" : "badge--warn"),
+    badge(`تصل لقطاتها الآن: ${live.length}`, live.length ? "badge--ok" : "badge--warn"),
+    badge(`نموذج التحليل: ${meta.visionModel}`, "badge--submitted"),
+  );
+}
+
+/* ── التحديث التلقائي والإشعار ─────────────────────────────────── */
+
+async function pollUrgent() {
+  if (el("panel-surveillance").hidden || document.hidden) return;
+  const res = await api(`/surveillance/alerts?branchId=${branchId()}&from=${todayIso()}&to=${todayIso()}&urgent=1`);
+  if (!res.ok) return;
+  const newest = res.alerts.reduce((max, a) => Math.max(max, a.id), 0);
+  if (state.lastUrgentId !== null && newest > state.lastUrgentId) {
+    const fresh = res.alerts.filter((a) => a.id > state.lastUrgentId);
+    const types = new Map((state.meta?.alertTypes ?? []).map((t) => [t.key, t.label]));
+    const text = fresh.map((a) => `${types.get(a.alertType) ?? a.alertType}${a.cameraNumber ? ` — ${a.cameraNumber}` : ""}`).join("\n");
+    result(`تنبيه فوري جديد:\n${text}`, "warn");
+    if ("Notification" in window && Notification.permission === "granted") {
+      new Notification("تنبيه فوري — الرقابة والكاميرات", { body: text, icon: "/app/icon.svg" });
+    }
+    await loadCameras();
+    await Promise.all([renderSummary(), showTab(state.tab)]);
+  }
+  state.lastUrgentId = Math.max(state.lastUrgentId ?? 0, newest);
+}
+
+function startPolling() {
+  if (state.timer) return;
+  state.timer = setInterval(() => pollUrgent().catch(() => undefined), 60_000);
+  el("sv-live-note").textContent = "الشاشة تتحدّث تلقائياً كل دقيقة وتُشعرك بأي تنبيه فوري جديد.";
+  if ("Notification" in window && Notification.permission === "default") {
+    const ask = button("تفعيل إشعارات المتصفح", {
+      onClick: async (node) => {
+        await Notification.requestPermission();
+        node.remove();
+      },
+    });
+    el("sv-live-note").append(" ", ask);
+  }
 }
 
 /* ── الحدود المعتمدة ───────────────────────────────────────────── */
@@ -686,6 +901,9 @@ async function submitSettings(event) {
       defaultPrepMinutes: el("sv-set-prep").value,
       customerWaitMinutes: el("sv-set-wait").value,
       repeatPosThreshold: el("sv-set-pos").value,
+      openTime: el("sv-set-open").value,
+      closeTime: el("sv-set-close").value,
+      alertEmails: el("sv-set-emails").value,
     },
   });
   result(res.ok ? "حُفظت الحدود." : res.error, res.ok ? "ok" : "error");
@@ -924,6 +1142,7 @@ const TAB_LOADERS = {
   cameras: async () => renderCameras(),
   report: () => loadReport(),
   limits: async () => renderTargets(),
+  connect: async () => renderConnect(),
 };
 
 async function showTab(tab) {
@@ -980,6 +1199,13 @@ function wire() {
   el("sv-waste-form").addEventListener("submit", submitWaste);
   el("sv-camera-form").addEventListener("submit", submitCamera);
   el("sv-camera-cancel").addEventListener("click", resetCameraForm);
+  for (const id of ["sv-camera-brand", "sv-camera-ip", "sv-camera-channel"]) {
+    el(id).addEventListener("input", buildSnapshotUrl);
+    el(id).addEventListener("change", buildSnapshotUrl);
+  }
+  el("sv-frame-close").addEventListener("click", () => {
+    el("sv-frame-viewer").hidden = true;
+  });
   el("sv-settings-form").addEventListener("submit", submitSettings);
   el("sv-target-form").addEventListener("submit", submitTarget);
   el("sv-report-generate").addEventListener("click", generateReport);
@@ -995,4 +1221,7 @@ export async function refreshSurveillancePanel() {
   wire();
   if (!state.meta && !(await loadMeta())) return;
   await refreshAll();
+  renderConnect();
+  startPolling();
+  await pollUrgent().catch(() => undefined);
 }

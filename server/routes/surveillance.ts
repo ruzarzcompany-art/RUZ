@@ -34,6 +34,7 @@ import {
   surveillanceCameraChecks,
   surveillanceCameras,
   surveillanceDailyReports,
+  surveillanceFrames,
   surveillanceOrders,
   surveillancePosEvents,
   surveillancePrepTargets,
@@ -41,6 +42,8 @@ import {
   surveillanceWaste,
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
+import { encryptString } from "../crypto.js";
+import { agentJobs, fetchSnapshot, loadImage, processFrame, cameraPassword, VISION_MODEL } from "../vision.js";
 import { clientIp, recordAudit } from "../audit.js";
 import {
   PERMISSIONS,
@@ -265,7 +268,7 @@ const WASTE_REASONS = [
   "other",
 ] as const;
 
-const LABELS = {
+export const LABELS = {
   roles: { gm: "المدير العام", warehouse: "مدير المستودعات", camera: "مراقب الكاميرات" },
   confidence: { high: "عالية", medium: "متوسطة", low: "منخفضة" },
   statuses: {
@@ -333,21 +336,21 @@ const FORBIDDEN_AR = [
 const FORBIDDEN_EN = /\b(toilet|toilets|restroom|restrooms|bathroom|bathrooms|wc|washroom|locker|lockers|changing|prayer|mosque|break ?room)\b/i;
 
 /** هل يشير النص إلى مكان خاص يُمنع رصده؟ */
-function isPrivateArea(...texts: Array<string | null | undefined>): boolean {
+export function isPrivateArea(...texts: Array<string | null | undefined>): boolean {
   return texts.some((text) => {
     if (!text) return false;
     return FORBIDDEN_AR.some((word) => text.includes(word)) || FORBIDDEN_EN.test(text);
   });
 }
 
-const PRIVACY_ERROR =
+export const PRIVACY_ERROR =
   "لا يُسمح برصد دورات المياه أو غرف تبديل الملابس أو أماكن الصلاة أو الاستراحة الخاصة.";
 
 /* ── أدوات مساعدة ─────────────────────────────────────────────── */
 
 type BranchRow = typeof branches.$inferSelect;
 
-async function loadBranch(branchId: number | null): Promise<BranchRow | null> {
+export async function loadBranch(branchId: number | null): Promise<BranchRow | null> {
   if (branchId === null) return null;
   const db = getDb();
   const [branch] = await db.select().from(branches).where(eq(branches.id, branchId));
@@ -388,7 +391,7 @@ function asIdList(value: unknown): number[] {
   return [...new Set(ids)].slice(0, 30);
 }
 
-async function settingsFor(branchId: number) {
+export async function settingsFor(branchId: number) {
   const db = getDb();
   const [row] = await db
     .select()
@@ -399,6 +402,9 @@ async function settingsFor(branchId: number) {
     defaultPrepMinutes: row?.defaultPrepMinutes ?? 15,
     customerWaitMinutes: row?.customerWaitMinutes ?? 10,
     repeatPosThreshold: row?.repeatPosThreshold ?? 3,
+    openTime: row?.openTime ?? "06:00",
+    closeTime: row?.closeTime ?? "02:00",
+    alertEmails: row?.alertEmails ?? "",
   };
 }
 
@@ -421,7 +427,7 @@ async function cameraInBranch(cameraId: number | null, branchId: number) {
   return camera ?? null;
 }
 
-async function cameraByNumber(branchId: number, cameraNumber: string | null) {
+export async function cameraByNumber(branchId: number, cameraNumber: string | null) {
   if (!cameraNumber) return null;
   const db = getDb();
   const [camera] = await db
@@ -446,7 +452,7 @@ async function employeeByCode(code: string | null): Promise<number | null> {
   return row?.id ?? null;
 }
 
-class InputError extends Error {}
+export class InputError extends Error {}
 
 /* ── إنشاء التنبيه (مشترك بين الإدخال اليدوي والآلي والـWebhook) ─── */
 
@@ -473,7 +479,7 @@ const LOW_CONFIDENCE_NOTE = "الثقة منخفضة: مطلوب مراجعة ب
 const SUSPICION_NOTE =
   "اشتباه يحتاج مراجعة — ليس حكماً نهائياً، ولا يُتّخذ إجراء ضد موظف قبل مراجعة المالك أو المدير للمقطع.";
 
-async function createAlert(input: AlertInput) {
+export async function createAlert(input: AlertInput) {
   const spec = ALERT_TYPES[input.alertType];
   if (!spec) throw new InputError("نوع الحالة غير معروف");
   if (isPrivateArea(input.location, input.details)) throw new InputError(PRIVACY_ERROR);
@@ -535,7 +541,7 @@ async function createAlert(input: AlertInput) {
 }
 
 /** مرجع المقطع الافتراضي: رقم الكاميرا + التاريخ + الوقت بالثانية. */
-function defaultClipRef(cameraNumber: string | null | undefined, at: Date, timeZone: string) {
+export function defaultClipRef(cameraNumber: string | null | undefined, at: Date, timeZone: string) {
   if (!cameraNumber) return "";
   const p = wallPartsInZone(at, safeTimeZone(timeZone));
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -1259,6 +1265,8 @@ surveillanceRouter.get("/surveillance/meta", ...canRead, async (req: AuthedReque
     alertTypes: ALERT_TYPE_KEYS.map((key) => ({ key, ...ALERT_TYPES[key] })),
     labels: LABELS,
     webhookEnabled: Boolean(process.env.SURVEILLANCE_WEBHOOK_SECRET),
+    visionModel: VISION_MODEL,
+    siteUrl: process.env.URL ?? "",
     access: {
       canWrite: await hasModuleLevel(req, MODULE, 2),
       canManage: await hasModuleLevel(req, MODULE, 3),
@@ -1282,10 +1290,23 @@ surveillanceRouter.get("/surveillance/cameras", ...canRead, async (req: AuthedRe
     .from(surveillanceCameras)
     .where(eq(surveillanceCameras.branchId, branchId))
     .orderBy(asc(surveillanceCameras.cameraNumber));
-  res.json({ ok: true, cameras });
+  res.json({ ok: true, cameras: cameras.map(publicCamera) });
 });
 
-function cameraFields(body: Record<string, unknown>) {
+type CameraRecord = typeof surveillanceCameras.$inferSelect;
+
+/** الكاميرا كما تُعرض — بلا كلمة المرور المشفّرة. */
+function publicCamera(camera: CameraRecord) {
+  const { snapshotPasswordEnc, ...rest } = camera;
+  return { ...rest, hasPassword: snapshotPasswordEnc !== "" };
+}
+
+const CONNECTION_MODES = ["agent", "pull"] as const;
+
+function cameraFields(body: Record<string, unknown>, before?: CameraRecord) {
+  const interval = asNumber(body.intervalMinutes);
+  const password = typeof body.snapshotPassword === "string" ? body.snapshotPassword : "";
+  const snapshotUrl = asString(body.snapshotUrl, 500) ?? before?.snapshotUrl ?? "";
   return {
     name: asString(body.name, 150) ?? "",
     zone: asEnum(body.zone, ZONES),
@@ -1293,7 +1314,31 @@ function cameraFields(body: Record<string, unknown>) {
     blindSpots: asString(body.blindSpots, 1000) ?? "",
     notes: asString(body.notes, 1000) ?? "",
     isActive: asBool(body.isActive) ?? true,
+    autoDetect: asBool(body.autoDetect) ?? before?.autoDetect ?? false,
+    connectionMode: asEnum(body.connectionMode, CONNECTION_MODES) ?? before?.connectionMode ?? "agent",
+    snapshotUrl,
+    snapshotUsername: asString(body.snapshotUsername, 100) ?? before?.snapshotUsername ?? "",
+    snapshotPasswordEnc:
+      body.clearPassword === true
+        ? ""
+        : password
+          ? encryptString(password.slice(0, 200))
+          : (before?.snapshotPasswordEnc ?? ""),
+    intervalMinutes:
+      interval !== null && interval >= 1 && interval <= 120
+        ? Math.round(interval)
+        : (before?.intervalMinutes ?? 5),
   };
+}
+
+function cameraFieldsError(fields: ReturnType<typeof cameraFields>): string | null {
+  if (fields.snapshotUrl && !/^https?:\/\//i.test(fields.snapshotUrl)) {
+    return "رابط اللقطة يجب أن يبدأ بـ http:// أو https://";
+  }
+  if (fields.autoDetect && !fields.snapshotUrl) {
+    return "أدخل رابط لقطة الكاميرا لتشغيل الكشف الآلي";
+  }
+  return null;
 }
 
 surveillanceRouter.post("/surveillance/cameras", ...canManage, async (req: AuthedRequest, res: Response) => {
@@ -1317,6 +1362,11 @@ surveillanceRouter.post("/surveillance/cameras", ...canManage, async (req: Authe
     res.status(400).json({ ok: false, error: PRIVACY_ERROR });
     return;
   }
+  const fieldsError = cameraFieldsError(fields);
+  if (fieldsError) {
+    res.status(400).json({ ok: false, error: fieldsError });
+    return;
+  }
   const db = getDb();
   const [existing] = await db
     .select({ id: surveillanceCameras.id })
@@ -1337,10 +1387,10 @@ surveillanceRouter.post("/surveillance/cameras", ...canManage, async (req: Authe
     action: "surveillance.camera_create",
     entityType: "surveillance_camera",
     entityId: camera.id,
-    after: camera,
+    after: publicCamera(camera),
     ipAddress: clientIp(req),
   });
-  res.status(201).json({ ok: true, camera });
+  res.status(201).json({ ok: true, camera: publicCamera(camera) });
 });
 
 surveillanceRouter.patch(
@@ -1357,10 +1407,15 @@ surveillanceRouter.patch(
       return;
     }
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const fields = cameraFields(body);
+    const fields = cameraFields(body, before);
     const cameraNumber = asString(body.cameraNumber, 50) || before.cameraNumber;
     if (isPrivateArea(cameraNumber, fields.name, fields.location)) {
       res.status(400).json({ ok: false, error: PRIVACY_ERROR });
+      return;
+    }
+    const fieldsError = cameraFieldsError(fields);
+    if (fieldsError) {
+      res.status(400).json({ ok: false, error: fieldsError });
       return;
     }
     if (cameraNumber !== before.cameraNumber) {
@@ -1388,11 +1443,11 @@ surveillanceRouter.patch(
       action: "surveillance.camera_update",
       entityType: "surveillance_camera",
       entityId: camera.id,
-      before,
-      after: camera,
+      before: publicCamera(before),
+      after: publicCamera(camera),
       ipAddress: clientIp(req),
     });
-    res.json({ ok: true, camera });
+    res.json({ ok: true, camera: publicCamera(camera) });
   },
 );
 
@@ -1414,7 +1469,7 @@ surveillanceRouter.delete(
       action: "surveillance.camera_delete",
       entityType: "surveillance_camera",
       entityId: deleted.id,
-      before: deleted,
+      before: publicCamera(deleted),
       ipAddress: clientIp(req),
     });
     res.json({ ok: true });
@@ -1812,10 +1867,28 @@ surveillanceRouter.put("/surveillance/settings", ...canManage, async (req: Authe
     res.status(400).json({ ok: false, error: "أدخل قيماً موجبة لكل الحدود" });
     return;
   }
+  const hhmm = /^([01]\d|2[0-3]):[0-5]\d$/;
+  const current = await settingsFor(branch.id);
+  const openTime = asString(body.openTime, 5) || current.openTime;
+  const closeTime = asString(body.closeTime, 5) || current.closeTime;
+  if (!hhmm.test(openTime) || !hhmm.test(closeTime)) {
+    res.status(400).json({ ok: false, error: "ساعات العمل بصيغة HH:MM" });
+    return;
+  }
+  const alertEmails =
+    body.alertEmails === undefined
+      ? current.alertEmails
+      : (asString(body.alertEmails, 500) ?? "")
+          .split(/[,،\s]+/)
+          .filter((item) => item.includes("@"))
+          .join(", ");
   const values = {
     defaultPrepMinutes,
     customerWaitMinutes,
     repeatPosThreshold: Math.round(repeatPosThreshold),
+    openTime,
+    closeTime,
+    alertEmails,
     updatedAt: new Date(),
   };
   const db = getDb();
@@ -1907,7 +1980,7 @@ surveillanceRouter.post("/surveillance/daily-report", ...canManage, async (req: 
 
 /* ── نقطة الاستقبال الآلية (NVR / نقطة البيع) ─────────────────── */
 
-function webhookAuthorized(req: Request): boolean {
+export function webhookAuthorized(req: Request): boolean {
   const secret = process.env.SURVEILLANCE_WEBHOOK_SECRET;
   if (!secret) return false;
   const header = req.headers["x-surveillance-key"];
@@ -2000,4 +2073,213 @@ surveillanceRouter.post("/surveillance/webhook", async (req: Request, res: Respo
   }
 
   res.json({ ok: results.every((r) => r.ok), results });
+});
+
+/* ══ الكشف الآلي: الفحص الفوري، الزاوية المرجعية، اللقطات، جهاز الربط ══ */
+
+async function cameraWithBranch(id: number | null) {
+  if (id === null) return null;
+  const db = getDb();
+  const [row] = await db
+    .select({ camera: surveillanceCameras, branch: branches })
+    .from(surveillanceCameras)
+    .innerJoin(branches, eq(branches.id, surveillanceCameras.branchId))
+    .where(eq(surveillanceCameras.id, id));
+  return row ?? null;
+}
+
+/** فحص فوري: الخادم يجلب اللقطة (pull) أو يطلبها من جهاز الربط في دورته التالية. */
+surveillanceRouter.post(
+  "/surveillance/cameras/:id/test",
+  ...canManage,
+  async (req: AuthedRequest, res: Response) => {
+    const row = await cameraWithBranch(asId(req.params.id));
+    if (!row) {
+      res.status(404).json({ ok: false, error: "الكاميرا غير موجودة" });
+      return;
+    }
+    const { camera, branch } = row;
+    if (!camera.snapshotUrl) {
+      res.status(400).json({ ok: false, error: "أدخل رابط لقطة الكاميرا أولاً" });
+      return;
+    }
+    const db = getDb();
+    if (camera.connectionMode === "agent") {
+      await db
+        .update(surveillanceCameras)
+        .set({ lastAnalysisAt: null })
+        .where(eq(surveillanceCameras.id, camera.id));
+      res.json({
+        ok: true,
+        queued: true,
+        message: "طُلبت لقطة من جهاز الربط — تظهر النتيجة خلال دقيقة إن كان الجهاز يعمل.",
+      });
+      return;
+    }
+    let image: { data: Buffer; contentType: string } | null = null;
+    let error = "";
+    try {
+      image = await fetchSnapshot(camera.snapshotUrl, camera.snapshotUsername, cameraPassword(camera));
+    } catch (failure) {
+      error = failure instanceof Error ? failure.message : String(failure);
+    }
+    const result = await processFrame({ camera, branch, image, error, source: "test" });
+    res.json({ ok: true, result });
+  },
+);
+
+/** اعتماد آخر لقطة سليمة زاويةً مرجعية لكشف تحريك الكاميرا. */
+surveillanceRouter.post(
+  "/surveillance/cameras/:id/reference",
+  ...canManage,
+  async (req: AuthedRequest, res: Response) => {
+    const id = asId(req.params.id);
+    const db = getDb();
+    const [frame] = id
+      ? await db
+          .select()
+          .from(surveillanceFrames)
+          .where(
+            and(
+              eq(surveillanceFrames.cameraId, id),
+              sql`${surveillanceFrames.imageKey} <> ''`,
+            ),
+          )
+          .orderBy(desc(surveillanceFrames.capturedAt))
+          .limit(1)
+      : [];
+    if (!frame) {
+      res.status(400).json({ ok: false, error: "لا توجد لقطة محفوظة لهذه الكاميرا بعد — شغّل فحصاً أولاً" });
+      return;
+    }
+    await db
+      .update(surveillanceCameras)
+      .set({ referenceKey: frame.imageKey, updatedAt: new Date() })
+      .where(eq(surveillanceCameras.id, id!));
+    await recordAudit({
+      actorEmployeeId: req.employee!.id,
+      action: "surveillance.camera_reference",
+      entityType: "surveillance_camera",
+      entityId: id,
+      after: { frameId: frame.id },
+      ipAddress: clientIp(req),
+    });
+    res.json({ ok: true, frameId: frame.id });
+  },
+);
+
+function frameView(frame: typeof surveillanceFrames.$inferSelect) {
+  let analysis: unknown = null;
+  try {
+    analysis = frame.analysisJson ? JSON.parse(frame.analysisJson) : null;
+  } catch {
+    analysis = null;
+  }
+  const { analysisJson: _raw, ...rest } = frame;
+  return { ...rest, hasImage: frame.imageKey !== "", analysis };
+}
+
+surveillanceRouter.get("/surveillance/frames", ...canRead, async (req: AuthedRequest, res: Response) => {
+  const cameraId = asId(req.query.cameraId);
+  if (cameraId === null) {
+    res.status(400).json({ ok: false, error: "اختر الكاميرا" });
+    return;
+  }
+  const db = getDb();
+  const frames = await db
+    .select()
+    .from(surveillanceFrames)
+    .where(eq(surveillanceFrames.cameraId, cameraId))
+    .orderBy(desc(surveillanceFrames.capturedAt))
+    .limit(Math.min(asNumber(req.query.limit) ?? 30, 200));
+  res.json({ ok: true, frames: frames.map(frameView) });
+});
+
+async function frameImagePayload(frame: typeof surveillanceFrames.$inferSelect | undefined) {
+  if (!frame) return null;
+  const image = frame.imageKey ? await loadImage(frame.imageKey) : null;
+  return {
+    frame: frameView(frame),
+    image: image ? `data:${image.contentType};base64,${image.data.toString("base64")}` : null,
+  };
+}
+
+surveillanceRouter.get("/surveillance/frames/:id/image", ...canRead, async (req: AuthedRequest, res: Response) => {
+  const id = asId(req.params.id);
+  const db = getDb();
+  const [frame] = id ? await db.select().from(surveillanceFrames).where(eq(surveillanceFrames.id, id)) : [];
+  const payload = await frameImagePayload(frame);
+  if (!payload) {
+    res.status(404).json({ ok: false, error: "اللقطة غير موجودة" });
+    return;
+  }
+  res.json({ ok: true, ...payload });
+});
+
+/** لقطة الدليل المرتبطة بتنبيه آلي. */
+surveillanceRouter.get("/surveillance/alerts/:id/frame", ...canRead, async (req: AuthedRequest, res: Response) => {
+  const id = asId(req.params.id);
+  const db = getDb();
+  const [frame] = id
+    ? await db
+        .select()
+        .from(surveillanceFrames)
+        .where(sql`${id} = ANY(${surveillanceFrames.alertIds})`)
+        .orderBy(desc(surveillanceFrames.capturedAt))
+        .limit(1)
+    : [];
+  const payload = await frameImagePayload(frame);
+  if (!payload) {
+    res.status(404).json({ ok: false, error: "لا توجد لقطة مرتبطة بهذا التنبيه" });
+    return;
+  }
+  res.json({ ok: true, ...payload });
+});
+
+/* ── جهاز الربط داخل المطعم ── */
+
+function requireAgent(req: Request, res: Response): boolean {
+  if (!process.env.SURVEILLANCE_WEBHOOK_SECRET) {
+    res.status(503).json({ ok: false, error: "الربط الآلي غير مفعّل — اضبط SURVEILLANCE_WEBHOOK_SECRET" });
+    return false;
+  }
+  if (!webhookAuthorized(req)) {
+    res.status(401).json({ ok: false, error: "مفتاح غير صحيح" });
+    return false;
+  }
+  return true;
+}
+
+/** الكاميرات المستحقة للتصوير الآن، يسأل عنها جهاز الربط كل دقيقة تقريباً. */
+surveillanceRouter.get("/surveillance/agent/jobs", async (req: Request, res: Response) => {
+  if (!requireAgent(req, res)) return;
+  const branchCode = typeof req.query.branchCode === "string" ? req.query.branchCode : null;
+  res.json({ ok: true, serverTime: new Date().toISOString(), jobs: await agentJobs(branchCode) });
+});
+
+/** يستقبل لقطة (أو خطأ الوصول للكاميرا) من جهاز الربط ويحلّلها فوراً. */
+surveillanceRouter.post("/surveillance/snapshots", async (req: Request, res: Response) => {
+  if (!requireAgent(req, res)) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const row = await cameraWithBranch(asId(body.cameraId));
+  if (!row) {
+    res.status(404).json({ ok: false, error: "الكاميرا غير معروفة" });
+    return;
+  }
+  const base64 = typeof body.imageBase64 === "string" ? body.imageBase64.replace(/^data:[^,]+,/, "") : "";
+  const contentType = asString(body.contentType, 50) || "image/jpeg";
+  const image = base64 ? { data: Buffer.from(base64, "base64"), contentType } : null;
+  try {
+    const result = await processFrame({
+      camera: row.camera,
+      branch: row.branch,
+      image,
+      error: asString(body.error, 300) ?? "",
+      source: "agent",
+      capturedAt: asDateTime(body.capturedAt) ?? undefined,
+    });
+    res.json({ ok: true, result });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
 });

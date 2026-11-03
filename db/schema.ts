@@ -1517,6 +1517,24 @@ export const surveillanceCameras = pgTable(
     blindSpots: text("blind_spots").notNull().default(""),
     notes: text().notNull().default(""),
     isActive: boolean("is_active").notNull().default(true),
+    /* ── الكشف الآلي بالذكاء الاصطناعي ── */
+    /** تشغيل الكشف الآلي على هذه الكاميرا */
+    autoDetect: boolean("auto_detect").notNull().default(false),
+    /** agent = جهاز الربط داخل المطعم يجلب الصورة، pull = الخادم يجلبها من رابط عام */
+    connectionMode: text("connection_mode").notNull().default("agent"),
+    /** رابط لقطة الكاميرا (Snapshot) كما في جهاز التسجيل */
+    snapshotUrl: text("snapshot_url").notNull().default(""),
+    snapshotUsername: text("snapshot_username").notNull().default(""),
+    /** كلمة مرور الكاميرا مشفّرة AES-256-GCM */
+    snapshotPasswordEnc: text("snapshot_password_enc").notNull().default(""),
+    /** كل كم دقيقة تُحلَّل لقطة */
+    intervalMinutes: integer("interval_minutes").notNull().default(5),
+    /** مفتاح الصورة المرجعية (الزاوية المعتمدة) لكشف التحريك */
+    referenceKey: text("reference_key").notNull().default(""),
+    lastFrameAt: timestamp("last_frame_at", { withTimezone: true }),
+    lastAnalysisAt: timestamp("last_analysis_at", { withTimezone: true }),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    lastError: text("last_error").notNull().default(""),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1739,6 +1757,11 @@ export const surveillanceSettings = pgTable("surveillance_settings", {
   customerWaitMinutes: doublePrecision("customer_wait_minutes").notNull().default(10),
   /** عدد الإلغاءات/الخصومات/الاسترجاعات من نفس الكاشير في اليوم قبل التنبيه */
   repeatPosThreshold: integer("repeat_pos_threshold").notNull().default(3),
+  /** ساعات عمل الفرع (HH:MM) — الدخول للمستودع خارجها تنبيه فوري */
+  openTime: text("open_time").notNull().default("06:00"),
+  closeTime: text("close_time").notNull().default("02:00"),
+  /** بريد (أو أكثر مفصولة بفاصلة) يستلم التنبيهات الفورية */
+  alertEmails: text("alert_emails").notNull().default(""),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -1766,5 +1789,42 @@ export const surveillanceDailyReports = pgTable(
       table.branchId,
       table.businessDate,
     ),
+  ],
+);
+
+/**
+ * surveillance_frames — سجل كل لقطة حُلِّلت آلياً ونتيجة تحليلها.
+ * الصورة نفسها تُحفظ في Netlify Blobs فقط عند وجود ملاحظة أو خلل في
+ * الكاميرا (دليلاً للمراجعة)، واللقطات السليمة يُحفظ تحليلها بلا صورة.
+ */
+export const surveillanceFrames = pgTable(
+  "surveillance_frames",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    cameraId: integer("camera_id")
+      .notNull()
+      .references(() => surveillanceCameras.id, { onDelete: "cascade" }),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull().defaultNow(),
+    /** agent | pull | test */
+    source: text().notNull().default("agent"),
+    /** مفتاح الصورة في Blobs — فارغ إن لم تُحفظ */
+    imageKey: text("image_key").notNull().default(""),
+    /** ok | covered | dark | blurry | moved | unreachable | error */
+    cameraState: text("camera_state").notNull().default("ok"),
+    peopleCount: integer("people_count").notNull().default(0),
+    /** عملاء ينتظرون بلا خدمة في هذه اللقطة — لحساب مدة الانتظار عبر اللقطات */
+    waiting: boolean().notNull().default(false),
+    findingsCount: integer("findings_count").notNull().default(0),
+    analysisJson: text("analysis_json").notNull().default(""),
+    alertIds: integer("alert_ids").array().notNull().default(sql`'{}'::integer[]`),
+    error: text().notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("surveillance_frames_camera_time_idx").on(table.cameraId, table.capturedAt),
+    index("surveillance_frames_branch_time_idx").on(table.branchId, table.capturedAt),
   ],
 );

@@ -2300,8 +2300,19 @@
           <button class="tab" type="button" data-sv="cameras">الكاميرات</button>
           <button class="tab" type="button" data-sv="report">التقرير اليومي</button>
           <button class="tab" type="button" data-sv="limits">الحدود المعتمدة</button>
+          <button class="tab" type="button" data-sv="connect">ربط الكاميرات</button>
         </div>
         <p id="sv-result" class="alert" role="status" hidden></p>
+        <p id="sv-live-note" class="hint"></p>
+      </section>
+
+      <section class="card" id="sv-frame-viewer" hidden>
+        <div class="card__head">
+          <h3 class="card__title card__title--sm" id="sv-frame-title">لقطة الكاميرا</h3>
+          <button id="sv-frame-close" class="btn btn--ghost btn--xs" type="button">إغلاق</button>
+        </div>
+        <img id="sv-frame-img" alt="لقطة الكاميرا" style="max-width:100%;border-radius:8px" hidden />
+        <p id="sv-frame-text" class="hint"></p>
       </section>
 
       <!-- التنبيهات -->
@@ -2662,6 +2673,52 @@
             <span class="field__label">النقاط العمياء ومقترحات التغطية</span>
             <input id="sv-camera-blind" type="text" />
           </label>
+          <label class="field field--sm">
+            <span class="field__label">الكشف الآلي بالذكاء الاصطناعي</span>
+            <select id="sv-camera-auto">
+              <option value="true">مفعّل</option>
+              <option value="false">متوقف</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">طريقة الاتصال</span>
+            <select id="sv-camera-mode">
+              <option value="agent">جهاز الربط داخل المطعم (موصى به)</option>
+              <option value="pull">رابط عام على الإنترنت</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">نوع الجهاز</span>
+            <select id="sv-camera-brand">
+              <option value="hikvision">Hikvision</option>
+              <option value="dahua">Dahua</option>
+              <option value="custom">آخر / رابط مخصّص</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">عنوان IP للكاميرا أو جهاز التسجيل</span>
+            <input id="sv-camera-ip" type="text" placeholder="192.168.1.64" dir="ltr" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">رقم القناة</span>
+            <input id="sv-camera-channel" type="number" min="1" value="1" />
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">رابط اللقطة (Snapshot)</span>
+            <input id="sv-camera-url" type="text" dir="ltr" placeholder="http://192.168.1.64/ISAPI/Streaming/channels/101/picture" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">اسم مستخدم الجهاز</span>
+            <input id="sv-camera-user" type="text" dir="ltr" autocomplete="off" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">كلمة مرور الجهاز</span>
+            <input id="sv-camera-pass" type="password" dir="ltr" autocomplete="new-password" placeholder="تُحفظ مشفّرة" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">التحليل كل (دقيقة)</span>
+            <input id="sv-camera-interval" type="number" min="1" max="120" value="5" />
+          </label>
           <label class="field field--sm field--wide">
             <span class="field__label">ملاحظات</span>
             <input id="sv-camera-notes" type="text" />
@@ -2681,7 +2738,8 @@
                 <th>الحالة</th>
                 <th>آخر فحص</th>
                 <th>النقاط العمياء</th>
-                <th>الفحص اليومي</th>
+                <th>الكشف الآلي</th>
+                <th>الفحص اليدوي</th>
                 <th></th>
               </tr>
             </thead>
@@ -2723,6 +2781,18 @@
             <span class="field__label">حد الإلغاء/الخصم/الاسترجاع اليومي للكاشير</span>
             <input id="sv-set-pos" type="number" step="1" min="1" required />
           </label>
+          <label class="field field--sm">
+            <span class="field__label">بداية ساعات العمل</span>
+            <input id="sv-set-open" type="time" required />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">نهاية ساعات العمل</span>
+            <input id="sv-set-close" type="time" required />
+          </label>
+          <label class="field field--sm field--wide">
+            <span class="field__label">بريد استلام التنبيهات الفورية (أكثر من بريد يُفصل بفاصلة)</span>
+            <input id="sv-set-emails" type="text" dir="ltr" placeholder="owner@example.com" />
+          </label>
           <div class="row row--wrap">
             <button id="sv-settings-submit" class="btn btn--primary btn--sm" type="submit">حفظ الحدود</button>
           </div>
@@ -2751,6 +2821,50 @@
         </div>
         <p id="sv-targets-empty" class="empty" hidden>لا توجد حدود خاصة — يُطبَّق الحد الافتراضي.</p>
         <p id="sv-webhook-note" class="hint"></p>
+      </section>
+
+      <!-- ربط الكاميرات -->
+      <section class="card" data-sv-section="connect" hidden>
+        <h3 class="card__title card__title--sm">ربط الكاميرات بالكشف الآلي</h3>
+        <p id="sv-connect-status" class="row row--wrap"></p>
+        <ol class="hint">
+          <li>
+            في Netlify ← إعدادات المشروع ← Environment variables أضف المتغيّر
+            <code>SURVEILLANCE_WEBHOOK_SECRET</code> بقيمة سرية طويلة، ثم أعد النشر.
+          </li>
+          <li>
+            حمّل ملفات جهاز الربط وضعها على أي كمبيوتر داخل شبكة المطعم (نفس شبكة جهاز
+            التسجيل)، وثبّت عليه Node.js:
+            <a href="/app/downloads/camera-agent.mjs" download>camera-agent.mjs</a> ·
+            <a href="/app/downloads/config.example.json" download>config.example.json</a> ·
+            <a href="/app/downloads/start-windows.bat" download>start-windows.bat</a>
+          </li>
+          <li>
+            غيّر اسم <code>config.example.json</code> إلى <code>config.json</code>، وضع فيه
+            رابط البرنامج <code id="sv-connect-url"></code> والمفتاح السري نفسه، ثم شغّل
+            <code>start-windows.bat</code> (وضع اختصاره في بدء تشغيل Windows ليعمل دائماً).
+          </li>
+          <li>
+            من تبويب «الكاميرات» أضف كل كاميرا: اختر نوع الجهاز واكتب عنوان IP ورقم القناة
+            واسم المستخدم وكلمة المرور، وفعّل «الكشف الآلي»، ثم اضغط «فحص الآن».
+          </li>
+          <li>
+            أول لقطة سليمة تُعتمد زاويةً مرجعية تلقائياً؛ وأي تحريك للكاميرا بعدها يُنبَّه عنه.
+            ويمكن إعادة اعتماد الزاوية من زر «اعتماد الزاوية».
+          </li>
+        </ol>
+        <p class="hint">
+          ما يكشفه النظام آلياً حسب منطقة الكاميرا: الكاميرا المتوقفة أو المغطاة أو المحرّكة،
+          الدرج النقدي المفتوح بلا عميل، الانشغال بالجوال، ترك المحطة، التجمعات، مخالفات
+          النظافة والزي، رمي الطعام، العميل المنتظر بلا خدمة أكثر من الحد، الدخول للمستودع
+          خارج ساعات العمل، وحمل بضاعة خارج المستودع أو من الباب الخلفي. كل اشتباه يبقى
+          «يحتاج مراجعة» حتى تراجعه أنت أو من تخوّله، والنظام لا يتعرّف على الوجوه، ويوقف
+          الكشف فوراً إن ظهر في الكاميرا مكان خاص.
+        </p>
+        <p class="hint">
+          كل لقطة تُحلَّل تُحتسب من رصيد الذكاء الاصطناعي في حساب Netlify؛ كلما قلّت مدة
+          «التحليل كل» زادت سرعة الكشف وزادت التكلفة.
+        </p>
       </section>
     </main>
 

@@ -1,0 +1,6 @@
+{
+  "serverUrl": "https://ruzarzcompany.com",
+  "agentKey": "ضع هنا نفس قيمة SURVEILLANCE_WEBHOOK_SECRET",
+  "branchCode": "",
+  "pollSeconds": 30
+}

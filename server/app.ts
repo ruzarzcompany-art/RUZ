@@ -61,6 +61,8 @@ export function createApp() {
 
   app.disable("x-powered-by");
   // الحد مرفوع إلى 1MB لأن شعار الشركة يُرسل كـData URL داخل JSON.
+  // لقطات الكاميرات من جهاز الربط أكبر من بقية الطلبات (حد دوال Netlify 6MB)
+  app.use("/api/surveillance/snapshots", express.json({ limit: "6mb" }));
   app.use(express.json({ limit: "1mb" }));
 
   /** فحص جاهزية لا يعتمد على قاعدة البيانات. */
