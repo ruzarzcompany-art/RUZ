@@ -2301,6 +2301,7 @@
           <button class="tab" type="button" data-sv="report">التقرير اليومي</button>
           <button class="tab" type="button" data-sv="limits">الحدود المعتمدة</button>
           <button class="tab" type="button" data-sv="connect">ربط الكاميرات</button>
+          <button class="tab" type="button" data-sv="foodics">فوديكس والرقابة الثلاثية</button>
         </div>
         <p id="sv-result" class="alert" role="status" hidden></p>
         <p id="sv-live-note" class="hint"></p>
@@ -2853,6 +2854,54 @@
       </section>
 
       <!-- ربط الكاميرات -->
+      <!-- فوديكس والرقابة الثلاثية -->
+      <section class="card" data-sv-section="foodics" hidden>
+        <h3 class="card__title card__title--sm">الرقابة الثلاثية: الكاميرات + فوديكس + الجرد</h3>
+        <p id="fx-status" class="row row--wrap"></p>
+
+        <div data-sv-manage>
+          <form id="fx-token-form" class="form-grid">
+            <label class="field field--wide">
+              <span class="field__label">مفتاح API فوديكس (يُحفظ مشفّراً ولا يُعرض بعد الحفظ)</span>
+              <input id="fx-token" type="password" dir="ltr" autocomplete="off" placeholder="الصق المفتاح هنا" />
+            </label>
+            <div class="row row--wrap">
+              <button id="fx-token-save" class="btn btn--primary btn--sm" type="submit">حفظ المفتاح</button>
+              <button id="fx-test" class="btn btn--ghost btn--sm" type="button">اختبار الاتصال</button>
+            </div>
+          </form>
+          <form id="fx-branch-form" class="form-grid">
+            <label class="field field--sm">
+              <span class="field__label">فرع فوديكس المقابل لهذا الفرع</span>
+              <select id="fx-branch"><option value="">— غير مربوط —</option></select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">نافذة مطابقة الدرج مع الفاتورة (دقيقة)</span>
+              <input id="fx-window" type="number" min="1" max="30" step="1" value="3" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">الفرق المسموح بين التقفيل وفوديكس (ريال)</span>
+              <input id="fx-tolerance" type="number" min="0" step="any" value="5" />
+            </label>
+            <div class="row row--wrap">
+              <button id="fx-branch-save" class="btn btn--primary btn--sm" type="submit">حفظ الربط</button>
+              <button id="fx-sync" class="btn btn--ghost btn--sm" type="button">مزامنة الآن</button>
+            </div>
+          </form>
+          <p id="fx-fields" class="hint" hidden></p>
+        </div>
+
+        <div class="row row--wrap">
+          <button id="fx-report-load" class="btn btn--primary btn--sm" type="button">عرض تقرير اليوم المختار</button>
+        </div>
+        <div id="fx-report"></div>
+        <p class="hint">
+          المزامنة آلية كل 10 دقائق: الفواتير والإلغاءات والخصومات والمرتجعات وأوقات المطبخ والهدر
+          تُسحب من فوديكس مباشرة، ثم تُطابق مع فتح الدرج المرصود بالكاميرا، وتقفيل الكاشير، والجرد
+          اليدوي. كل ما يخرج من المطابقة يبقى «يحتاج مراجعة» ولا يُعدّ حكماً على أحد.
+        </p>
+      </section>
+
       <section class="card" data-sv-section="connect" hidden>
         <h3 class="card__title card__title--sm">ربط الكاميرات بالكشف الآلي</h3>
         <p id="sv-connect-status" class="row row--wrap"></p>

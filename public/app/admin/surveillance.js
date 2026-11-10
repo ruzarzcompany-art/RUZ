@@ -20,6 +20,7 @@ import {
   todayIso,
   toLocalInputValue,
 } from "../api.js";
+import { refreshFoodicsTab } from "./foodics.js";
 
 const state = {
   meta: null,
@@ -1192,6 +1193,7 @@ const TAB_LOADERS = {
   report: () => loadReport(),
   limits: async () => renderTargets(),
   connect: async () => renderConnect(),
+  foodics: () => refreshFoodicsTab(branchId(), day()),
 };
 
 async function showTab(tab) {
