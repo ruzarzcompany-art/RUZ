@@ -33,6 +33,7 @@ import { kioskRouter } from "./routes/kiosk.js";
 import { reportsRouter } from "./routes/reports.js";
 import { settingsRouter } from "./routes/settings.js";
 import { surveillanceRouter } from "./routes/surveillance.js";
+import { foodicsRouter } from "./routes/foodics.js";
 import { ensureSeeded } from "./seed.js";
 import {
   getAutoCloseHour,
@@ -448,6 +449,7 @@ export function createApp() {
   app.use("/api", financeRouter);
   app.use("/api", accessRouter);
   app.use("/api", surveillanceRouter);
+  app.use("/api", foodicsRouter);
 
   app.use("/api", (_req: Request, res: Response) => {
     res.status(404).json({ ok: false, error: "المسار غير موجود" });

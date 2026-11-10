@@ -43,7 +43,7 @@ import {
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { encryptString } from "../crypto.js";
-import { agentJobs, fetchSnapshot, loadImage, processFrame, cameraPassword, VISION_MODEL } from "../vision.js";
+import { agentJobs, fetchSnapshot, latestImageKey, loadImage, processFrame, cameraPassword, VISION_MODEL } from "../vision.js";
 import { clientIp, recordAudit } from "../audit.js";
 import {
   PERMISSIONS,
@@ -228,6 +228,30 @@ export const ALERT_TYPES: Record<string, AlertTypeSpec> = {
     severity: 2,
     action: "مراجعة وقت انتظاره وسبب التأخير.",
   },
+  fridge_door_open: {
+    label: "باب الثلاجة أو غرفة التبريد مفتوح",
+    role: "warehouse",
+    urgent: true,
+    suspicion: false,
+    severity: 1,
+    action: "إغلاق الباب فوراً، وفحص حرارة الأصناف، وتحديد من تركه مفتوحاً.",
+  },
+  sales_gap: {
+    label: "فرق بين تقفيل الكاشير ومبيعات فوديكس",
+    role: "gm",
+    urgent: true,
+    suspicion: true,
+    severity: 1,
+    action: "مطابقة التقفيل بتقرير فوديكس لنفس اليوم بنداً بنداً، وعدّ الدرج، وسؤال الكاشير.",
+  },
+  waste_gap: {
+    label: "هدر أو فرق جرد غير مبرَّر بين فوديكس والجرد والكاميرات",
+    role: "warehouse",
+    urgent: false,
+    suspicion: true,
+    severity: 2,
+    action: "مراجعة الصنف: هدر فوديكس مقابل فرق الجرد اليدوي ومشاهدات الكاميرا، وتوثيق السبب.",
+  },
   other: {
     label: "ملاحظة أخرى",
     role: "gm",
@@ -348,7 +372,7 @@ export const PRIVACY_ERROR =
 
 /* ── أدوات مساعدة ─────────────────────────────────────────────── */
 
-type BranchRow = typeof branches.$inferSelect;
+export type BranchRow = typeof branches.$inferSelect;
 
 export async function loadBranch(branchId: number | null): Promise<BranchRow | null> {
   if (branchId === null) return null;
@@ -362,7 +386,7 @@ function branchIdFrom(req: AuthedRequest, value: unknown): number | null {
 }
 
 /** حدود يوم العمل `[start, end)` بتوقيت الفرع. */
-function dayRange(date: string, timeZone: string): { start: Date; end: Date } {
+export function dayRange(date: string, timeZone: string): { start: Date; end: Date } {
   const [year, month, day] = date.split("-").map(Number);
   const zone = safeTimeZone(timeZone);
   const start = zonedWallTimeToUtc({ year, month, day, hour: 0, minute: 0, second: 0 }, zone);
@@ -405,6 +429,10 @@ export async function settingsFor(branchId: number) {
     openTime: row?.openTime ?? "06:00",
     closeTime: row?.closeTime ?? "02:00",
     alertEmails: row?.alertEmails ?? "",
+    analyzeOpenHoursOnly: row?.analyzeOpenHoursOnly ?? false,
+    dailyAnalysisCap: row?.dailyAnalysisCap ?? 0,
+    capNotifiedDate: row?.capNotifiedDate ?? "",
+    foodicsMatchMinutes: row?.foodicsMatchMinutes ?? 3,
   };
 }
 
@@ -550,10 +578,10 @@ export function defaultClipRef(cameraNumber: string | null | undefined, at: Date
 
 /* ── استقبال الطلبات وأحداث الكاشير وفحص الكاميرات ─────────────── */
 
-async function ingestOrder(
+export async function ingestOrder(
   branch: BranchRow,
   body: Record<string, unknown>,
-  source: "manual" | "webhook",
+  source: "manual" | "webhook" | "foodics",
   createdBy: number | null,
 ) {
   const db = getDb();
@@ -620,7 +648,7 @@ async function ingestOrder(
       cameraId: order.cameraId,
       occurredAt: clipAt,
       employeeIds,
-      confidence: source === "webhook" ? "high" : "medium",
+      confidence: source === "manual" ? "medium" : "high",
       clipRef: asString(body.clipRef, 500) || defaultClipRef(camera?.cameraNumber, clipAt, branch.timezone),
       details: `الطلب ${order.orderRef}${order.itemName ? ` (${order.itemName})` : ""} بلا فاتورة مقابلة.`,
       source: "auto",
@@ -655,10 +683,10 @@ async function ingestOrder(
   return { order, alerts };
 }
 
-async function ingestPosEvent(
+export async function ingestPosEvent(
   branch: BranchRow,
   body: Record<string, unknown>,
-  source: "manual" | "webhook",
+  source: "manual" | "webhook" | "foodics",
   createdBy: number | null,
 ) {
   const db = getDb();
@@ -701,7 +729,7 @@ async function ingestPosEvent(
       occurredAt,
       employeeIds,
       peopleNote: event.cashierName,
-      confidence: source === "webhook" ? "high" : "medium",
+      confidence: source === "manual" ? "medium" : "high",
       clipRef,
       details: event.notes,
       source: "auto",
@@ -1528,6 +1556,10 @@ surveillanceRouter.get("/surveillance/alerts", ...canRead, async (req: AuthedReq
   const role = asEnum(req.query.role, ROLES);
   if (role) filters.push(eq(surveillanceAlerts.role, role));
   if (req.query.urgent === "1") filters.push(eq(surveillanceAlerts.isUrgent, true));
+  const employeeFilter = asId(req.query.employeeId);
+  if (employeeFilter) filters.push(sql`${employeeFilter} = any(${surveillanceAlerts.employeeIds})`);
+  const cameraFilter = asId(req.query.cameraId);
+  if (cameraFilter) filters.push(eq(surveillanceAlerts.cameraId, cameraFilter));
 
   const db = getDb();
   const reviewer = employees;
@@ -1882,6 +1914,15 @@ surveillanceRouter.put("/surveillance/settings", ...canManage, async (req: Authe
           .split(/[,،\s]+/)
           .filter((item) => item.includes("@"))
           .join(", ");
+  const analyzeOpenHoursOnly =
+    body.analyzeOpenHoursOnly === undefined
+      ? current.analyzeOpenHoursOnly
+      : body.analyzeOpenHoursOnly === true || body.analyzeOpenHoursOnly === "true";
+  const capInput = body.dailyAnalysisCap === undefined || body.dailyAnalysisCap === "" ? current.dailyAnalysisCap : asNumber(body.dailyAnalysisCap);
+  if (capInput === null || capInput < 0) {
+    res.status(400).json({ ok: false, error: "الحد اليومي للتحليل رقم صفر أو أكبر (صفر = بلا حد)" });
+    return;
+  }
   const values = {
     defaultPrepMinutes,
     customerWaitMinutes,
@@ -1889,6 +1930,8 @@ surveillanceRouter.put("/surveillance/settings", ...canManage, async (req: Authe
     openTime,
     closeTime,
     alertEmails,
+    analyzeOpenHoursOnly,
+    dailyAnalysisCap: Math.round(capInput),
     updatedAt: new Date(),
   };
   const db = getDb();
@@ -2214,6 +2257,27 @@ surveillanceRouter.get("/surveillance/frames/:id/image", ...canRead, async (req:
     return;
   }
   res.json({ ok: true, ...payload });
+});
+
+/** آخر لقطة وصلت من الكاميرا (تُستبدل مع كل تحليل) — للعرض من أي مكان. */
+surveillanceRouter.get("/surveillance/cameras/:id/latest", ...canRead, async (req: AuthedRequest, res: Response) => {
+  const id = asId(req.params.id);
+  const db = getDb();
+  const [camera] = id ? await db.select().from(surveillanceCameras).where(eq(surveillanceCameras.id, id)) : [];
+  if (!camera) {
+    res.status(404).json({ ok: false, error: "الكاميرا غير موجودة" });
+    return;
+  }
+  const image = await loadImage(latestImageKey(camera.id)).catch(() => null);
+  if (!image) {
+    res.status(404).json({ ok: false, error: "لا توجد لقطة محفوظة لهذه الكاميرا بعد" });
+    return;
+  }
+  res.json({
+    ok: true,
+    frame: { capturedAt: camera.lastFrameAt, cameraState: camera.status },
+    image: `data:${image.contentType};base64,${image.data.toString("base64")}`,
+  });
 });
 
 /** لقطة الدليل المرتبطة بتنبيه آلي. */

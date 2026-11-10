@@ -26,6 +26,8 @@ import {
   surveillanceCameraChecks,
   surveillanceCameras,
   surveillanceFrames,
+  surveillancePosEvents,
+  surveillanceSettings,
   surveillanceWaste,
 } from "../db/schema.js";
 import { decryptString } from "./crypto.js";
@@ -34,10 +36,11 @@ import {
   ALERT_TYPES,
   LABELS,
   createAlert,
+  dayRange,
   defaultClipRef,
   settingsFor,
 } from "./routes/surveillance.js";
-import { safeTimeZone, wallPartsInZone } from "./time.js";
+import { isoDateInZone, safeTimeZone, wallPartsInZone } from "./time.js";
 
 export const VISION_MODEL = "claude-haiku-5-5";
 const MAX_IMAGE_BYTES = 4_500_000;
@@ -130,10 +133,10 @@ export async function fetchSnapshot(
 const ZONE_FINDINGS: Record<string, string[]> = {
   dining: ["customer_waiting_unserved", "staff_phone", "staff_gathering", "customer_dispute", "hygiene_violation"],
   entrance: ["customer_waiting_unserved", "customer_dispute", "staff_gathering"],
-  kitchen: ["hygiene_violation", "staff_phone", "staff_gathering", "station_unattended", "food_waste"],
+  kitchen: ["hygiene_violation", "staff_phone", "staff_gathering", "station_unattended", "food_waste", "fridge_door_open"],
   cashier: ["drawer_open_unattended", "staff_phone", "station_unattended", "customer_waiting_unserved", "customer_dispute"],
   warehouse: ["person_in_storage", "goods_carried_out", "food_waste"],
-  fridge: ["person_in_storage", "goods_carried_out", "food_waste"],
+  fridge: ["person_in_storage", "goods_carried_out", "food_waste", "fridge_door_open"],
   back_door: ["person_in_storage", "goods_carried_out"],
   delivery: ["customer_waiting_unserved", "staff_gathering", "staff_phone"],
   outdoor: ["goods_carried_out", "customer_waiting_unserved"],
@@ -152,6 +155,8 @@ const FINDING_GUIDE: Record<string, string> = {
   drawer_open_unattended:
     "the cash drawer is open while no customer is being served at the counter, or open with nobody at the register",
   person_in_storage: "any person present inside the storage room / fridge / at the back door",
+  fridge_door_open:
+    "a fridge, freezer or walk-in cold room door left open (ajar or fully open) with nobody actively loading or unloading it",
   goods_carried_out:
     "a person carrying boxes, bags, crates or stock items out of the storage area, back door or into a vehicle",
 };
@@ -166,6 +171,7 @@ const FINDING_TO_ALERT: Record<string, string> = {
   food_waste: "waste_observed",
   drawer_open_unattended: "drawer_no_sale",
   goods_carried_out: "warehouse_exit",
+  fridge_door_open: "fridge_door_open",
 };
 
 export interface VisionFinding {
@@ -624,6 +630,9 @@ export async function processFrame(input: {
     })
     .returning({ id: surveillanceFrames.id });
 
+  // آخر لقطة لكل كاميرا تُحفظ دائماً (تُستبدل كل مرة) لتُعرض من أي مكان
+  await saveImage(latestImageKey(camera.id), input.image.data, input.image.contentType).catch(() => undefined);
+
   let imageKey = "";
   if (keepImage) {
     imageKey = `frames/${branch.id}/${camera.id}/${frame.id}`;
@@ -650,9 +659,15 @@ export async function processFrame(input: {
   /* ── الملاحظات ── */
   const staff = result.findings.length ? await onShiftEmployees(branch.id, at) : [];
   const candidates = zoneCandidates(camera.zone, staff);
+  // من يُنسب إليهم التنبيه للمراجعة: المطابقون لمنطقة الكاميرا، وإلا كل من
+  // على رأس العمل في الفرع. نسبة للمراجعة فقط — ليست تعرّفاً على الوجه.
+  const attributed = candidates.length ? candidates : staff;
+  const attributedIds = attributed.map((c) => c.id);
   const candidateNote = candidates.length
     ? ` | على رأس العمل في هذه المنطقة: ${candidates.map((c) => c.name).join("، ")} (للتحقق من المقطع)`
-    : "";
+    : staff.length
+      ? ` | على رأس العمل في الفرع وقتها: ${staff.map((c) => c.name).join("، ")} (للتحقق من المقطع)`
+      : "";
 
   for (const finding of result.findings) {
     const peopleNote = `${finding.people}${candidateNote}`.slice(0, 500);
@@ -664,6 +679,7 @@ export async function processFrame(input: {
           confidence: finding.confidence,
           details: `خارج ساعات العمل (${settings.openTime}–${settings.closeTime}): ${finding.description}`,
           peopleNote,
+          employeeIds: attributedIds,
           frameId: frame.id,
         });
       }
@@ -681,8 +697,24 @@ export async function processFrame(input: {
       confidence: alertType === "drawer_no_sale" && finding.confidence === "high" ? "medium" : finding.confidence,
       details: `${finding.description}${extra}`,
       peopleNote,
+      employeeIds: attributedIds,
       frameId: frame.id,
     });
+
+    // الدرج المفتوح يُسجَّل أيضاً في «الطلبات والكاشير» لمطابقته مع فودكس
+    if (alertType === "drawer_no_sale") {
+      const cashier = candidates.length === 1 ? candidates[0] : null;
+      await db.insert(surveillancePosEvents).values({
+        branchId: branch.id,
+        eventType: "drawer_no_sale",
+        occurredAt: at,
+        cashierEmployeeId: cashier?.id ?? null,
+        cashierName: cashier?.name ?? candidates.map((c) => c.name).join("، ").slice(0, 150),
+        cameraId: camera.id,
+        source: "auto",
+        notes: `كشف آلي — لقطة #${frame.id} — ${finding.description}`.slice(0, 500),
+      });
+    }
 
     if (alertType === "waste_observed") {
       await db.insert(surveillanceWaste).values({
@@ -694,6 +726,7 @@ export async function processFrame(input: {
         reason: "other",
         station: [LABELS.zones[camera.zone as "kitchen"] ?? camera.zone, camera.location].filter(Boolean).join(" — "),
         cameraId: camera.id,
+        employeeId: candidates.length === 1 ? candidates[0].id : null,
         notes: `كشف آلي — لقطة #${frame.id}`,
       });
     }
@@ -718,7 +751,8 @@ export async function processFrame(input: {
       await raise("customer_wait", {
         confidence: waitingFinding.confidence,
         details: `${waitingFinding.description} — مستمر منذ ${Math.round(waitedMinutes)} دقيقة تقريباً (الحد ${settings.customerWaitMinutes}).`,
-        peopleNote: waitingFinding.people,
+        peopleNote: `${waitingFinding.people}${candidateNote}`.slice(0, 500),
+        employeeIds: attributedIds,
         frameId: frame.id,
         refSuffix: `streak:${streakStart.id}`,
       });
@@ -782,12 +816,126 @@ async function activeAutoCameras(mode?: string) {
     .where(and(...filters));
 }
 
+export function latestImageKey(cameraId: number): string {
+  return `latest/${cameraId}`;
+}
+
+/** مناطق تبقى مراقبة خارج ساعات العمل: الدخول خارج الدوام هو ما تُراقب لأجله. */
+const ALWAYS_WATCHED_ZONES = new Set(["warehouse", "back_door", "fridge"]);
+
+type CameraWithBranch = Awaited<ReturnType<typeof activeAutoCameras>>[number];
+
+/** عدد اللقطات المحلَّلة فعلاً اليوم للفرع (بتوقيت الفرع). */
+async function analysedToday(branchId: number, timeZone: string, now: Date): Promise<number> {
+  const db = getDb();
+  const { start, end } = dayRange(isoDateInZone(now, safeTimeZone(timeZone)), timeZone);
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(surveillanceFrames)
+    .where(
+      and(
+        eq(surveillanceFrames.branchId, branchId),
+        gte(surveillanceFrames.capturedAt, start),
+        lt(surveillanceFrames.capturedAt, end),
+        sql`${surveillanceFrames.cameraState} not in ('unreachable','error')`,
+      ),
+    );
+  return Number(row?.count ?? 0);
+}
+
+/**
+ * ضوابط التكلفة: يستبعد الكاميرات خارج ساعات التحليل (إن فُعّلت) وما يتجاوز
+ * الحد اليومي للفرع، ويُشعر مرة واحدة في اليوم عند بلوغ الحد.
+ * يُرجع المسموح تحليله الآن، ومعرّفات المستبعدة بالسياسة (لا تُعدّ متوقفة).
+ */
+async function applyCostControls(rows: CameraWithBranch[], now: Date) {
+  const branchState = new Map<
+    number,
+    { settings: Awaited<ReturnType<typeof settingsFor>>; used: number; capped: boolean; branch: CameraWithBranch["branch"] }
+  >();
+  const allowed: CameraWithBranch[] = [];
+  const skipped = new Set<number>();
+  for (const row of rows) {
+    let state = branchState.get(row.branch.id);
+    if (!state) {
+      const settings = await settingsFor(row.branch.id);
+      const used = settings.dailyAnalysisCap > 0 ? await analysedToday(row.branch.id, row.branch.timezone, now) : 0;
+      state = { settings, used, capped: false, branch: row.branch };
+      branchState.set(row.branch.id, state);
+    }
+    const { settings } = state;
+    if (
+      settings.analyzeOpenHoursOnly &&
+      !ALWAYS_WATCHED_ZONES.has(row.camera.zone) &&
+      isOffHours(now, row.branch.timezone, settings.openTime, settings.closeTime)
+    ) {
+      skipped.add(row.camera.id);
+      continue;
+    }
+    if (settings.dailyAnalysisCap > 0 && state.used >= settings.dailyAnalysisCap) {
+      state.capped = true;
+      skipped.add(row.camera.id);
+      continue;
+    }
+    state.used += 1;
+    allowed.push(row);
+  }
+  for (const state of branchState.values()) {
+    if (state.capped) await notifyCapReached(state.branch, state.settings, now).catch(() => undefined);
+  }
+  return { allowed, skipped };
+}
+
+async function notifyCapReached(
+  branch: CameraWithBranch["branch"],
+  settings: Awaited<ReturnType<typeof settingsFor>>,
+  now: Date,
+) {
+  const today = isoDateInZone(now, safeTimeZone(branch.timezone));
+  if (settings.capNotifiedDate === today) return;
+  const db = getDb();
+  await db
+    .update(surveillanceSettings)
+    .set({ capNotifiedDate: today })
+    .where(eq(surveillanceSettings.branchId, branch.id));
+  const text = `بلغ الفرع ${branch.name} الحد اليومي للتحليل الآلي (${settings.dailyAnalysisCap} لقطة)، فأُوقف التحليل حتى بداية اليوم التالي للتحكم في التكلفة. التسجيل في جهاز التسجيل مستمر. يمكن رفع الحد من «الحدود المعتمدة».`;
+  await createAlert({
+    branchId: branch.id,
+    alertType: "other",
+    occurredAt: now,
+    confidence: "high",
+    details: text,
+    source: "auto",
+    sourceRef: `cap:${branch.id}:${today}`,
+  }).catch(() => undefined);
+  if (settings.alertEmails) await notifyUrgent(settings.alertEmails, `الحد اليومي للتحليل — ${branch.name}`, text);
+}
+
+/**
+ * آخر لحظة عاد فيها التحليل بعد توقف مقصود (بداية ساعات التحليل أو بداية
+ * اليوم بعد الحد اليومي)، حتى لا تُعدّ الكاميرا متوقفة قبل أن يلحقها جهاز الربط.
+ */
+async function resumedAt(camera: CameraWithBranch["camera"], branch: CameraWithBranch["branch"], now: Date): Promise<Date | null> {
+  const settings = await settingsFor(branch.id);
+  const tz = safeTimeZone(branch.timezone);
+  const dayStart = dayRange(isoDateInZone(now, tz), branch.timezone).start;
+  let resumed: Date | null = settings.dailyAnalysisCap > 0 ? dayStart : null;
+  if (settings.analyzeOpenHoursOnly && !ALWAYS_WATCHED_ZONES.has(camera.zone)) {
+    let open = new Date(dayStart.getTime() + minutesOf(settings.openTime) * 60_000);
+    if (open > now) open = new Date(open.getTime() - 24 * 3600_000);
+    if (!resumed || open > resumed) resumed = open;
+  }
+  return resumed;
+}
+
 /** الكاميرات المستحقة لجهاز الربط (مع بيانات الدخول المحلية). */
 export async function agentJobs(branchCode: string | null) {
   const now = new Date();
-  const rows = await activeAutoCameras("agent");
-  return rows
-    .filter((row) => (!branchCode || row.branch.code === branchCode) && row.camera.snapshotUrl && isDue(row.camera, now))
+  const rows = (await activeAutoCameras("agent")).filter(
+    (row) => (!branchCode || row.branch.code === branchCode) && row.camera.snapshotUrl && isDue(row.camera, now),
+  );
+  const { allowed } = await applyCostControls(rows, now);
+  return allowed
     .map((row) => ({
       cameraId: row.camera.id,
       cameraNumber: row.camera.cameraNumber,
@@ -809,7 +957,12 @@ export async function runScheduledScan(budgetMs = 24_000): Promise<{ analysed: n
   let analysed = 0;
   let stale = 0;
 
-  const pullDue = rows.filter((r) => r.camera.connectionMode === "pull" && r.camera.snapshotUrl && isDue(r.camera, now));
+  const pullCandidates = rows.filter((r) => r.camera.connectionMode === "pull" && r.camera.snapshotUrl && isDue(r.camera, now));
+  const { allowed: pullDue } = await applyCostControls(pullCandidates, now);
+  const policy = await applyCostControls(
+    rows.filter((r) => r.camera.connectionMode === "agent"),
+    now,
+  );
   const queue = [...pullDue];
   const worker = async () => {
     while (queue.length && Date.now() - started < budgetMs) {
@@ -833,8 +986,12 @@ export async function runScheduledScan(budgetMs = 24_000): Promise<{ analysed: n
 
   // كاميرات جهاز الربط التي لم تصل لقطاتها منذ مدة طويلة
   for (const { camera, branch } of rows.filter((r) => r.camera.connectionMode === "agent")) {
+    // المستبعدة عمداً (خارج ساعات التحليل أو بعد الحد اليومي) ليست متوقفة
+    if (policy.skipped.has(camera.id)) continue;
     const limit = Math.max(15, camera.intervalMinutes * 3) * 60_000;
-    const last = camera.lastAnalysisAt ?? camera.updatedAt;
+    const resumed = await resumedAt(camera, branch, now);
+    const lastSeen = camera.lastAnalysisAt ?? camera.updatedAt;
+    const last = resumed && resumed > lastSeen ? resumed : lastSeen;
     if (now.getTime() - last.getTime() < limit) continue;
     stale += 1;
     await processFrame({

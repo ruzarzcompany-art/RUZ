@@ -1693,6 +1693,9 @@ export const surveillancePosEvents = pgTable(
     cashierName: text("cashier_name").notNull().default(""),
     amount: money("amount"),
     orderRef: text("order_ref").notNull().default(""),
+    /** نتيجة المطابقة مع فوديكس: '' لم تُطابق بعد | matched | unmatched */
+    matchStatus: text("match_status").notNull().default(""),
+    matchNote: text("match_note").notNull().default(""),
     cameraId: integer("camera_id").references(() => surveillanceCameras.id, {
       onDelete: "set null",
     }),
@@ -1762,6 +1765,25 @@ export const surveillanceSettings = pgTable("surveillance_settings", {
   closeTime: text("close_time").notNull().default("02:00"),
   /** بريد (أو أكثر مفصولة بفاصلة) يستلم التنبيهات الفورية */
   alertEmails: text("alert_emails").notNull().default(""),
+  /**
+   * تحليل الكاميرات داخل ساعات العمل فقط (openTime–closeTime) لتوفير التكلفة.
+   * كاميرات المستودع والباب الخلفي والثلاجات تبقى تُحلَّل خارجها لأن الدخول
+   * خارج الدوام هو ما تراقبه.
+   */
+  analyzeOpenHoursOnly: boolean("analyze_open_hours_only").notNull().default(false),
+  /** الحد الأعلى لعدد اللقطات المحلَّلة في اليوم للفرع (0 = بلا حد) */
+  dailyAnalysisCap: integer("daily_analysis_cap").notNull().default(0),
+  /** تاريخ آخر إشعار ببلوغ الحد اليومي (YYYY-MM-DD) — إشعار واحد في اليوم */
+  capNotifiedDate: text("cap_notified_date").notNull().default(""),
+  /* ── الربط مع فوديكس ── */
+  /** معرّف الفرع في فوديكس (UUID) — فارغ = الفرع غير مربوط */
+  foodicsBranchId: text("foodics_branch_id").notNull().default(""),
+  /** نافذة المطابقة بالدقائق بين حدث الكاميرا وفاتورة فوديكس */
+  foodicsMatchMinutes: integer("foodics_match_minutes").notNull().default(3),
+  /** فرق المبيعات المسموح بين تقفيل الكاشير وفوديكس (ريال) قبل التنبيه */
+  salesGapTolerance: doublePrecision("sales_gap_tolerance").notNull().default(5),
+  foodicsLastSyncAt: timestamp("foodics_last_sync_at", { withTimezone: true }),
+  foodicsLastError: text("foodics_last_error").notNull().default(""),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -1826,5 +1848,95 @@ export const surveillanceFrames = pgTable(
   (table) => [
     index("surveillance_frames_camera_time_idx").on(table.cameraId, table.capturedAt),
     index("surveillance_frames_branch_time_idx").on(table.branchId, table.capturedAt),
+  ],
+);
+
+/* ══ الربط مع فوديكس (Foodics) ══════════════════════════════════════ */
+
+/**
+ * foodics_connection — صف واحد (id = 1) يحمل مفتاح API فوديكس مشفّراً
+ * AES-256-GCM. المتغيّر FOODICS_API_TOKEN في Netlify يتقدّم عليه إن وُجد.
+ */
+export const foodicsConnection = pgTable("foodics_connection", {
+  id: integer().primaryKey(),
+  tokenEnc: text("token_enc").notNull().default(""),
+  apiBase: text("api_base").notNull().default(""),
+  updatedByEmployeeId: integer("updated_by_employee_id").references(() => employees.id, {
+    onDelete: "set null",
+  }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * foodics_orders — نسخة مختصرة من فواتير فوديكس لكل فرع: تكفي للمطابقة
+ * مع الكاميرات وتقفيل الكاشير دون الرجوع لفوديكس في كل تقرير.
+ */
+export const foodicsOrders = pgTable(
+  "foodics_orders",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    foodicsId: text("foodics_id").notNull(),
+    reference: text().notNull().default(""),
+    businessDate: date("business_date"),
+    /** dine_in | takeaway | delivery | drive_thru */
+    channel: text().notNull().default("dine_in"),
+    /** الحالة الخام في فوديكس (رقم) */
+    status: integer().notNull().default(0),
+    /** closed | void | returned | open | other */
+    state: text().notNull().default("other"),
+    openedAt: timestamp("opened_at", { withTimezone: true }),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    /** انتهاء التجهيز في المطبخ إن أرسلته فوديكس */
+    kitchenDoneAt: timestamp("kitchen_done_at", { withTimezone: true }),
+    total: money("total"),
+    discount: money("discount"),
+    /** [{ name, type, amount }] */
+    paymentsJson: text("payments_json").notNull().default("[]"),
+    /** [{ name, sku, quantity, status }] */
+    itemsJson: text("items_json").notNull().default("[]"),
+    creatorName: text("creator_name").notNull().default(""),
+    cashierEmployeeId: integer("cashier_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("foodics_orders_branch_fid_idx").on(table.branchId, table.foodicsId),
+    index("foodics_orders_branch_closed_idx").on(table.branchId, table.closedAt),
+    index("foodics_orders_branch_date_idx").on(table.branchId, table.businessDate),
+  ],
+);
+
+/**
+ * foodics_inventory_events — الهدر وتعديلات الكميات والجرد المسجّلة في
+ * فوديكس، سطراً لكل صنف.
+ */
+export const foodicsInventoryEvents = pgTable(
+  "foodics_inventory_events",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** معرّف المستند في فوديكس + رمز الصنف — مفتاح منع التكرار */
+    foodicsKey: text("foodics_key").notNull(),
+    /** waste | adjustment | count */
+    kind: text().notNull().default("waste"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    businessDate: date("business_date"),
+    itemName: text("item_name").notNull().default(""),
+    sku: text().notNull().default(""),
+    quantity: doublePrecision().notNull().default(0),
+    unit: text().notNull().default(""),
+    cost: money("cost"),
+    reason: text().notNull().default(""),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("foodics_inventory_events_key_idx").on(table.branchId, table.foodicsKey),
+    index("foodics_inventory_events_branch_time_idx").on(table.branchId, table.occurredAt),
   ],
 );
