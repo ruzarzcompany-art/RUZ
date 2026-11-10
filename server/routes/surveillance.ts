@@ -228,6 +228,30 @@ export const ALERT_TYPES: Record<string, AlertTypeSpec> = {
     severity: 2,
     action: "مراجعة وقت انتظاره وسبب التأخير.",
   },
+  fridge_door_open: {
+    label: "باب الثلاجة أو غرفة التبريد مفتوح",
+    role: "warehouse",
+    urgent: true,
+    suspicion: false,
+    severity: 1,
+    action: "إغلاق الباب فوراً، وفحص حرارة الأصناف، وتحديد من تركه مفتوحاً.",
+  },
+  sales_gap: {
+    label: "فرق بين تقفيل الكاشير ومبيعات فوديكس",
+    role: "gm",
+    urgent: true,
+    suspicion: true,
+    severity: 1,
+    action: "مطابقة التقفيل بتقرير فوديكس لنفس اليوم بنداً بنداً، وعدّ الدرج، وسؤال الكاشير.",
+  },
+  waste_gap: {
+    label: "هدر أو فرق جرد غير مبرَّر بين فوديكس والجرد والكاميرات",
+    role: "warehouse",
+    urgent: false,
+    suspicion: true,
+    severity: 2,
+    action: "مراجعة الصنف: هدر فوديكس مقابل فرق الجرد اليدوي ومشاهدات الكاميرا، وتوثيق السبب.",
+  },
   other: {
     label: "ملاحظة أخرى",
     role: "gm",
@@ -348,7 +372,7 @@ export const PRIVACY_ERROR =
 
 /* ── أدوات مساعدة ─────────────────────────────────────────────── */
 
-type BranchRow = typeof branches.$inferSelect;
+export type BranchRow = typeof branches.$inferSelect;
 
 export async function loadBranch(branchId: number | null): Promise<BranchRow | null> {
   if (branchId === null) return null;
@@ -408,6 +432,7 @@ export async function settingsFor(branchId: number) {
     analyzeOpenHoursOnly: row?.analyzeOpenHoursOnly ?? false,
     dailyAnalysisCap: row?.dailyAnalysisCap ?? 0,
     capNotifiedDate: row?.capNotifiedDate ?? "",
+    foodicsMatchMinutes: row?.foodicsMatchMinutes ?? 3,
   };
 }
 
@@ -553,10 +578,10 @@ export function defaultClipRef(cameraNumber: string | null | undefined, at: Date
 
 /* ── استقبال الطلبات وأحداث الكاشير وفحص الكاميرات ─────────────── */
 
-async function ingestOrder(
+export async function ingestOrder(
   branch: BranchRow,
   body: Record<string, unknown>,
-  source: "manual" | "webhook",
+  source: "manual" | "webhook" | "foodics",
   createdBy: number | null,
 ) {
   const db = getDb();
@@ -623,7 +648,7 @@ async function ingestOrder(
       cameraId: order.cameraId,
       occurredAt: clipAt,
       employeeIds,
-      confidence: source === "webhook" ? "high" : "medium",
+      confidence: source === "manual" ? "medium" : "high",
       clipRef: asString(body.clipRef, 500) || defaultClipRef(camera?.cameraNumber, clipAt, branch.timezone),
       details: `الطلب ${order.orderRef}${order.itemName ? ` (${order.itemName})` : ""} بلا فاتورة مقابلة.`,
       source: "auto",
@@ -658,10 +683,10 @@ async function ingestOrder(
   return { order, alerts };
 }
 
-async function ingestPosEvent(
+export async function ingestPosEvent(
   branch: BranchRow,
   body: Record<string, unknown>,
-  source: "manual" | "webhook",
+  source: "manual" | "webhook" | "foodics",
   createdBy: number | null,
 ) {
   const db = getDb();
@@ -704,7 +729,7 @@ async function ingestPosEvent(
       occurredAt,
       employeeIds,
       peopleNote: event.cashierName,
-      confidence: source === "webhook" ? "high" : "medium",
+      confidence: source === "manual" ? "medium" : "high",
       clipRef,
       details: event.notes,
       source: "auto",
