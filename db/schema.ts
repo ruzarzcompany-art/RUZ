@@ -1762,6 +1762,16 @@ export const surveillanceSettings = pgTable("surveillance_settings", {
   closeTime: text("close_time").notNull().default("02:00"),
   /** بريد (أو أكثر مفصولة بفاصلة) يستلم التنبيهات الفورية */
   alertEmails: text("alert_emails").notNull().default(""),
+  /**
+   * تحليل الكاميرات داخل ساعات العمل فقط (openTime–closeTime) لتوفير التكلفة.
+   * كاميرات المستودع والباب الخلفي والثلاجات تبقى تُحلَّل خارجها لأن الدخول
+   * خارج الدوام هو ما تراقبه.
+   */
+  analyzeOpenHoursOnly: boolean("analyze_open_hours_only").notNull().default(false),
+  /** الحد الأعلى لعدد اللقطات المحلَّلة في اليوم للفرع (0 = بلا حد) */
+  dailyAnalysisCap: integer("daily_analysis_cap").notNull().default(0),
+  /** تاريخ آخر إشعار ببلوغ الحد اليومي (YYYY-MM-DD) — إشعار واحد في اليوم */
+  capNotifiedDate: text("cap_notified_date").notNull().default(""),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
