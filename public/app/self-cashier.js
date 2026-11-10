@@ -71,7 +71,40 @@ const state = {
   caps: { viewRemaining: false },
   /** تقفيلات اليوم المحمّلة من الخادم، مفتاحها الوردية. */
   byShift: new Map(),
+  /** أرقام فوديكس لليوم — تُعبّأ بها الشاشة آلياً قبل أول رفع */
+  foodics: null,
 };
+
+/** يعبّئ التقفيل الجديد من فوديكس: المبيعات وطرق الدفع والخصومات والمرتجعات والفواتير. */
+function applyFoodics() {
+  const prefill = state.foodics;
+  if (!prefill?.available) return false;
+  const s = prefill.sales;
+  const set = (field, value) => {
+    el(`self-cash-${field}`).value = Math.round(Number(value || 0) * 100) / 100;
+  };
+  set("totalSales", s.total);
+  set("cashSales", s.cash);
+  set("foodicsSales", s.foodicsPay);
+  set("discounts", s.discounts);
+  set("refunds", s.refunds);
+  set("otherSales", s.other);
+  el("self-cash-invoices").value = s.invoices;
+  const methodLines = (s.methods ?? [])
+    .filter((m) => m.kind === "card" || m.kind === "delivery_app")
+    .map((m) => ({
+      category: m.kind === "card" ? "network" : "delivery_app",
+      label: m.name,
+      amount: m.amount,
+      reference: "فوديكس",
+    }));
+  const covered = new Set(methodLines.map((l) => `${l.category}:${l.label}`));
+  state.lines = [
+    ...methodLines,
+    ...defaultLines().filter((l) => !covered.has(`${l.category}:${l.label}`)),
+  ];
+  return true;
+}
 
 /* ── البنود ────────────────────────────────────────────────── */
 
@@ -243,6 +276,7 @@ function applyShift() {
   state.lines = closing?.lines?.length
     ? closing.lines.map((line) => ({ ...line }))
     : defaultLines();
+  const fromFoodics = !closing && applyFoodics();
 
   badge.textContent = closing ? (STATUS_TEXT[closing.status] ?? closing.status) : "لم يُرفع بعد";
   badge.classList.toggle("badge--ok", closing?.status === "reviewed");
@@ -257,6 +291,14 @@ function applyShift() {
       el("self-cash-result"),
       "تقفيل هذه الوردية تمّت مراجعته. راجع مدير فرعك لأي تعديل.",
       "warn",
+    );
+  } else if (fromFoodics) {
+    setAlert(
+      el("self-cash-result"),
+      `عُبّئت المبيعات وطرق الدفع والخصومات والمرتجعات وعدد الفواتير من فوديكس آلياً${
+        state.foodics.scope === "branch" ? " (فواتير الفرع كاملة لهذا اليوم)" : ""
+      }. أدخل عهدة البداية والنقد المعدود والمصاريف فقط.`,
+      "ok",
     );
   } else {
     setAlert(el("self-cash-result"), "");
@@ -285,6 +327,8 @@ export async function refreshSelfCashier() {
   state.byShift = new Map((result.closings ?? []).map((closing) => [closing.shift, closing]));
 
   el("self-cash-date").value = result.businessDate;
+  const prefill = await api(`/foodics/cashier-prefill?date=${result.businessDate}`).catch(() => null);
+  state.foodics = prefill?.ok ? prefill : null;
   applyShift();
 }
 
