@@ -43,7 +43,7 @@ import {
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { encryptString } from "../crypto.js";
-import { agentJobs, fetchSnapshot, loadImage, processFrame, cameraPassword, VISION_MODEL } from "../vision.js";
+import { agentJobs, fetchSnapshot, latestImageKey, loadImage, processFrame, cameraPassword, VISION_MODEL } from "../vision.js";
 import { clientIp, recordAudit } from "../audit.js";
 import {
   PERMISSIONS,
@@ -362,7 +362,7 @@ function branchIdFrom(req: AuthedRequest, value: unknown): number | null {
 }
 
 /** حدود يوم العمل `[start, end)` بتوقيت الفرع. */
-function dayRange(date: string, timeZone: string): { start: Date; end: Date } {
+export function dayRange(date: string, timeZone: string): { start: Date; end: Date } {
   const [year, month, day] = date.split("-").map(Number);
   const zone = safeTimeZone(timeZone);
   const start = zonedWallTimeToUtc({ year, month, day, hour: 0, minute: 0, second: 0 }, zone);
@@ -405,6 +405,9 @@ export async function settingsFor(branchId: number) {
     openTime: row?.openTime ?? "06:00",
     closeTime: row?.closeTime ?? "02:00",
     alertEmails: row?.alertEmails ?? "",
+    analyzeOpenHoursOnly: row?.analyzeOpenHoursOnly ?? false,
+    dailyAnalysisCap: row?.dailyAnalysisCap ?? 0,
+    capNotifiedDate: row?.capNotifiedDate ?? "",
   };
 }
 
@@ -1528,6 +1531,10 @@ surveillanceRouter.get("/surveillance/alerts", ...canRead, async (req: AuthedReq
   const role = asEnum(req.query.role, ROLES);
   if (role) filters.push(eq(surveillanceAlerts.role, role));
   if (req.query.urgent === "1") filters.push(eq(surveillanceAlerts.isUrgent, true));
+  const employeeFilter = asId(req.query.employeeId);
+  if (employeeFilter) filters.push(sql`${employeeFilter} = any(${surveillanceAlerts.employeeIds})`);
+  const cameraFilter = asId(req.query.cameraId);
+  if (cameraFilter) filters.push(eq(surveillanceAlerts.cameraId, cameraFilter));
 
   const db = getDb();
   const reviewer = employees;
@@ -1882,6 +1889,15 @@ surveillanceRouter.put("/surveillance/settings", ...canManage, async (req: Authe
           .split(/[,،\s]+/)
           .filter((item) => item.includes("@"))
           .join(", ");
+  const analyzeOpenHoursOnly =
+    body.analyzeOpenHoursOnly === undefined
+      ? current.analyzeOpenHoursOnly
+      : body.analyzeOpenHoursOnly === true || body.analyzeOpenHoursOnly === "true";
+  const capInput = body.dailyAnalysisCap === undefined || body.dailyAnalysisCap === "" ? current.dailyAnalysisCap : asNumber(body.dailyAnalysisCap);
+  if (capInput === null || capInput < 0) {
+    res.status(400).json({ ok: false, error: "الحد اليومي للتحليل رقم صفر أو أكبر (صفر = بلا حد)" });
+    return;
+  }
   const values = {
     defaultPrepMinutes,
     customerWaitMinutes,
@@ -1889,6 +1905,8 @@ surveillanceRouter.put("/surveillance/settings", ...canManage, async (req: Authe
     openTime,
     closeTime,
     alertEmails,
+    analyzeOpenHoursOnly,
+    dailyAnalysisCap: Math.round(capInput),
     updatedAt: new Date(),
   };
   const db = getDb();
@@ -2214,6 +2232,27 @@ surveillanceRouter.get("/surveillance/frames/:id/image", ...canRead, async (req:
     return;
   }
   res.json({ ok: true, ...payload });
+});
+
+/** آخر لقطة وصلت من الكاميرا (تُستبدل مع كل تحليل) — للعرض من أي مكان. */
+surveillanceRouter.get("/surveillance/cameras/:id/latest", ...canRead, async (req: AuthedRequest, res: Response) => {
+  const id = asId(req.params.id);
+  const db = getDb();
+  const [camera] = id ? await db.select().from(surveillanceCameras).where(eq(surveillanceCameras.id, id)) : [];
+  if (!camera) {
+    res.status(404).json({ ok: false, error: "الكاميرا غير موجودة" });
+    return;
+  }
+  const image = await loadImage(latestImageKey(camera.id)).catch(() => null);
+  if (!image) {
+    res.status(404).json({ ok: false, error: "لا توجد لقطة محفوظة لهذه الكاميرا بعد" });
+    return;
+  }
+  res.json({
+    ok: true,
+    frame: { capturedAt: camera.lastFrameAt, cameraState: camera.status },
+    image: `data:${image.contentType};base64,${image.data.toString("base64")}`,
+  });
 });
 
 /** لقطة الدليل المرتبطة بتنبيه آلي. */
