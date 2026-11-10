@@ -133,10 +133,10 @@ export async function fetchSnapshot(
 const ZONE_FINDINGS: Record<string, string[]> = {
   dining: ["customer_waiting_unserved", "staff_phone", "staff_gathering", "customer_dispute", "hygiene_violation"],
   entrance: ["customer_waiting_unserved", "customer_dispute", "staff_gathering"],
-  kitchen: ["hygiene_violation", "staff_phone", "staff_gathering", "station_unattended", "food_waste"],
+  kitchen: ["hygiene_violation", "staff_phone", "staff_gathering", "station_unattended", "food_waste", "fridge_door_open"],
   cashier: ["drawer_open_unattended", "staff_phone", "station_unattended", "customer_waiting_unserved", "customer_dispute"],
   warehouse: ["person_in_storage", "goods_carried_out", "food_waste"],
-  fridge: ["person_in_storage", "goods_carried_out", "food_waste"],
+  fridge: ["person_in_storage", "goods_carried_out", "food_waste", "fridge_door_open"],
   back_door: ["person_in_storage", "goods_carried_out"],
   delivery: ["customer_waiting_unserved", "staff_gathering", "staff_phone"],
   outdoor: ["goods_carried_out", "customer_waiting_unserved"],
@@ -155,6 +155,8 @@ const FINDING_GUIDE: Record<string, string> = {
   drawer_open_unattended:
     "the cash drawer is open while no customer is being served at the counter, or open with nobody at the register",
   person_in_storage: "any person present inside the storage room / fridge / at the back door",
+  fridge_door_open:
+    "a fridge, freezer or walk-in cold room door left open (ajar or fully open) with nobody actively loading or unloading it",
   goods_carried_out:
     "a person carrying boxes, bags, crates or stock items out of the storage area, back door or into a vehicle",
 };
@@ -169,6 +171,7 @@ const FINDING_TO_ALERT: Record<string, string> = {
   food_waste: "waste_observed",
   drawer_open_unattended: "drawer_no_sale",
   goods_carried_out: "warehouse_exit",
+  fridge_door_open: "fridge_door_open",
 };
 
 export interface VisionFinding {
