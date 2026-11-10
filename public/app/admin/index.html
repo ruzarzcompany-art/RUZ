@@ -2352,6 +2352,24 @@
               <option value="1">التنبيهات الفورية فقط</option>
             </select>
           </label>
+          <label class="field field--sm">
+            <span class="field__label">نوع الحالة</span>
+            <select id="sv-alerts-type">
+              <option value="">الكل</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الموظف</span>
+            <select id="sv-alerts-employee">
+              <option value="">الكل</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الكاميرا</span>
+            <select id="sv-alerts-camera">
+              <option value="">الكل</option>
+            </select>
+          </label>
         </div>
         <div class="table-wrap">
           <table class="table" id="sv-alerts-table">
@@ -2792,6 +2810,17 @@
           <label class="field field--sm field--wide">
             <span class="field__label">بريد استلام التنبيهات الفورية (أكثر من بريد يُفصل بفاصلة)</span>
             <input id="sv-set-emails" type="text" dir="ltr" placeholder="owner@example.com" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">التحليل الآلي</span>
+            <select id="sv-set-open-only">
+              <option value="false">طوال اليوم</option>
+              <option value="true">داخل ساعات العمل فقط (المستودع والباب الخلفي والثلاجات تبقى مراقبة)</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الحد اليومي للتحليل (لقطة/يوم — صفر بلا حد)</span>
+            <input id="sv-set-cap" type="number" min="0" step="1" value="0" />
           </label>
           <div class="row row--wrap">
             <button id="sv-settings-submit" class="btn btn--primary btn--sm" type="submit">حفظ الحدود</button>

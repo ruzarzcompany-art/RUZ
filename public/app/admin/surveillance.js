@@ -160,7 +160,10 @@ async function loadMeta() {
     el("sv-set-open").value = meta.settings.openTime;
     el("sv-set-close").value = meta.settings.closeTime;
     el("sv-set-emails").value = meta.settings.alertEmails;
+    el("sv-set-open-only").value = meta.settings.analyzeOpenHoursOnly ? "true" : "false";
+    el("sv-set-cap").value = meta.settings.dailyAnalysisCap;
   }
+  fillAlertFilters();
   renderConnect();
   el("sv-webhook-note").textContent = meta.webhookEnabled
     ? "نقطة الاستقبال الآلية مفعّلة: يرسل نظام الكاميرات أو نقطة البيع أحداثه إلى /api/surveillance/webhook بالمفتاح السرّي."
@@ -169,6 +172,43 @@ async function loadMeta() {
   applyAccess();
   renderTargets();
   return true;
+}
+
+/** قوائم تصفية التنبيهات: النوع والموظف (موظفو الفرع المعروض). */
+function fillAlertFilters() {
+  const meta = state.meta;
+  if (!meta) return;
+  const fill = (id, options) => {
+    const select = el(id);
+    if (!select) return;
+    const current = select.value;
+    select.replaceChildren(new Option("الكل", ""));
+    for (const [value, label] of options) select.append(new Option(label, String(value)));
+    if ([...select.options].some((o) => o.value === current)) select.value = current;
+  };
+  fill(
+    "sv-alerts-type",
+    meta.alertTypes.map((t) => [t.key, t.label]),
+  );
+  const branch = branchId();
+  fill(
+    "sv-alerts-employee",
+    meta.employees
+      .filter((e) => !branch || !e.branchId || String(e.branchId) === String(branch))
+      .map((e) => [e.id, `${e.employeeCode ? `${e.employeeCode} — ` : ""}${e.fullName}`]),
+  );
+}
+
+/** قائمة تصفية الكاميرا تُعبّأ بعد تحميل كاميرات الفرع. */
+function fillCameraFilter(cameras) {
+  const select = el("sv-alerts-camera");
+  if (!select) return;
+  const current = select.value;
+  select.replaceChildren(new Option("الكل", ""));
+  for (const camera of cameras) {
+    select.append(new Option(`${camera.cameraNumber}${camera.name ? ` — ${camera.name}` : ""}`, String(camera.id)));
+  }
+  if ([...select.options].some((o) => o.value === current)) select.value = current;
 }
 
 function fillAlertTypes() {
@@ -196,6 +236,7 @@ async function loadCameras() {
   for (const id of ["sv-alert-camera", "sv-order-camera", "sv-pos-camera", "sv-waste-camera"]) {
     fillSelect(id, options, { placeholder: "—" });
   }
+  fillCameraFilter(state.cameras);
 }
 
 /* ── الملخّص ───────────────────────────────────────────────────── */
@@ -229,6 +270,9 @@ async function refreshAlerts() {
   if (el("sv-alerts-status").value) params.set("status", el("sv-alerts-status").value);
   if (el("sv-alerts-role").value) params.set("role", el("sv-alerts-role").value);
   if (el("sv-alerts-urgent").value) params.set("urgent", "1");
+  if (el("sv-alerts-type").value) params.set("type", el("sv-alerts-type").value);
+  if (el("sv-alerts-employee").value) params.set("employeeId", el("sv-alerts-employee").value);
+  if (el("sv-alerts-camera").value) params.set("cameraId", el("sv-alerts-camera").value);
 
   const res = await api(`/surveillance/alerts?${params}`);
   const body = el("sv-alerts-table").querySelector("tbody");
@@ -595,7 +639,10 @@ function renderCameras() {
           button("اعتماد الزاوية", { onClick: (node) => setReference(camera, node) }),
         );
       }
-      tools.append(button("آخر اللقطات", { onClick: () => showFrames(camera) }));
+      tools.append(
+        button("آخر صورة", { onClick: () => showFrame(`/surveillance/cameras/${camera.id}/latest`, `آخر صورة — ${camera.cameraNumber}`) }),
+        button("آخر اللقطات", { onClick: () => showFrames(camera) }),
+      );
       detection.append(tools);
     }
 
@@ -904,6 +951,8 @@ async function submitSettings(event) {
       openTime: el("sv-set-open").value,
       closeTime: el("sv-set-close").value,
       alertEmails: el("sv-set-emails").value,
+      analyzeOpenHoursOnly: el("sv-set-open-only").value === "true",
+      dailyAnalysisCap: el("sv-set-cap").value,
     },
   });
   result(res.ok ? "حُفظت الحدود." : res.error, res.ok ? "ok" : "error");
@@ -1184,7 +1233,16 @@ function wire() {
     refreshAll();
   });
   el("sv-refresh").addEventListener("click", refreshAll);
-  for (const id of ["sv-alerts-from", "sv-alerts-to", "sv-alerts-status", "sv-alerts-role", "sv-alerts-urgent"]) {
+  for (const id of [
+    "sv-alerts-from",
+    "sv-alerts-to",
+    "sv-alerts-status",
+    "sv-alerts-role",
+    "sv-alerts-urgent",
+    "sv-alerts-type",
+    "sv-alerts-employee",
+    "sv-alerts-camera",
+  ]) {
     el(id).addEventListener("change", refreshAlerts);
   }
   el("sv-alert-role").addEventListener("change", fillAlertTypes);
