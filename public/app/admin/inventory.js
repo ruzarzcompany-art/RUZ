@@ -18,6 +18,7 @@ import {
   todayIso,
 } from "../api.js";
 import { createPager } from "../pagination.js";
+import { mountPurchaseReceipts } from "../purchase-receipts.js";
 import { fillActionPicker, parseAction } from "../inventory-actions.js";
 import {
   conversionFactor,
@@ -819,6 +820,7 @@ export function initInventoryModule({ can }) {
 
   el("inventory-form").addEventListener("submit", submitMovement);
   el("inventory-branch").addEventListener("change", async () => {
+    void purchaseReceipts?.refresh();
     await Promise.all([loadItems(), loadMovements(), loadDaily()]);
   });
   el("inventory-filter-run").addEventListener("click", loadMovements);
@@ -865,9 +867,17 @@ export function initInventoryModule({ can }) {
   });
 }
 
+/** شاشة استلام المشتريات — تُركَّب عند أول فتح للتبويب وتتبع الفرع المختار. */
+let purchaseReceipts = null;
+
 export async function refreshInventoryPanel() {
   const access = await api("/inventory/access");
   if (access.ok) state.access = access;
+
+  purchaseReceipts ??= mountPurchaseReceipts(el("purchase-receipts"), {
+    getBranchId: currentBranch,
+  });
+  void purchaseReceipts.refresh();
 
   el("inventory-form").hidden = !state.access.canWrite;
 
