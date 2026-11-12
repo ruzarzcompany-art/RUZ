@@ -12,6 +12,7 @@
 
 import { api, el, formatDate, row, setAlert, setBusy, todayIso } from "./api.js";
 import { fillActionPicker, parseAction } from "./inventory-actions.js";
+import { mountPurchaseReceipts } from "./purchase-receipts.js";
 import { conversionFactor, fillWeightUnitPicker, setUnitTable } from "./units.js";
 
 const MOVEMENT_LABELS = {
@@ -381,6 +382,12 @@ export function initSelfInventory() {
   el("self-inv-date").value = todayIso();
   el("self-inv-form").addEventListener("submit", submitMovement);
   el("self-inv-refresh").addEventListener("click", () => void refreshSelfInventory());
+
+  // استلام المشتريات بفاتورة: يُحمَّل عند أول فتح للقسم فقط
+  const purchases = mountPurchaseReceipts(el("self-purchase-receipts"));
+  el("self-purchase-details").addEventListener("toggle", (event) => {
+    if (event.currentTarget.open) void purchases.refresh();
+  });
 
   // الحركة وسببها خيار واحد: السبب يُستنتج منه فلا حقل ثانٍ يُختار
   fillActionPicker(el("self-inv-action"));

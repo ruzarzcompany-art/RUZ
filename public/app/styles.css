@@ -860,6 +860,36 @@ select option {
   border-color: var(--line);
 }
 
+/* أصناف استلام المشتريات: على الجوال يصير كل صنف بطاقة (الصنف ثم الكمية والسعر) */
+.purchase-lines select,
+.purchase-lines input {
+  width: 100%;
+  min-width: 5.5rem;
+}
+
+@media (max-width: 640px) {
+  .purchase-lines thead {
+    display: none;
+  }
+
+  .purchase-lines tbody tr {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.45rem;
+    padding: 0.6rem 0.5rem;
+  }
+
+  .purchase-lines tbody td {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+
+  .purchase-lines tbody td:first-child {
+    grid-column: 1 / -1;
+  }
+}
+
 /* تبويبات لوحة الإدارة مجمَّعة بحسب مجال العمل، ولكل مجموعة عنوان صغير */
 .tabs--grouped {
   gap: 0.6rem 1.1rem;
