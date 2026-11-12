@@ -25,7 +25,7 @@ import {
   isInstalledApp,
   label,
   requireLogin,
-} from "../api.js?v=v9";
+} from "../api.js?v=v10";
 import {
   applyPaperDesign,
   documentFooter,
@@ -37,8 +37,8 @@ import {
   paperNote,
   PAPER_CHOICES,
   watermark,
-} from "./identity.js?v=v9";
-import { TEMPLATES, legalNotice, pairs, signatures } from "./templates.js?v=v9";
+} from "./identity.js?v=v10";
+import { TEMPLATES, legalNotice, pairs, signatures } from "./templates.js?v=v10";
 
 const params = new URLSearchParams(window.location.search);
 const docKey = params.get("doc") ?? "payroll";
