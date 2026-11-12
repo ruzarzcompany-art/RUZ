@@ -20,10 +20,12 @@ import {
   bonuses,
   branches,
   cashierClosings,
+  departments,
   documentIssues,
   employees,
   inventoryItems,
   inventoryMovements,
+  jobTitles,
   leaveRequests,
   overtimeRequests,
   payrollSlips,
@@ -924,6 +926,294 @@ reportsRouter.get(
   },
 );
 
+/* ── فحص التكرار ───────────────────────────────────────────────── */
+
+/**
+ * توحيد النص العربي للمقارنة فقط: يُزال التشكيل والتطويل، وتُوحَّد صور الألف
+ * والياء والتاء المربوطة، وتُدمج المسافات. لا يُكتب الناتج في أي جدول.
+ */
+/** الأرقام الهندية (٠-٩) والفارسية (۰-۹) تُحوَّل إلى 0-9 كي تتطابق مع المكتوب بالإنجليزية. */
+function asciiDigits(value: string): string {
+  return value
+    .replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 0x06f0));
+}
+
+export function normalizeForMatch(value: unknown): string {
+  return asciiDigits(String(value ?? "").normalize("NFKC"))
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, "")
+    .replace(/[أإآٱ]/g, "ا")
+    .replace(/ى/g, "ي")
+    .replace(/ة/g, "ه")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/** أرقام الجوال تُقارن بآخر 9 خانات كي يتطابق 05… مع 9665… و+9665… */
+export function normalizePhoneForMatch(value: unknown): string {
+  const digits = asciiDigits(String(value ?? "").normalize("NFKC")).replace(/\D+/g, "");
+  return digits.length >= 9 ? digits.slice(-9) : "";
+}
+
+/** يجمع العناصر بمفتاح، ويُرجع المجموعات التي فيها أكثر من عنصر فقط. */
+export function duplicateGroups<T>(
+  items: readonly T[],
+  keyOf: (item: T) => string,
+): Array<{ key: string; members: T[] }> {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    const key = keyOf(item);
+    if (!key) continue;
+    const members = groups.get(key);
+    if (members) members.push(item);
+    else groups.set(key, [item]);
+  }
+  return [...groups.entries()]
+    .filter(([, members]) => members.length > 1)
+    .map(([key, members]) => ({ key, members }));
+}
+
+/** أقصى فاصل (بالدقائق) بين حركتين متتاليتين من النوع نفسه لتُعدّا تكراراً. */
+const DUPLICATE_PUNCH_MINUTES = 10;
+/** المدى الافتراضي لفحص حركات الحضور حين لا يُحدَّد «من». */
+const DUPLICATE_PUNCH_DEFAULT_DAYS = 62;
+
+/**
+ * تقرير «فحص التكرار» — للقراءة فقط: لا يحذف ولا يدمج ولا يعدّل أي سجل.
+ * يعرض ما يُشتبه بتكراره ليراجعه المسؤول ويقرّر بنفسه:
+ * موظفون بالهوية/الإقامة نفسها أو الجوال نفسه أو الاسم نفسه، أصناف مخزون
+ * وأقسام ومسميات بالاسم نفسه، وحركات حضور متتالية من النوع نفسه خلال دقائق.
+ */
+reportsRouter.get(
+  "/reports/duplicates",
+  requireAuth,
+  requirePermission(PERMISSIONS.reportsView),
+  async (req: AuthedRequest, res: Response) => {
+    if (!(await hasAnyPermission(req, [PERMISSIONS.employeesRead]))) {
+      res.status(403).json({
+        ok: false,
+        error: "فحص التكرار يحتاج صلاحية عرض بيانات الموظفين.",
+      });
+      return;
+    }
+
+    const db = getDb();
+    const filters: Filters = {
+      branchId: asId(req.query.branchId),
+      employeeId: asId(req.query.employeeId),
+      from: asDateOnly(req.query.from),
+      to: asDateOnly(req.query.to),
+      scope: "all",
+    };
+
+    const rows: Array<Record<string, unknown>> = [];
+    const counts = new Map<string, number>();
+    const addGroup = (
+      kind: string,
+      shared: string,
+      members: Array<{ code: string; name: string; details: string }>,
+    ) => {
+      counts.set(kind, (counts.get(kind) ?? 0) + 1);
+      for (const member of members) {
+        rows.push({ kind, shared, ...member, groupSize: members.length });
+      }
+    };
+
+    /* الموظفون */
+    const people = await db
+      .select({
+        id: employees.id,
+        employeeCode: employees.employeeCode,
+        fullName: employees.fullName,
+        nationalId: employees.nationalId,
+        phone: employees.phone,
+        isActive: employees.isActive,
+        branchId: employees.branchId,
+        branchName: branches.name,
+      })
+      .from(employees)
+      .leftJoin(branches, eq(employees.branchId, branches.id))
+      .orderBy(asc(employees.employeeCode));
+
+    const scopedPeople = people.filter(
+      (person) => !filters.branchId || person.branchId === filters.branchId,
+    );
+    const personMember = (person: (typeof people)[number]) => ({
+      code: person.employeeCode,
+      name: person.fullName,
+      details: [person.branchName ?? "بلا فرع", person.isActive ? "نشط" : "موقوف"].join(" — "),
+    });
+
+    for (const group of duplicateGroups(scopedPeople, (person) =>
+      normalizeForMatch(person.nationalId).replace(/\s+/g, ""),
+    )) {
+      addGroup(
+        "موظفون بالهوية/الإقامة نفسها",
+        String(group.members[0].nationalId ?? ""),
+        group.members.map(personMember),
+      );
+    }
+    for (const group of duplicateGroups(scopedPeople, (person) =>
+      normalizePhoneForMatch(person.phone),
+    )) {
+      addGroup(
+        "موظفون بالجوال نفسه",
+        String(group.members[0].phone ?? ""),
+        group.members.map(personMember),
+      );
+    }
+    for (const group of duplicateGroups(scopedPeople, (person) =>
+      normalizeForMatch(person.fullName),
+    )) {
+      addGroup(
+        "موظفون بالاسم نفسه",
+        group.members[0].fullName,
+        group.members.map(personMember),
+      );
+    }
+
+    /* الكيانات الأساسية: تُفحص على مستوى النظام كله لا الفرع */
+    const items = await db
+      .select({
+        code: inventoryItems.code,
+        name: inventoryItems.name,
+        unit: inventoryItems.unit,
+        category: inventoryItems.category,
+        isActive: inventoryItems.isActive,
+      })
+      .from(inventoryItems)
+      .orderBy(asc(inventoryItems.code));
+
+    for (const group of duplicateGroups(items, (item) => normalizeForMatch(item.name))) {
+      addGroup(
+        "أصناف مخزون بالاسم نفسه",
+        group.members[0].name,
+        group.members.map((item) => ({
+          code: item.code,
+          name: item.name,
+          details: [item.category || "بلا تصنيف", item.unit, item.isActive ? "نشط" : "موقوف"].join(
+            " — ",
+          ),
+        })),
+      );
+    }
+
+    const departmentRows = await db
+      .select({ name: departments.name })
+      .from(departments)
+      .orderBy(asc(departments.name));
+    for (const group of duplicateGroups(departmentRows, (row) => normalizeForMatch(row.name))) {
+      addGroup(
+        "أقسام بالاسم نفسه",
+        group.members[0].name,
+        group.members.map((row) => ({ code: "", name: row.name, details: "قسم" })),
+      );
+    }
+
+    const titleRows = await db
+      .select({ name: jobTitles.name })
+      .from(jobTitles)
+      .orderBy(asc(jobTitles.name));
+    for (const group of duplicateGroups(titleRows, (row) => normalizeForMatch(row.name))) {
+      addGroup(
+        "مسميات وظيفية بالاسم نفسه",
+        group.members[0].name,
+        group.members.map((row) => ({ code: "", name: row.name, details: "مسمى وظيفي" })),
+      );
+    }
+
+    /* حركات الحضور: حركتان متتاليتان معتمدتان من النوع نفسه خلال دقائق */
+    const end = filters.to ? new Date(`${filters.to}T23:59:59.999Z`) : new Date();
+    const start = filters.from
+      ? new Date(`${filters.from}T00:00:00Z`)
+      : new Date(end.getTime() - DUPLICATE_PUNCH_DEFAULT_DAYS * 86_400_000);
+
+    const punchConditions: SQL[] = [
+      eq(attendanceLogs.status, "approved"),
+      gte(attendanceLogs.serverTime, start),
+      lte(attendanceLogs.serverTime, end),
+    ];
+    if (filters.branchId) punchConditions.push(eq(attendanceLogs.branchId, filters.branchId));
+    if (filters.employeeId) {
+      punchConditions.push(eq(attendanceLogs.employeeId, filters.employeeId));
+    }
+
+    const punches = await db
+      .select({
+        id: attendanceLogs.id,
+        employeeId: attendanceLogs.employeeId,
+        type: attendanceLogs.type,
+        serverTime: attendanceLogs.serverTime,
+        source: attendanceLogs.source,
+        employeeCode: employees.employeeCode,
+        fullName: employees.fullName,
+        branchName: branches.name,
+        timezone: branches.timezone,
+      })
+      .from(attendanceLogs)
+      .innerJoin(employees, eq(attendanceLogs.employeeId, employees.id))
+      .leftJoin(branches, eq(attendanceLogs.branchId, branches.id))
+      .where(and(...punchConditions))
+      .orderBy(asc(attendanceLogs.employeeId), asc(attendanceLogs.serverTime));
+
+    const typeLabel = (type: string) => (type === "check_in" ? "حضور" : "انصراف");
+    const sourceLabel = (source: string) =>
+      source === "manual" ? "يدوي" : source === "auto_close" ? "إقفال تلقائي" : "من الجهاز";
+
+    for (let index = 1; index < punches.length; index += 1) {
+      const previous = punches[index - 1];
+      const current = punches[index];
+      if (previous.employeeId !== current.employeeId || previous.type !== current.type) continue;
+
+      const gapMinutes =
+        (current.serverTime.getTime() - previous.serverTime.getTime()) / 60_000;
+      if (gapMinutes > DUPLICATE_PUNCH_MINUTES) continue;
+
+      const formatter = new Intl.DateTimeFormat("en-GB", {
+        timeZone: safeTimeZone(current.timezone ?? "Asia/Riyadh"),
+        dateStyle: "short",
+        timeStyle: "short",
+      });
+      addGroup(
+        `حركتا ${typeLabel(current.type)} متتاليتان خلال ${DUPLICATE_PUNCH_MINUTES} دقائق`,
+        formatter.format(previous.serverTime),
+        [previous, current].map((punch) => ({
+          code: punch.employeeCode,
+          name: punch.fullName,
+          details: [
+            `سجل رقم ${punch.id}`,
+            formatter.format(punch.serverTime),
+            sourceLabel(punch.source),
+            punch.branchName ?? "",
+          ]
+            .filter(Boolean)
+            .join(" — "),
+        })),
+      );
+    }
+
+    sendReport(req, res, {
+      report: "duplicates",
+      title: "فحص التكرار",
+      columns: [
+        { key: "kind", label: "نوع التكرار", type: "text" },
+        { key: "shared", label: "القيمة المشتركة", type: "text" },
+        { key: "code", label: "الرقم / الكود", type: "text" },
+        { key: "name", label: "الاسم", type: "text" },
+        { key: "details", label: "التفاصيل", type: "text" },
+        { key: "groupSize", label: "عدد المتشابهين", type: "number" },
+      ],
+      rows,
+      summary:
+        counts.size === 0
+          ? [{ label: "النتيجة", value: "لا يوجد تكرار" }]
+          : [...counts.entries()].map(([label, total]) => ({ label, value: String(total) })),
+      filters,
+    });
+  },
+);
+
 /** فهرس التقارير المتاحة — تبني منه الواجهة قائمة الاختيار. */
 reportsRouter.get(
   "/reports",
@@ -942,6 +1232,7 @@ reportsRouter.get(
         { key: "cashier", title: "تقفيلات الكاشير", path: "/reports/cashier" },
         { key: "inventory", title: "حركة المخزون", path: "/reports/inventory" },
         { key: "documents", title: "النماذج المُصدرة", path: "/reports/documents" },
+        { key: "duplicates", title: "فحص التكرار", path: "/reports/duplicates" },
       ],
     });
   },

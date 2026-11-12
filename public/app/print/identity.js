@@ -4,7 +4,7 @@
  * `company_settings` وتُطبَّق تلقائياً على كل مستند يُطبع.
  */
 
-import { api } from "../api.js?v=v8";
+import { api } from "../api.js?v=v9";
 
 const PAPER_MM = {
   A4: { width: 210, height: 297, css: "A4" },

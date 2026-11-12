@@ -1407,6 +1407,10 @@ async function boot() {
     const tab = el("admin-tabs").querySelector(`[data-panel="${panel}"]`);
     if (tab) tab.hidden = !allowedTabs.includes(panel);
   }
+  // المجموعة التي لا يظهر منها أي تبويب تُخفى مع عنوانها
+  for (const group of el("admin-tabs").querySelectorAll(".tabgroup")) {
+    group.hidden = !group.querySelector(".tab:not([hidden])");
+  }
 
   initPeopleModule({ state, can, levelOf, canDeleteIn, refreshPeople });
   initReportsModule();

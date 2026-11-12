@@ -347,6 +347,28 @@ peopleRouter.post(
       return;
     }
 
+    /*
+     * منع فتح ملف ثانٍ للشخص نفسه: الهوية/الإقامة المسجَّلة لموظف قائم لا تُقبل
+     * في ملف جديد. الفحص عند الإضافة فقط، فلا يتأثر أي ملف محفوظ ولا تعديله.
+     */
+    if (profile.nationalId) {
+      const [sameIdentity] = await db
+        .select({ employeeCode: employees.employeeCode, fullName: employees.fullName })
+        .from(employees)
+        .where(eq(employees.nationalId, profile.nationalId))
+        .limit(1);
+
+      if (sameIdentity) {
+        res.status(409).json({
+          ok: false,
+          error:
+            `رقم الهوية/الإقامة مسجَّل مسبقاً للموظف ${sameIdentity.fullName} ` +
+            `(الرقم الوظيفي ${sameIdentity.employeeCode}). عدّل ملفه بدل إنشاء ملف جديد.`,
+        });
+        return;
+      }
+    }
+
     const password = asString(req.body?.password, 200);
     const [created] = await db
       .insert(employees)

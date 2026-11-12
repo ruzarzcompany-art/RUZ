@@ -418,6 +418,121 @@ export const DOC_CATALOG: DocSpec[] = [
     hidden: true,
     permissions: [PERMISSIONS.inventoryRead],
   },
+  {
+    key: "resignation",
+    title: "طلب استقالة",
+    group: "إنهاء الخدمة",
+    description:
+      "طلب استقالة من الموظف بآخر يوم عمل مقترح وسببها، مع خانة قرار الإدارة واعتماد آخر يوم عمل.",
+    needsEmployee: true,
+    refType: null,
+    refLabel: "",
+    needsMonth: false,
+    legal: true,
+  },
+  {
+    key: "clearance",
+    title: "إخلاء طرف",
+    group: "إنهاء الخدمة",
+    description:
+      "توقيع كل جهة (المسؤول المباشر، العهد، الصندوق، المالية، الموارد البشرية) بأن لا التزام قائم على الموظف — يسبق المخالصة النهائية.",
+    needsEmployee: true,
+    refType: null,
+    refLabel: "",
+    needsMonth: false,
+    legal: true,
+  },
+  {
+    key: "experience_certificate",
+    title: "شهادة خبرة",
+    group: "إنهاء الخدمة",
+    description:
+      "شهادة بمسمى الموظف ومدة خدمته تُصدر بعد انتهاء العلاقة العمالية وبطلبه.",
+    needsEmployee: true,
+    refType: null,
+    refLabel: "",
+    needsMonth: false,
+    legal: true,
+  },
+  {
+    key: "return_to_work",
+    title: "إقرار مباشرة عمل",
+    group: "الدوام والإجازات",
+    description:
+      "إقرار بالمباشرة الأولى بعد التعيين أو بالعودة من إجازة، بتاريخ المباشرة الفعلي وإفادة المسؤول المباشر.",
+    needsEmployee: true,
+    refType: null,
+    refLabel: "",
+    needsMonth: false,
+    legal: false,
+  },
+  {
+    key: "exit_permit",
+    title: "إذن خروج / استئذان",
+    group: "الدوام والإجازات",
+    description:
+      "إذن خروج مؤقت أو تأخر أو انصراف مبكر بوقته وسببه وطريقة احتساب مدته.",
+    needsEmployee: true,
+    refType: null,
+    refLabel: "",
+    needsMonth: false,
+    legal: false,
+  },
+  {
+    key: "custody_return",
+    title: "نموذج إعادة عهدة",
+    group: "العهد والمستندات",
+    description:
+      "استلام المنشأة عهدة سبق تسليمها للموظف، بحالتها عند الإعادة وما يُسوّى من تلف أو نقص.",
+    needsEmployee: true,
+    refType: "custody_items",
+    refLabel: "العهدة المُعادة (اختياري)",
+    needsMonth: false,
+    legal: true,
+  },
+  {
+    key: "undertaking",
+    title: "تعهد وإقرار موظف",
+    group: "الانضباط",
+    description:
+      "تعهد مكتوب من الموظف بالالتزام بعد ملاحظة أو مخالفة، يُحفظ في ملفه.",
+    needsEmployee: true,
+    refType: null,
+    refLabel: "",
+    needsMonth: false,
+    legal: true,
+  },
+  {
+    key: "stock_confirmation",
+    title: "محضر تثبيت المخزون",
+    group: "المخزون",
+    description:
+      "محضر بالرصيد الدفتري لكل صنف وخانات للكمية المثبَّتة والفرق وسببه، بتوقيع لجنة الجرد.",
+    needsEmployee: false,
+    refType: null,
+    refLabel: "",
+    needsMonth: false,
+    legal: false,
+    needsBranch: true,
+    needsDate: true,
+    dateLabel: "تاريخ التثبيت",
+    permissions: [PERMISSIONS.inventoryRead],
+  },
+  {
+    key: "waste_record",
+    title: "محضر هدر وإتلاف",
+    group: "المخزون",
+    description:
+      "محضر ورقي فارغ يُعبّأ في الفرع عند إتلاف أي صنف: الكمية والسبب والوقت والمسؤول، بتوقيع مدير الوردية.",
+    needsEmployee: false,
+    refType: null,
+    refLabel: "",
+    needsMonth: false,
+    legal: false,
+    needsBranch: true,
+    needsDate: true,
+    permissions: [PERMISSIONS.inventoryRead],
+  },
 ];
 
 const DOC_BY_KEY = new Map(DOC_CATALOG.map((doc) => [doc.key, doc]));
@@ -1661,7 +1776,7 @@ documentsRouter.get(
         res.status(404).json({ ok: false, error: "الحركة غير موجودة" });
         return;
       }
-    } else if (doc.key === "inventory_count_sheet") {
+    } else if (doc.key === "inventory_count_sheet" || doc.key === "stock_confirmation") {
       if (branchId === null) {
         res.status(400).json({ ok: false, error: "اختر الفرع أولاً" });
         return;
@@ -1694,10 +1809,23 @@ documentsRouter.get(
       });
     }
 
+    /* محضر الهدر ورقة فارغة: لا يحتاج إلا اسم الفرع وتاريخ اليوم المختار */
+    let sheetBranch: Awaited<ReturnType<typeof branchHeader>> = null;
+    let sheetDate: string | null = null;
+    if (doc.key === "waste_record") {
+      if (branchId === null) {
+        res.status(400).json({ ok: false, error: "اختر الفرع أولاً" });
+        return;
+      }
+      sheetBranch = await branchHeader(branchId);
+      sheetDate = asDateOnly(req.query.date) ?? sheetToday;
+    }
+
     res.json({
       ok: true,
       doc,
       legalNotice: doc.legal ? LEGAL_NOTICE : "",
+      sheetDate,
       company,
       month,
       attendanceSheet,
@@ -1719,7 +1847,12 @@ documentsRouter.get(
       ...(bundle
         ? {}
         : {
-            branch: rosterSheet?.branch ?? cashier?.branch ?? inventory?.branch ?? null,
+            branch:
+              rosterSheet?.branch ??
+              cashier?.branch ??
+              inventory?.branch ??
+              sheetBranch ??
+              null,
           }),
       issuedBy: { id: actor.id, fullName: actor.fullName, jobTitle: actor.jobTitle },
       generatedAt: new Date().toISOString(),
