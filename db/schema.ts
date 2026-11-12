@@ -1940,3 +1940,88 @@ export const foodicsInventoryEvents = pgTable(
     index("foodics_inventory_events_branch_time_idx").on(table.branchId, table.occurredAt),
   ],
 );
+
+/**
+ * purchase_receipts — استلام المشتريات: الحلقة اليدوية من الرقابة الثلاثية.
+ *
+ * الموظف المستلِم يؤكد ما وصل فعلاً (الكمية وسعر الوحدة لكل صنف) وإجمالي
+ * الفاتورة والمدفوع وصورتها. من هذا الاستلام تُنشأ حركات الإدخال في المخزون،
+ * ويُسجَّل المدفوع نقداً في السجل الموحّد للخزينة، فيبقى المصدر واحداً:
+ * الفاتورة ↔ الكمية المستلمة ↔ المبلغ المدفوع. وما لا يتطابق يُعلَّم للمراجعة.
+ */
+export const purchaseReceipts = pgTable(
+  "purchase_receipts",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    businessDate: date("business_date").notNull(),
+    supplier: text().notNull().default(""),
+    /** رقم فاتورة المورد — فريد داخل الفرع متى وُجد */
+    invoiceNumber: text("invoice_number").notNull().default(""),
+    /** cash = من الصندوق، transfer = تحويل/شبكة، credit = آجل على المورد */
+    paymentMethod: text("payment_method").notNull().default("cash"),
+    /** الإجمالي المكتوب على الفاتورة كما قرأه الموظف */
+    invoiceTotal: money("invoice_total"),
+    /** المدفوع فعلاً عند الاستلام */
+    paidAmount: money("paid_amount"),
+    /** مجموع (الكمية × سعر الوحدة) للأصناف المستلمة — يحسبه الخادم */
+    linesTotal: money("lines_total"),
+    /** إجمالي الفاتورة − مجموع الأصناف */
+    difference: money("difference"),
+    /** ok = بلا ملاحظات، needs_review = عليه ملاحظات، approved | disputed بعد المراجعة */
+    status: text().notNull().default("ok"),
+    /** رموز الملاحظات الآلية بصيغة JSON (مصفوفة نصوص) */
+    flags: text().notNull().default("[]"),
+    /** مفتاح صورة الفاتورة في مخزن الملفات — فارغ إن لم تُرفق */
+    photoKey: text("photo_key").notNull().default(""),
+    /** قيد الخزينة الناتج عن الدفع النقدي */
+    cashExpenseId: integer("cash_expense_id").references(() => cashExpenses.id, {
+      onDelete: "set null",
+    }),
+    /** مرجع الفاتورة المقابلة في فوديكس — يُملأ عند المطابقة الآلية لاحقاً */
+    foodicsReference: text("foodics_reference").notNull().default(""),
+    notes: text().notNull().default(""),
+    receivedByEmployeeId: integer("received_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    reviewedByEmployeeId: integer("reviewed_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    reviewNote: text("review_note").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("purchase_receipts_invoice_unique_idx")
+      .on(table.branchId, table.invoiceNumber)
+      .where(sql.raw("invoice_number <> ''")),
+    index("purchase_receipts_branch_date_idx").on(table.branchId, table.businessDate),
+  ],
+);
+
+/** purchase_receipt_lines — أصناف الاستلام، وكل سطر مرتبط بحركة إدخاله. */
+export const purchaseReceiptLines = pgTable(
+  "purchase_receipt_lines",
+  {
+    id: serial().primaryKey(),
+    receiptId: integer("receipt_id")
+      .notNull()
+      .references(() => purchaseReceipts.id, { onDelete: "cascade" }),
+    itemId: integer("item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "cascade" }),
+    quantity: doublePrecision().notNull().default(0),
+    unitCost: money("unit_cost"),
+    totalCost: money("total_cost"),
+    /** سعر وحدة الصنف قبل هذا الاستلام — لكشف قفزات السعر */
+    previousUnitCost: money("previous_unit_cost"),
+    /** حركة الإدخال الناتجة في `inventory_movements` (عمود عادي بلا مفتاح أجنبي) */
+    movementId: integer("movement_id"),
+  },
+  (table) => [index("purchase_receipt_lines_receipt_idx").on(table.receiptId)],
+);
