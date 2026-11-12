@@ -34,6 +34,7 @@ import { reportsRouter } from "./routes/reports.js";
 import { settingsRouter } from "./routes/settings.js";
 import { surveillanceRouter } from "./routes/surveillance.js";
 import { foodicsRouter } from "./routes/foodics.js";
+import { purchasesRouter } from "./routes/purchases.js";
 import { ensureSeeded } from "./seed.js";
 import {
   getAutoCloseHour,
@@ -64,6 +65,8 @@ export function createApp() {
   // الحد مرفوع إلى 1MB لأن شعار الشركة يُرسل كـData URL داخل JSON.
   // لقطات الكاميرات من جهاز الربط أكبر من بقية الطلبات (حد دوال Netlify 6MB)
   app.use("/api/surveillance/snapshots", express.json({ limit: "6mb" }));
+  // استلام المشتريات يحمل صورة الفاتورة (مضغوطة في المتصفح) ضمن الطلب
+  app.use("/api/purchases/receipts", express.json({ limit: "4mb" }));
   app.use(express.json({ limit: "1mb" }));
 
   /** فحص جاهزية لا يعتمد على قاعدة البيانات. */
@@ -450,6 +453,7 @@ export function createApp() {
   app.use("/api", accessRouter);
   app.use("/api", surveillanceRouter);
   app.use("/api", foodicsRouter);
+  app.use("/api", purchasesRouter);
 
   app.use("/api", (_req: Request, res: Response) => {
     res.status(404).json({ ok: false, error: "المسار غير موجود" });
