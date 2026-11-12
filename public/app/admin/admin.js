@@ -47,6 +47,7 @@ import {
 } from "./people.js";
 import { initReportsModule } from "./reports.js";
 import { initSettingsModule, refreshSettingsPanel } from "./settings.js";
+import { mountPurge } from "./purge.js";
 import { initCashierModule, refreshCashierPanel } from "./cashier.js";
 import { initCashboxModule, refreshCashboxPanel } from "./cashbox.js";
 import { initInventoryModule, refreshInventoryPanel } from "./inventory.js";
@@ -1084,6 +1085,10 @@ const PANEL_LOADERS = {
     fillPeopleSelects();
   },
   settings: async () => {
+    // التصفية لمن يملك إدارة الإعدادات فقط؛ الخادم يتحقق من درجة الحذف أيضاً
+    const purgeRoot = el("purge-root");
+    el("purge-card").hidden = !can("settings.manage");
+    if (can("settings.manage") && purgeRoot.childElementCount === 0) mountPurge(purgeRoot);
     await refreshSettingsPanel(state.employees);
   },
   access: refreshAccessPanel,
