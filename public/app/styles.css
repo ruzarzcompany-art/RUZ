@@ -860,6 +860,47 @@ select option {
   border-color: var(--line);
 }
 
+/* تبويبات لوحة الإدارة مجمَّعة بحسب مجال العمل، ولكل مجموعة عنوان صغير */
+.tabs--grouped {
+  gap: 0.6rem 1.1rem;
+  align-items: flex-end;
+}
+
+.tabgroup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding-inline-start: 0.7rem;
+  border-inline-start: 2px solid var(--line);
+}
+
+.tabgroup[hidden] {
+  display: none;
+}
+
+.tabgroup__label {
+  flex-basis: 100%;
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  color: var(--bone-dim);
+}
+
+/* على الشاشات الضيقة تُعرض التبويبات متتابعة بلا عناوين كي لا يطول الشريط */
+@media (max-width: 900px) {
+  .tabs--grouped {
+    gap: 0.5rem;
+  }
+
+  .tabgroup:not([hidden]) {
+    display: contents;
+  }
+
+  .tabgroup__label {
+    display: none;
+  }
+}
+
 /* قائمة الأقسام الإضافية في تطبيق الموظف */
 .tabs--extras {
   margin-bottom: 1rem;
@@ -869,6 +910,14 @@ select option {
   display: grid;
   gap: 1rem;
   animation: rise 0.5s var(--ease) both;
+}
+
+/*
+ * عناصر الشبكة لا تنكمش دون عرض محتواها افتراضياً، فكان الجدول العريض يمدّ
+ * البطاقة خارج شاشة الجوال. بهذا تبقى البطاقة بعرض الشاشة والجدول يتمرّر داخلها.
+ */
+.panel > * {
+  min-width: 0;
 }
 
 /* ── شبكات النماذج والمرشّحات ───────────────────────────────── */
@@ -1264,6 +1313,22 @@ select option {
 .sheet__count tbody td:nth-child(8),
 .sheet__count tbody td:nth-child(9),
 .sheet__count tbody td:nth-child(10) {
+  height: 2rem;
+}
+
+/* جداول تُعبّأ باليد (إخلاء الطرف، تثبيت المخزون، محضر الهدر): صفوف أعلى */
+.sheet__blank {
+  font-size: 0.78rem;
+  width: 100%;
+}
+
+.sheet__blank th,
+.sheet__blank td {
+  padding: 0.3rem 0.35rem;
+  overflow-wrap: anywhere;
+}
+
+.sheet__blank tbody td {
   height: 2rem;
 }
 
