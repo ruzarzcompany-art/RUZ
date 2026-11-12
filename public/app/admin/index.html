@@ -31,21 +31,36 @@
 
     <p id="admin-alert" class="alert" role="status" hidden></p>
 
-    <nav class="tabs tabs--main" id="admin-tabs" role="tablist">
-      <button class="tab is-active" type="button" data-panel="attendance">الحضور</button>
-      <button class="tab" type="button" data-panel="forms">النماذج</button>
-      <button class="tab" type="button" data-panel="payroll">الرواتب</button>
-      <button class="tab" type="button" data-panel="people">الموظفون</button>
-      <button class="tab" type="button" data-panel="branches">الفروع</button>
-      <button class="tab" type="button" data-panel="documents">حزمة النماذج</button>
-      <button class="tab" type="button" data-panel="cashier">تقفيل الكاشير</button>
-      <button class="tab" type="button" data-panel="cashbox">النقدية والإقفال</button>
-      <button class="tab" type="button" data-panel="inventory">المخزون</button>
-      <button class="tab" type="button" data-panel="surveillance">الرقابة والكاميرات</button>
-      <button class="tab" type="button" data-panel="reports">التقارير</button>
-      <button class="tab" type="button" data-panel="settings">الإعدادات</button>
-      <button class="tab" type="button" data-panel="access">إدارة الصلاحيات</button>
-      <button class="tab" type="button" data-panel="audit">سجل التدقيق</button>
+    <nav class="tabs tabs--main tabs--grouped" id="admin-tabs" role="tablist">
+      <div class="tabgroup">
+        <span class="tabgroup__label">الموظفون والدوام</span>
+        <button class="tab is-active" type="button" data-panel="attendance">الحضور</button>
+        <button class="tab" type="button" data-panel="people">الموظفون</button>
+        <button class="tab" type="button" data-panel="branches">الفروع</button>
+      </div>
+      <div class="tabgroup">
+        <span class="tabgroup__label">الطلبات والرواتب</span>
+        <button class="tab" type="button" data-panel="forms">طلبات الموظفين</button>
+        <button class="tab" type="button" data-panel="payroll">الرواتب</button>
+        <button class="tab" type="button" data-panel="documents">النماذج المطبوعة</button>
+      </div>
+      <div class="tabgroup">
+        <span class="tabgroup__label">المالية</span>
+        <button class="tab" type="button" data-panel="cashier">تقفيل الكاشير</button>
+        <button class="tab" type="button" data-panel="cashbox">النقدية والإقفال</button>
+      </div>
+      <div class="tabgroup">
+        <span class="tabgroup__label">المخزون والرقابة</span>
+        <button class="tab" type="button" data-panel="inventory">المخزون</button>
+        <button class="tab" type="button" data-panel="surveillance">الرقابة والكاميرات</button>
+      </div>
+      <div class="tabgroup">
+        <span class="tabgroup__label">التقارير والنظام</span>
+        <button class="tab" type="button" data-panel="reports">التقارير</button>
+        <button class="tab" type="button" data-panel="settings">الإعدادات</button>
+        <button class="tab" type="button" data-panel="access">إدارة الصلاحيات</button>
+        <button class="tab" type="button" data-panel="audit">سجل التدقيق</button>
+      </div>
     </nav>
 
     <!-- ── الحضور ─────────────────────────────────────────────── -->
@@ -758,6 +773,7 @@
               <option value="cashier">تقفيلات الكاشير</option>
               <option value="inventory">حركة المخزون</option>
               <option value="documents">النماذج المُصدرة</option>
+              <option value="duplicates">فحص التكرار (قراءة فقط)</option>
             </select>
           </label>
           <label class="field field--sm">
@@ -794,6 +810,12 @@
         <p class="hint">
           تقرير الرواتب يُصفّى بالشهر المستخرج من «من/إلى». باقي التقارير تُصفّى بالتاريخ
           مباشرة.
+        </p>
+        <p class="hint">
+          «فحص التكرار» يعرض الموظفين المتشابهين (الهوية/الإقامة، الجوال، الاسم) وأصناف
+          المخزون والأقسام والمسميات المكرّرة وحركات الحضور المتتالية من النوع نفسه خلال
+          10 دقائق (آخر 62 يوماً إن لم يُحدَّد «من»). التقرير للعرض فقط — لا يحذف ولا
+          يدمج ولا يعدّل أي سجل.
         </p>
       </section>
     </main>
