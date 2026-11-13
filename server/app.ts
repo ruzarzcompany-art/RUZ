@@ -69,6 +69,8 @@ export function createApp() {
   app.use("/api/surveillance/snapshots", express.json({ limit: "6mb" }));
   // استلام المشتريات يحمل صورة الفاتورة (مضغوطة في المتصفح) ضمن الطلب
   app.use("/api/purchases/receipts", express.json({ limit: "4mb" }));
+  // أحداث جهاز التحليل تحمل لقطة الدليل (JPEG مضغوطة) مع كل حدث
+  app.use("/api/control/edge", express.json({ limit: "5mb" }));
   app.use(express.json({ limit: "1mb" }));
 
   /** فحص جاهزية لا يعتمد على قاعدة البيانات. */

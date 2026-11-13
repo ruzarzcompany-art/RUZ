@@ -11,6 +11,15 @@
  *   POST   /api/control/reviews/sync               سحب تقييمات قوقل الآن
  *   POST   /api/control/brief                      بناء التقرير الليلي (وإرساله اختيارياً)
  *
+ *   GET    /api/control/zones?branchId=            المناطق المرسومة والكاميرات
+ *   POST   /api/control/zones                      رسم منطقة (طاولة/طابور/باب/ممنوعة)
+ *   DELETE /api/control/zones/:id                  حذف منطقة
+ *
+ * جهاز التحليل داخل المطعم (بالرأس X-Surveillance-Key):
+ *   GET  /api/control/edge/config?branchCode=      المناطق والحدود وساعات العمل
+ *   POST /api/control/edge/events                  أحداث الرصد المباشر ونبض الجهاز
+ *   POST /api/control/edge/preview                 لقطة معاينة لرسم المناطق
+ *
  * مسارات عامة بلا دخول (محمية برمز موقّع أو بحدود معدّل):
  *   GET  /api/control/ack-info?t=       بيانات التنبيه لصفحة تأكيد الاستلام
  *   POST /api/control/ack               تأكيد الاستلام من رابط واتساب
@@ -26,8 +35,10 @@ import {
   controlDispatches,
   controlMessages,
   controlRecipients,
+  controlZones,
   employees,
   surveillanceAlerts,
+  surveillanceCameras,
 } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
@@ -48,10 +59,19 @@ import {
   whatsappConfig,
   type Tier,
 } from "../control.js";
+import {
+  ZONE_KINDS,
+  edgeConfig,
+  ingestEdgeEvent,
+  parsePoints,
+  savePreview,
+  touchEdge,
+  zonesForBranch,
+} from "../edge.js";
 import { PERMISSIONS, requireModuleLevel, requirePermission } from "../rbac.js";
 import { isoDateInZone, safeTimeZone } from "../time.js";
 import { asBool, asDateOnly, asEnum, asId, asNumber, asString } from "../validate.js";
-import { ALERT_TYPES, LABELS, loadBranch } from "./surveillance.js";
+import { ALERT_TYPES, LABELS, loadBranch, webhookAuthorized } from "./surveillance.js";
 
 export const controlRouter = Router();
 
@@ -91,6 +111,13 @@ controlRouter.put("/control/settings", ...canManage, async (req: AuthedRequest, 
   if ([staffAckMinutes, orderStaffAckMinutes, managerAckMinutes].some((m) => m < 1 || m > 120)) {
     return bad(res, "مهل الاستلام بين دقيقة و120 دقيقة (الفحص الدوري كل دقيقة)");
   }
+  const tableWaitMinutes = minutes(body.tableWaitMinutes, current.tableWaitMinutes);
+  const tableClearMinutes = minutes(body.tableClearMinutes, current.tableClearMinutes);
+  if (tableWaitMinutes < 1 || tableWaitMinutes > 60 || tableClearMinutes < 1 || tableClearMinutes > 60) {
+    return bad(res, "مهلة خدمة الطاولة ومهلة تنظيفها بين دقيقة و60 دقيقة");
+  }
+  const queueSeconds = Math.round(asNumber(body.queueSeconds) ?? current.queueSeconds);
+  if (queueSeconds < 15 || queueSeconds > 900) return bad(res, "مدة الطابور بين 15 و900 ثانية");
   const queueMax = Math.round(asNumber(body.queueMax) ?? current.queueMax);
   const reviewMaxStars = Math.round(asNumber(body.reviewMaxStars) ?? current.reviewMaxStars);
   const tableCount = Math.round(asNumber(body.tableCount) ?? current.tableCount);
@@ -111,6 +138,9 @@ controlRouter.put("/control/settings", ...canManage, async (req: AuthedRequest, 
     orderStaffAckMinutes,
     managerAckMinutes,
     queueMax,
+    queueSeconds,
+    tableWaitMinutes,
+    tableClearMinutes,
     notifyMinor: asBool(body.notifyMinor) ?? current.notifyMinor,
     googleLocation,
     reviewMaxStars,
@@ -392,5 +422,116 @@ controlRouter.post("/public/feedback", async (req: Request, res: Response) => {
   if (category === "other" && !message) return bad(res, "اكتب ملاحظتك");
   const result = await submitFeedback({ branch, tableNo, category, message, phone });
   if (!result.ok) return bad(res, result.error ?? "تعذّر الإرسال", 429);
+  res.json({ ok: true });
+});
+
+/* ── مناطق التحليل المباشر ───────────────────────────────────── */
+
+controlRouter.get("/control/zones", ...canRead, async (req: AuthedRequest, res: Response) => {
+  const branch = await loadBranch(branchIdOf(req, req.query.branchId));
+  if (!branch) return bad(res, "اختر الفرع");
+  res.json({ ok: true, ...(await zonesForBranch(branch.id)) });
+});
+
+controlRouter.post("/control/zones", ...canManage, async (req: AuthedRequest, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const branch = await loadBranch(asId(body.branchId));
+  if (!branch) return bad(res, "اختر الفرع");
+  const db = getDb();
+  const cameraId = asId(body.cameraId);
+  const [camera] = cameraId
+    ? await db
+        .select()
+        .from(surveillanceCameras)
+        .where(and(eq(surveillanceCameras.id, cameraId), eq(surveillanceCameras.branchId, branch.id)))
+    : [];
+  if (!camera) return bad(res, "اختر الكاميرا");
+  const kind = asEnum(body.kind, ZONE_KINDS);
+  if (!kind) return bad(res, "اختر نوع المنطقة");
+  const points = parsePoints(body.points, kind);
+  if (!points) {
+    return bad(res, kind === "door" ? "خط الباب نقطتان فقط" : "ارسم المنطقة بثلاث نقاط على الأقل (12 كحد أقصى)");
+  }
+  const label = (asString(body.label, 40) ?? "").trim();
+  if (kind === "table" && !label) return bad(res, "اكتب رقم الطاولة");
+  const [created] = await db
+    .insert(controlZones)
+    .values({ branchId: branch.id, cameraId: camera.id, kind, label, pointsJson: JSON.stringify(points) })
+    .returning({ id: controlZones.id });
+  await recordAudit({
+    actorEmployeeId: req.employee!.id,
+    action: "control.zone_create",
+    entityType: "control_zone",
+    entityId: created.id,
+    after: { cameraId: camera.id, kind, label, points },
+    ipAddress: clientIp(req),
+  });
+  res.json({ ok: true, id: created.id, message: "حُفظت المنطقة — يلتقطها جهاز التحليل خلال دقيقة." });
+});
+
+controlRouter.delete("/control/zones/:id", ...canManage, async (req: AuthedRequest, res: Response) => {
+  const id = asId(req.params.id);
+  const db = getDb();
+  const [before] = id ? await db.select().from(controlZones).where(eq(controlZones.id, id)) : [];
+  if (!before) return bad(res, "المنطقة غير موجودة", 404);
+  await db.delete(controlZones).where(eq(controlZones.id, before.id));
+  await recordAudit({
+    actorEmployeeId: req.employee!.id,
+    action: "control.zone_delete",
+    entityType: "control_zone",
+    entityId: before.id,
+    before,
+    ipAddress: clientIp(req),
+  });
+  res.json({ ok: true, message: "حُذفت المنطقة." });
+});
+
+/* ── جهاز التحليل داخل المطعم ────────────────────────────────── */
+
+async function edgeBranch(req: Request, res: Response, code: unknown) {
+  if (!process.env.SURVEILLANCE_WEBHOOK_SECRET) {
+    bad(res, "الربط الآلي غير مفعّل — اضبط SURVEILLANCE_WEBHOOK_SECRET", 503);
+    return null;
+  }
+  if (!webhookAuthorized(req)) {
+    bad(res, "مفتاح غير صحيح", 401);
+    return null;
+  }
+  const branch = await branchByCode(code);
+  if (!branch) bad(res, "رمز الفرع غير معروف", 404);
+  return branch;
+}
+
+controlRouter.get("/control/edge/config", async (req: Request, res: Response) => {
+  const branch = await edgeBranch(req, res, req.query.branchCode);
+  if (!branch) return;
+  await touchEdge(branch.id);
+  res.json({ ok: true, serverTime: new Date().toISOString(), ...(await edgeConfig(branch)) });
+});
+
+controlRouter.post("/control/edge/events", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const branch = await edgeBranch(req, res, body.branchCode);
+  if (!branch) return;
+  await touchEdge(branch.id, body.status);
+  const events = Array.isArray(body.events) ? body.events.slice(0, 20) : [];
+  const results = [];
+  for (const event of events) {
+    try {
+      results.push(await ingestEdgeEvent(branch, (event ?? {}) as Record<string, unknown>));
+    } catch (error) {
+      results.push({ ok: false, type: String((event as { type?: unknown })?.type ?? ""), error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  res.json({ ok: true, results });
+});
+
+controlRouter.post("/control/edge/preview", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const branch = await edgeBranch(req, res, body.branchCode);
+  if (!branch) return;
+  await touchEdge(branch.id);
+  const saved = await savePreview(branch, (asString(body.cameraNumber, 40) ?? "").trim(), body.image);
+  if (!saved) return bad(res, "الكاميرا غير معروفة أو الصورة غير صالحة (JPEG حتى 1.5MB)");
   res.json({ ok: true });
 });

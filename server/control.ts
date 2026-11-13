@@ -23,13 +23,16 @@ import {
   controlDispatches,
   controlMessages,
   controlRecipients,
+  controlFootfall,
   controlSettings,
+  controlTableSessions,
   customerFeedback,
   googleReviews,
   surveillanceAlerts,
   surveillanceCameras,
 } from "../db/schema.js";
 import { env, getJwtSecret } from "./config.js";
+import { checkEdgeOffline, edgeOverview } from "./edge.js";
 import { foodicsDaySales, foodicsStatus } from "./foodics.js";
 import {
   ALERT_TYPES,
@@ -127,6 +130,12 @@ export async function controlSettingsFor(branchId: number) {
     orderStaffAckMinutes: row?.orderStaffAckMinutes ?? 2,
     managerAckMinutes: row?.managerAckMinutes ?? 3,
     queueMax: row?.queueMax ?? 4,
+    tableWaitMinutes: row?.tableWaitMinutes ?? 5,
+    tableClearMinutes: row?.tableClearMinutes ?? 1,
+    queueSeconds: row?.queueSeconds ?? 60,
+    edgeLastSeenAt: row?.edgeLastSeenAt ?? null,
+    edgeStatusJson: row?.edgeStatusJson ?? "",
+    edgeOfflineNotified: row?.edgeOfflineNotified ?? false,
     notifyMinor: row?.notifyMinor ?? false,
     googleLocation: row?.googleLocation ?? "",
     reviewMaxStars: row?.reviewMaxStars ?? 3,
@@ -808,6 +817,16 @@ export async function briefFacts(branch: BranchRow, date: string) {
       .then(async (status) => (status.connected && status.foodicsBranchId ? await foodicsDaySales(branch.id, date) : null))
       .catch(() => null),
   ]);
+  const [sessions, footfall] = await Promise.all([
+    db
+      .select()
+      .from(controlTableSessions)
+      .where(and(eq(controlTableSessions.branchId, branch.id), gte(controlTableSessions.seatedAt, start), lt(controlTableSessions.seatedAt, end))),
+    db
+      .select()
+      .from(controlFootfall)
+      .where(and(eq(controlFootfall.branchId, branch.id), gte(controlFootfall.hourStart, start), lt(controlFootfall.hourStart, end))),
+  ]);
 
   const byType = new Map<string, number>();
   for (const a of alerts) byType.set(a.alertType, (byType.get(a.alertType) ?? 0) + 1);
@@ -871,9 +890,36 @@ export async function briefFacts(branch: BranchRow, date: string) {
       bad: reviews.filter((r) => r.rating > 0 && r.rating <= 3).map((r) => ({ rating: r.rating, comment: r.comment.slice(0, 200) })),
     },
     tableFeedback: { count: feedback.length, byCategory: Object.fromEntries(feedbackByCategory) },
+    tables: tableStats(sessions),
+    footfall: footfallStats(footfall, foodics?.invoices ?? null),
     waste: report.waste.slice(0, 8),
     cameras: report.cameras,
     recommendations: report.recommendations,
+  };
+}
+
+/** إحصاءات جلسات الطاولات من التحليل المباشر. */
+export function tableStats(sessions: Array<typeof controlTableSessions.$inferSelect>) {
+  const mean = (list: number[]) => (list.length ? Math.round(list.reduce((s, n) => s + n, 0) / list.length) : null);
+  const visits = sessions.filter((s) => s.firstVisitSeconds !== null).map((s) => s.firstVisitSeconds!);
+  const cleared = sessions.filter((s) => s.clearedSeconds !== null).map((s) => s.clearedSeconds!);
+  return {
+    sessions: sessions.length,
+    avgFirstVisitSeconds: mean(visits),
+    maxFirstVisitSeconds: visits.length ? Math.max(...visits) : null,
+    leftWithoutVisit: sessions.filter((s) => s.leftAt && s.firstVisitSeconds === null).length,
+    avgClearSeconds: mean(cleared),
+  };
+}
+
+/** الداخلون من الباب مقابل فواتير فوديكس (نسبة الشراء). */
+export function footfallStats(rows: Array<typeof controlFootfall.$inferSelect>, invoices: number | null) {
+  const entries = rows.reduce((s, r) => s + r.entries, 0);
+  return {
+    entries: rows.length ? entries : null,
+    invoices,
+    // فاتورة واحدة قد تخدم مجموعة، فالنسبة مؤشر اتجاه لا رقم دقيق
+    invoicesPer100Entries: rows.length && entries > 0 && invoices !== null ? Math.round((invoices / entries) * 100) : null,
   };
 }
 
@@ -893,6 +939,12 @@ function fallbackBrief(facts: BriefFacts): string {
     `الاستجابة: استُلم ${facts.response.acknowledged} من ${facts.response.notified}، وصل للمالك بالتصعيد ${facts.response.reachedOwnerByEscalation}`,
     facts.googleReviews.count ? `تقييمات قوقل: ${facts.googleReviews.count} بمتوسط ${facts.googleReviews.average}` : "",
     facts.tableFeedback.count ? `شكاوى الطاولات: ${facts.tableFeedback.count}` : "",
+    facts.tables.sessions
+      ? `الطاولات: ${facts.tables.sessions} جلسة، متوسط وصول الموظف ${facts.tables.avgFirstVisitSeconds ?? "—"} ث، غادر بلا خدمة ${facts.tables.leftWithoutVisit}`
+      : "",
+    facts.footfall.entries !== null
+      ? `الداخلون: ${facts.footfall.entries}${facts.footfall.invoices !== null ? ` مقابل ${facts.footfall.invoices} فاتورة` : ""}`
+      : "",
   ];
   return lines.filter(Boolean).join("\n");
 }
@@ -1003,6 +1055,9 @@ export async function runControlTick(budgetMs = 22_000) {
   const escalation = await escalateDue();
   result.escalated = escalation.escalated;
   result.closed = escalation.closed;
+  await checkEdgeOffline().catch((error) =>
+    console.error("[control] فشل فحص جهاز التحليل:", error instanceof Error ? error.message : error),
+  );
 
   const rows = await db
     .select({ settings: controlSettings, branch: branches })
@@ -1099,6 +1154,7 @@ export async function controlOverview(branch: BranchRow, date: string) {
 
   const wa = whatsappConfig();
   return {
+    edge: await edgeOverview(branch, date),
     settings,
     whatsapp: { configured: wa.configured, provider: wa.provider, template: wa.provider === "meta" ? wa.template : "" },
     google: { configured: googleConfig().configured },

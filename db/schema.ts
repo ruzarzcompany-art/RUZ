@@ -2048,6 +2048,18 @@ export const controlSettings = pgTable("control_settings", {
   managerAckMinutes: doublePrecision("manager_ack_minutes").notNull().default(3),
   /** عدد الواقفين في طابور الكاشير الذي يُعدّ بعده الطابور طويلاً */
   queueMax: integer("queue_max").notNull().default(4),
+  /* ── التحليل المباشر (جهاز التحليل داخل المطعم) ── */
+  /** دقائق جلوس العميل على الطاولة بلا وصول موظف قبل التنبيه */
+  tableWaitMinutes: doublePrecision("table_wait_minutes").notNull().default(5),
+  /** دقائق مسموحة لتنظيف الطاولة بعد مغادرة العميل */
+  tableClearMinutes: doublePrecision("table_clear_minutes").notNull().default(1),
+  /** ثواني استمرار الطابور فوق الحد قبل التنبيه */
+  queueSeconds: integer("queue_seconds").notNull().default(60),
+  /** آخر اتصال من جهاز التحليل، وحالته كما أرسلها */
+  edgeLastSeenAt: timestamp("edge_last_seen_at", { withTimezone: true }),
+  edgeStatusJson: text("edge_status_json").notNull().default(""),
+  /** هل نُبّه المالك عن انقطاع الجهاز الحالي؟ (تنبيه واحد لكل انقطاع) */
+  edgeOfflineNotified: boolean("edge_offline_notified").notNull().default(false),
   /** إرسال الملاحظات البسيطة (جوال، تجمع…) للمدير فور وقوعها بدل الاكتفاء بالتقرير */
   notifyMinor: boolean("notify_minor").notNull().default(false),
   /** مسار موقع النشاط في قوقل: accounts/{id}/locations/{id} */
@@ -2211,4 +2223,73 @@ export const controlBriefs = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex("control_briefs_branch_date_idx").on(table.branchId, table.businessDate)],
+);
+
+/**
+ * control_zones — المناطق المرسومة على صورة الكاميرا للتحليل المباشر:
+ * طاولة (مضلّع فوق سطحها)، طابور الكاشير، خط الباب لعدّ الداخلين، أو منطقة
+ * ممنوعة خارج الدوام. النقاط نسب من عرض وارتفاع الصورة (0–1).
+ */
+export const controlZones = pgTable(
+  "control_zones",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    cameraId: integer("camera_id")
+      .notNull()
+      .references(() => surveillanceCameras.id, { onDelete: "cascade" }),
+    /** table | queue | door | restricted */
+    kind: text().notNull().default("table"),
+    /** رقم الطاولة أو اسم المنطقة */
+    label: text().notNull().default(""),
+    /** [[x,y],…] نسب 0–1 — للباب نقطتان فقط (خط العبور) */
+    pointsJson: text("points_json").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("control_zones_branch_camera_idx").on(table.branchId, table.cameraId)],
+);
+
+/** control_table_sessions — كل جلسة طاولة: متى جلسوا، متى وصلهم الموظف، متى نُظّفت. */
+export const controlTableSessions = pgTable(
+  "control_table_sessions",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    zoneId: integer("zone_id").references(() => controlZones.id, { onDelete: "set null" }),
+    tableLabel: text("table_label").notNull().default(""),
+    seatedAt: timestamp("seated_at", { withTimezone: true }).notNull(),
+    leftAt: timestamp("left_at", { withTimezone: true }),
+    /** ثواني حتى أول وصول موظف — null إن لم يصل أحد */
+    firstVisitSeconds: integer("first_visit_seconds"),
+    /** ثواني من المغادرة حتى تنظيف الطاولة — null إن لم تُرصد */
+    clearedSeconds: integer("cleared_seconds"),
+    maxPeople: integer("max_people").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("control_table_sessions_zone_seated_idx").on(table.zoneId, table.seatedAt),
+    index("control_table_sessions_branch_time_idx").on(table.branchId, table.seatedAt),
+  ],
+);
+
+/** control_footfall — عدد الداخلين والخارجين من الباب لكل ساعة (لحساب نسبة الشراء). */
+export const controlFootfall = pgTable(
+  "control_footfall",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    hourStart: timestamp("hour_start", { withTimezone: true }).notNull(),
+    entries: integer().notNull().default(0),
+    exits: integer().notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("control_footfall_branch_hour_idx").on(table.branchId, table.hourStart)],
 );

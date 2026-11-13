@@ -2921,6 +2921,18 @@
               <input id="ct-queue" type="number" min="1" max="30" step="1" />
             </label>
             <label class="field field--sm">
+              <span class="field__label">مدة الطابور قبل التنبيه (ثانية)</span>
+              <input id="ct-queue-sec" type="number" min="15" max="900" step="5" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">عميل جالس بلا موظف (دقيقة)</span>
+              <input id="ct-table-wait" type="number" min="1" max="60" step="1" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">مهلة تنظيف الطاولة بعد المغادرة (دقيقة)</span>
+              <input id="ct-table-clear" type="number" min="1" max="60" step="1" />
+            </label>
+            <label class="field field--sm">
               <span class="field__label">تنبيه تقييم قوقل عند (نجوم أو أقل)</span>
               <input id="ct-stars" type="number" min="1" max="4" step="1" />
             </label>
@@ -2988,6 +3000,40 @@
             <button id="ct-r-save" class="btn btn--primary btn--sm" type="submit">إضافة مستلم</button>
           </div>
         </form>
+
+        <h3 class="card__title card__title--sm">التحليل المباشر: الطاولات والطابور والباب</h3>
+        <p id="ct-edge-status" class="row row--wrap"></p>
+        <p class="hint">
+          جهاز التحليل داخل المطعم يتابع الكاميرات باستمرار ويعدّ لكل طاولة مرسومة: متى جلس
+          العملاء، هل وصلهم موظف، ومتى فضيت ونُظّفت. لا يُرسل شيء إلا عند الخلل مع لقطة واحدة.
+        </p>
+        <div class="form-grid" data-sv-manage>
+          <div class="form-grid__fields">
+            <label class="field field--sm">
+              <span class="field__label">الكاميرا</span>
+              <select id="ct-z-camera"></select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">نوع المنطقة</span>
+              <select id="ct-z-kind"></select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label" id="ct-z-label-text">رقم الطاولة</span>
+              <input id="ct-z-label" type="text" maxlength="40" />
+            </label>
+          </div>
+          <p id="ct-z-hint" class="hint"></p>
+          <div class="zone-stage">
+            <canvas id="ct-z-canvas" width="960" height="540"></canvas>
+          </div>
+          <div class="row row--wrap">
+            <button id="ct-z-save" class="btn btn--primary btn--sm" type="button">حفظ المنطقة</button>
+            <button id="ct-z-undo" class="btn btn--ghost btn--sm" type="button">تراجع عن نقطة</button>
+            <button id="ct-z-clear" class="btn btn--ghost btn--sm" type="button">مسح الرسم</button>
+            <button id="ct-z-reload" class="btn btn--ghost btn--sm" type="button">تحديث اللقطة</button>
+          </div>
+        </div>
+        <div id="ct-zones"></div>
 
         <h3 class="card__title card__title--sm">سجل الإبلاغ لليوم المختار</h3>
         <div id="ct-dispatches"></div>

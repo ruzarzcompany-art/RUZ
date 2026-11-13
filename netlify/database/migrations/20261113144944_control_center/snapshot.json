@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "937c3260-618e-45b4-aff1-9cfb88f822e1",
+  "id": "695c558c-13ef-4cae-a923-510e0a89cf56",
   "prevIds": [
     "371f19ad-b067-4dc0-b1a7-b08fb5965351"
   ],
@@ -92,6 +92,12 @@
     },
     {
       "isRlsEnabled": false,
+      "name": "control_footfall",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
       "name": "control_messages",
       "entityType": "tables",
       "schema": "public"
@@ -105,6 +111,18 @@
     {
       "isRlsEnabled": false,
       "name": "control_settings",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "control_table_sessions",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "control_zones",
       "entityType": "tables",
       "schema": "public"
     },
@@ -3179,6 +3197,84 @@
       "name": "id",
       "entityType": "columns",
       "schema": "public",
+      "table": "control_footfall"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "branch_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_footfall"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "hour_start",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_footfall"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "entries",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_footfall"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "exits",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_footfall"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_footfall"
+    },
+    {
+      "type": "serial",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
       "table": "control_messages"
     },
     {
@@ -3507,6 +3603,84 @@
       "table": "control_settings"
     },
     {
+      "type": "double precision",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "5",
+      "generated": null,
+      "identity": null,
+      "name": "table_wait_minutes",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_settings"
+    },
+    {
+      "type": "double precision",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "1",
+      "generated": null,
+      "identity": null,
+      "name": "table_clear_minutes",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_settings"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "60",
+      "generated": null,
+      "identity": null,
+      "name": "queue_seconds",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_settings"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "edge_last_seen_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_settings"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "''",
+      "generated": null,
+      "identity": null,
+      "name": "edge_status_json",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_settings"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "edge_offline_notified",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_settings"
+    },
+    {
       "type": "boolean",
       "typeSchema": null,
       "notNull": true,
@@ -3635,6 +3809,253 @@
       "entityType": "columns",
       "schema": "public",
       "table": "control_settings"
+    },
+    {
+      "type": "serial",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_table_sessions"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "branch_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_table_sessions"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "zone_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_table_sessions"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "''",
+      "generated": null,
+      "identity": null,
+      "name": "table_label",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_table_sessions"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "seated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_table_sessions"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "left_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_table_sessions"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "first_visit_seconds",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_table_sessions"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "cleared_seconds",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_table_sessions"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "max_people",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_table_sessions"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_table_sessions"
+    },
+    {
+      "type": "serial",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_zones"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "branch_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_zones"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "camera_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_zones"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'table'",
+      "generated": null,
+      "identity": null,
+      "name": "kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_zones"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "''",
+      "generated": null,
+      "identity": null,
+      "name": "label",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_zones"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "points_json",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_zones"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "true",
+      "generated": null,
+      "identity": null,
+      "name": "is_active",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_zones"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_zones"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "control_zones"
     },
     {
       "type": "serial",
@@ -11774,6 +12195,34 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "branch_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "hour_start",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "control_footfall_branch_hour_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "control_footfall"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "dispatch_id",
           "isExpression": false,
           "asc": true,
@@ -11818,6 +12267,90 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "control_recipients"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "zone_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "seated_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "control_table_sessions_zone_seated_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "control_table_sessions"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "branch_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "seated_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "control_table_sessions_branch_time_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "control_table_sessions"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "branch_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "camera_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "control_zones_branch_camera_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "control_zones"
     },
     {
       "nameExplicit": true,
@@ -13649,6 +14182,23 @@
     {
       "nameExplicit": false,
       "columns": [
+        "branch_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "branches",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "control_footfall_branch_id_branches_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "control_footfall"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "dispatch_id"
       ],
       "schemaTo": "public",
@@ -13747,6 +14297,74 @@
       "entityType": "fks",
       "schema": "public",
       "table": "control_settings"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "branch_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "branches",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "control_table_sessions_branch_id_branches_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "control_table_sessions"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "zone_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "control_zones",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "control_table_sessions_zone_id_control_zones_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "control_table_sessions"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "branch_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "branches",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "control_zones_branch_id_branches_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "control_zones"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "camera_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "surveillance_cameras",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "control_zones_camera_id_surveillance_cameras_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "control_zones"
     },
     {
       "nameExplicit": false,
@@ -15355,6 +15973,16 @@
         "id"
       ],
       "nameExplicit": false,
+      "name": "control_footfall_pkey",
+      "schema": "public",
+      "table": "control_footfall",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
       "name": "control_messages_pkey",
       "schema": "public",
       "table": "control_messages",
@@ -15378,6 +16006,26 @@
       "name": "control_settings_pkey",
       "schema": "public",
       "table": "control_settings",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "control_table_sessions_pkey",
+      "schema": "public",
+      "table": "control_table_sessions",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "control_zones_pkey",
+      "schema": "public",
+      "table": "control_zones",
       "entityType": "pks"
     },
     {

@@ -85,6 +85,9 @@ function renderSettings() {
   el("ct-order-min").value = s.orderStaffAckMinutes;
   el("ct-manager-min").value = s.managerAckMinutes;
   el("ct-queue").value = s.queueMax;
+  el("ct-queue-sec").value = s.queueSeconds;
+  el("ct-table-wait").value = s.tableWaitMinutes;
+  el("ct-table-clear").value = s.tableClearMinutes;
   el("ct-stars").value = s.reviewMaxStars;
   el("ct-tables").value = s.tableCount;
   el("ct-brief-time").value = s.briefTime;
@@ -261,6 +264,8 @@ async function load() {
   renderReviews();
   renderFeedback();
   renderRoutes();
+  renderEdge();
+  await loadZones();
 }
 
 async function run(node, request, { reload = true } = {}) {
@@ -283,6 +288,9 @@ async function saveSettings(event) {
         orderStaffAckMinutes: Number(el("ct-order-min").value),
         managerAckMinutes: Number(el("ct-manager-min").value),
         queueMax: Number(el("ct-queue").value),
+        queueSeconds: Number(el("ct-queue-sec").value),
+        tableWaitMinutes: Number(el("ct-table-wait").value),
+        tableClearMinutes: Number(el("ct-table-clear").value),
         reviewMaxStars: Number(el("ct-stars").value),
         tableCount: Number(el("ct-tables").value),
         briefTime: el("ct-brief-time").value,
@@ -392,6 +400,254 @@ body{font-family:"IBM Plex Sans Arabic","Segoe UI",sans-serif;margin:0;padding:8
   setTimeout(() => win.print(), 300);
 }
 
+/* ── التحليل المباشر: حالة الجهاز ورسم المناطق ─────────────────── */
+
+const ZONE_COLORS = { table: "#7f9d63", queue: "#d9a13b", door: "#6fa8dc", restricted: "#c25c44" };
+const ZONE_HINTS = {
+  table: "انقر على زوايا سطح الطاولة نفسه (لا الكراسي) — 3 نقاط على الأقل.",
+  queue: "ارسم المساحة التي يقف فيها العملاء أمام الكاشير.",
+  door: "انقر نقطتين عبر عتبة الباب من اليسار إلى اليمين. الدخول = العبور نحو أسفل الصورة؛ إن كان الداخل يتجه لأعلى الصورة فارسمه من اليمين إلى اليسار.",
+  restricted: "ارسم أرضية المنطقة الممنوعة خارج الدوام (المستودع، مدخل الباب الخلفي).",
+};
+
+const zoneState = { zones: [], cameras: [], image: null, draft: [] };
+
+function renderEdge() {
+  const edge = state.data.edge;
+  const box = el("ct-edge-status");
+  box.replaceChildren();
+  if (!edge.lastSeenAt) {
+    box.append(chip("جهاز التحليل لم يتصل بعد", "badge--submitted"));
+  } else if (edge.online) {
+    box.append(chip("جهاز التحليل متصل", "badge--ok"));
+    for (const camera of edge.status?.cameras ?? []) {
+      box.append(chip(`${camera.number}: ${camera.ok ? "بث يعمل" : "لا بث"}`, camera.ok ? "badge--ok" : "badge--disputed"));
+    }
+  } else {
+    box.append(chip(`جهاز التحليل منقطع منذ ${formatDateTime(edge.lastSeenAt)}`, "badge--disputed"));
+  }
+  box.append(chip(`مناطق مرسومة: ${edge.zones}`, edge.zones ? "badge--reviewed" : "badge--warn"));
+  const t = edge.tables;
+  if (t.sessions) {
+    box.append(
+      chip(`جلسات الطاولات اليوم: ${t.sessions}`, "badge--reviewed"),
+      chip(`متوسط وصول الموظف: ${duration(t.avgFirstVisitSeconds)}`, "badge--reviewed"),
+      chip(`غادروا بلا خدمة: ${t.leftWithoutVisit}`, t.leftWithoutVisit ? "badge--disputed" : "badge--ok"),
+      chip(`متوسط تنظيف الطاولة: ${duration(t.avgClearSeconds)}`, "badge--reviewed"),
+    );
+  }
+  if (edge.footfall.entries !== null) box.append(chip(`الداخلون اليوم: ${edge.footfall.entries}`, "badge--reviewed"));
+}
+
+function currentCameraId() {
+  return Number(el("ct-z-camera").value) || null;
+}
+
+function drawZones() {
+  const canvas = el("ct-z-canvas");
+  const ctx = canvas.getContext("2d");
+  const { width, height } = canvas;
+  ctx.clearRect(0, 0, width, height);
+  if (zoneState.image) {
+    ctx.drawImage(zoneState.image, 0, 0, width, height);
+  } else {
+    ctx.fillStyle = "#16150f";
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = "#a99f88";
+    ctx.font = "20px 'IBM Plex Sans Arabic', sans-serif";
+    ctx.textAlign = "center";
+    ctx.direction = "rtl";
+    ctx.fillText("لا توجد لقطة لهذه الكاميرا بعد", width / 2, height / 2 - 14);
+    ctx.fillText("شغّل على جهاز التحليل: python agent.py --check", width / 2, height / 2 + 18);
+  }
+  const path = (points, close) => {
+    ctx.beginPath();
+    points.forEach(([x, y], i) => (i ? ctx.lineTo(x * width, y * height) : ctx.moveTo(x * width, y * height)));
+    if (close) ctx.closePath();
+  };
+  const cameraId = currentCameraId();
+  for (const zone of zoneState.zones.filter((z) => z.cameraId === cameraId)) {
+    const color = ZONE_COLORS[zone.kind] ?? "#ece4d2";
+    path(zone.points, zone.kind !== "door");
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = color;
+    if (zone.kind !== "door") {
+      ctx.fillStyle = `${color}55`;
+      ctx.fill();
+    }
+    ctx.stroke();
+    const cx = zone.points.reduce((s, p) => s + p[0], 0) / zone.points.length;
+    const cy = zone.points.reduce((s, p) => s + p[1], 0) / zone.points.length;
+    const text = zone.label || state.data.edge.kinds[zone.kind] || zone.kind;
+    ctx.font = "bold 18px 'IBM Plex Sans Arabic', sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const w = ctx.measureText(text).width + 16;
+    ctx.fillStyle = "#12120c";
+    ctx.fillRect(cx * width - w / 2, cy * height - 14, w, 28);
+    ctx.fillStyle = "#ece4d2";
+    ctx.fillText(text, cx * width, cy * height);
+  }
+  if (zoneState.draft.length) {
+    const kind = el("ct-z-kind").value;
+    path(zoneState.draft, false);
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 6]);
+    ctx.strokeStyle = "#ece4d2";
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const [x, y] of zoneState.draft) {
+      ctx.beginPath();
+      ctx.arc(x * width, y * height, 6, 0, Math.PI * 2);
+      ctx.fillStyle = ZONE_COLORS[kind] ?? "#ece4d2";
+      ctx.fill();
+      ctx.strokeStyle = "#12120c";
+      ctx.stroke();
+    }
+  }
+}
+
+async function loadCameraImage() {
+  zoneState.image = null;
+  const cameraId = currentCameraId();
+  if (cameraId) {
+    const res = await api(`/surveillance/cameras/${cameraId}/latest`);
+    if (res.ok && res.image) {
+      const image = new Image();
+      await new Promise((resolve) => {
+        image.onload = resolve;
+        image.onerror = resolve;
+        image.src = res.image;
+      });
+      if (image.naturalWidth) {
+        zoneState.image = image;
+        const canvas = el("ct-z-canvas");
+        canvas.height = Math.round((canvas.width * image.naturalHeight) / image.naturalWidth);
+      }
+    }
+  }
+  drawZones();
+}
+
+function renderZoneList() {
+  const cameraName = (id) => {
+    const camera = zoneState.cameras.find((c) => c.id === id);
+    return camera ? `${camera.cameraNumber}${camera.name ? ` — ${camera.name}` : ""}` : "—";
+  };
+  const rows = zoneState.zones.map((zone) => {
+    const actions = document.createElement("div");
+    if (state.canManage) {
+      actions.append(
+        button("حذف", {
+          className: "btn btn--danger btn--xs",
+          onClick: async (node) => {
+            if (!window.confirm("حذف هذه المنطقة؟")) return;
+            await run(node, () => api(`/control/zones/${zone.id}`, { method: "DELETE" }));
+          },
+        }),
+      );
+    }
+    return [cameraName(zone.cameraId), state.data.edge.kinds[zone.kind] ?? zone.kind, zone.label || "—", `${zone.points.length} نقاط`, actions];
+  });
+  el("ct-zones").replaceChildren(
+    table(["الكاميرا", "النوع", "الاسم", "الرسم", ""], rows, "لم تُرسم مناطق بعد — اختر كاميرا الصالة وارسم الطاولات."),
+  );
+}
+
+function syncZoneForm() {
+  const kind = el("ct-z-kind").value;
+  el("ct-z-hint").textContent = ZONE_HINTS[kind] ?? "";
+  el("ct-z-label-text").textContent = kind === "table" ? "رقم الطاولة" : "اسم المنطقة (اختياري)";
+}
+
+async function loadZones() {
+  const res = await api(`/control/zones?branchId=${state.branchId}`);
+  if (!res.ok) return;
+  zoneState.zones = res.zones;
+  zoneState.cameras = res.cameras;
+  const select = el("ct-z-camera");
+  const current = select.value;
+  select.replaceChildren();
+  for (const camera of res.cameras) {
+    select.append(new Option(`${camera.cameraNumber}${camera.name ? ` — ${camera.name}` : ""} (${zoneLabel(camera.zone)})`, camera.id));
+  }
+  if ([...select.options].some((o) => o.value === current)) select.value = current;
+  const kinds = el("ct-z-kind");
+  if (!kinds.childElementCount) {
+    for (const [key, label] of Object.entries(state.data.edge.kinds)) kinds.append(new Option(label, key));
+  }
+  syncZoneForm();
+  renderZoneList();
+  if (!zoneState.image || zoneState.imageCamera !== currentCameraId()) {
+    zoneState.imageCamera = currentCameraId();
+    await loadCameraImage();
+  } else {
+    drawZones();
+  }
+}
+
+async function saveZone() {
+  const kind = el("ct-z-kind").value;
+  const need = kind === "door" ? 2 : 3;
+  if (zoneState.draft.length < need) {
+    note(kind === "door" ? "انقر نقطتين لخط الباب." : "ارسم ثلاث نقاط على الأقل.", "warn");
+    return;
+  }
+  const res = await run(el("ct-z-save"), () =>
+    api("/control/zones", {
+      method: "POST",
+      body: {
+        branchId: Number(state.branchId),
+        cameraId: currentCameraId(),
+        kind,
+        label: el("ct-z-label").value.trim(),
+        points: zoneState.draft,
+      },
+    }),
+  );
+  if (res.ok) {
+    zoneState.draft = [];
+    const label = el("ct-z-label");
+    // الطاولة التالية غالباً رقمها التالي
+    label.value = kind === "table" && /^\d+$/.test(label.value.trim()) ? String(Number(label.value) + 1) : "";
+    drawZones();
+  }
+}
+
+function wireZones() {
+  const canvas = el("ct-z-canvas");
+  canvas.addEventListener("click", (event) => {
+    if (!state.canManage || !currentCameraId()) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+    const max = el("ct-z-kind").value === "door" ? 2 : 12;
+    if (zoneState.draft.length >= max) return;
+    zoneState.draft.push([Math.round(x * 10000) / 10000, Math.round(y * 10000) / 10000]);
+    drawZones();
+  });
+  el("ct-z-camera").addEventListener("change", async () => {
+    zoneState.draft = [];
+    zoneState.imageCamera = currentCameraId();
+    await loadCameraImage();
+  });
+  el("ct-z-kind").addEventListener("change", () => {
+    zoneState.draft = [];
+    syncZoneForm();
+    drawZones();
+  });
+  el("ct-z-undo").addEventListener("click", () => {
+    zoneState.draft.pop();
+    drawZones();
+  });
+  el("ct-z-clear").addEventListener("click", () => {
+    zoneState.draft = [];
+    drawZones();
+  });
+  el("ct-z-reload").addEventListener("click", loadCameraImage);
+  el("ct-z-save").addEventListener("click", saveZone);
+}
+
 /* ── الربط ─────────────────────────────────────────────────────── */
 
 function wire() {
@@ -414,6 +670,7 @@ function wire() {
     ),
   );
   el("ct-qr-print").addEventListener("click", printQr);
+  wireZones();
 }
 
 export async function refreshControlTab(branchId, date, { employees = [], canManage = false } = {}) {

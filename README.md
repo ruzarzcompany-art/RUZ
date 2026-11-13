@@ -964,6 +964,10 @@ curl "$SITE_URL/api/reports/attendance?branchId=1&from=2026-07-01&to=2026-07-31&
 - **أنواع جديدة:** `dirty_table` و`cashier_queue` (من الكاميرات)، `table_complaint`
   (رمز QR على الطاولة ← `/app/feedback/`)، و`google_review` (سحب كل 15 دقيقة).
 - **التقرير الليلي:** أرقام اليوم مع تقييم وتحليل بالذكاء الاصطناعي يُرسل للمالك.
+- **التحليل المباشر:** جهاز داخل المطعم (`tools/edge-agent`، Python + YOLO) يتابع
+  الطاولات المرسومة باستمرار: عميل جلس ولم يصله موظف، طاولة فضيت ولم تُنظَّف،
+  طابور الكاشير، دخول منطقة ممنوعة خارج الدوام، وعدّ الداخلين. يرسل الحدث مع لقطة
+  واحدة إلى `POST /api/control/edge/events` (`server/edge.ts`).
 - **المتغيّرات:** `WHATSAPP_TOKEN` و`WHATSAPP_PHONE_ID` (أو `WHATSAPP_PROVIDER=ultramsg`
   مع `WHATSAPP_INSTANCE`)، و`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` /
   `GOOGLE_REFRESH_TOKEN` لتقييمات قوقل. بلا هذه المتغيّرات تُسجَّل التنبيهات ومسارها

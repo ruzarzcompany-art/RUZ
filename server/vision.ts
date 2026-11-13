@@ -334,7 +334,7 @@ function frameStore() {
   return getStore("surveillance-frames");
 }
 
-async function saveImage(key: string, data: Buffer, contentType: string): Promise<void> {
+export async function saveImage(key: string, data: Buffer, contentType: string): Promise<void> {
   const store = frameStore();
   await store.set(key, data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer);
   await store.set(`${key}.type`, contentType);
@@ -848,6 +848,8 @@ async function analysedToday(branchId: number, timeZone: string, now: Date): Pro
         gte(surveillanceFrames.capturedAt, start),
         lt(surveillanceFrames.capturedAt, end),
         sql`${surveillanceFrames.cameraState} not in ('unreachable','error')`,
+        // لقطات جهاز التحليل المباشر أدلة لا تحليلات دورية، فلا تُحسب من الحد اليومي
+        sql`${surveillanceFrames.source} <> 'edge'`,
       ),
     );
   return Number(row?.count ?? 0);
