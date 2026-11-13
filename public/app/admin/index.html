@@ -2339,6 +2339,7 @@
           <button class="tab" type="button" data-sv="limits">الحدود المعتمدة</button>
           <button class="tab" type="button" data-sv="connect">ربط الكاميرات</button>
           <button class="tab" type="button" data-sv="foodics">فوديكس والرقابة الثلاثية</button>
+          <button class="tab" type="button" data-sv="control">التنبيه والتصعيد</button>
         </div>
         <p id="sv-result" class="alert" role="status" hidden></p>
         <p id="sv-live-note" class="hint"></p>
@@ -2891,6 +2892,131 @@
       </section>
 
       <!-- ربط الكاميرات -->
+      <!-- مركز الضبط: واتساب، التصعيد، تقييمات قوقل، شكاوى الطاولات، التقرير الليلي -->
+      <section class="card" data-sv-section="control" hidden>
+        <h3 class="card__title card__title--sm">التنبيه والتصعيد: من يُبلَّغ بماذا ومتى</h3>
+        <p id="ct-status" class="row row--wrap"></p>
+        <p class="hint">
+          السرقات والخلل الكبير تذهب للمالك مباشرة. تنبيهات الخدمة (طاولة متسخة، شكوى طاولة،
+          انتظار عميل، تأخر طلب، طابور الكاشير) تذهب للموظف أولاً، فإن لم يؤكد الاستلام خلال
+          المهلة صُعّدت للمدير ثم للمالك. حالات الاشتباه لا تُرسل للموظفين أبداً.
+        </p>
+
+        <form id="ct-settings-form" class="form-grid" data-sv-manage>
+          <div class="form-grid__fields">
+            <label class="field field--sm">
+              <span class="field__label">مهلة استلام الموظف (دقيقة)</span>
+              <input id="ct-staff-min" type="number" min="1" max="120" step="1" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">مهلة الموظف لتأخر الطلبات (دقيقة)</span>
+              <input id="ct-order-min" type="number" min="1" max="120" step="1" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">مهلة استلام المدير قبل المالك (دقيقة)</span>
+              <input id="ct-manager-min" type="number" min="1" max="120" step="1" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">الطابور طويل إذا زاد عن (شخص)</span>
+              <input id="ct-queue" type="number" min="1" max="30" step="1" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">تنبيه تقييم قوقل عند (نجوم أو أقل)</span>
+              <input id="ct-stars" type="number" min="1" max="4" step="1" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">عدد طاولات الصالة</span>
+              <input id="ct-tables" type="number" min="0" max="300" step="1" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">وقت التقرير الليلي للمالك</span>
+              <input id="ct-brief-time" type="time" />
+            </label>
+            <label class="field">
+              <span class="field__label">موقع النشاط في قوقل (accounts/…/locations/…)</span>
+              <input id="ct-google" type="text" dir="ltr" autocomplete="off" placeholder="accounts/123/locations/456" />
+            </label>
+          </div>
+          <div class="row row--wrap">
+            <label class="check"><input id="ct-enabled" type="checkbox" /> الإبلاغ عبر واتساب مفعّل</label>
+            <label class="check"><input id="ct-feedback" type="checkbox" /> استقبال شكاوى الطاولات (QR)</label>
+            <label class="check"><input id="ct-minor" type="checkbox" /> إرسال الملاحظات البسيطة للمدير فوراً (جوال، تجمع…)</label>
+          </div>
+          <div class="row row--wrap">
+            <button id="ct-settings-save" class="btn btn--primary btn--sm" type="submit">حفظ الإعدادات</button>
+          </div>
+        </form>
+
+        <h3 class="card__title card__title--sm">المستلمون</h3>
+        <div class="table-wrap">
+          <table class="table" id="ct-recipients-table">
+            <thead>
+              <tr><th>المستوى</th><th>الاسم</th><th>واتساب</th><th>المناطق</th><th>الحالة</th><th></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <form id="ct-recipient-form" class="form-grid" data-sv-manage>
+          <div class="form-grid__fields">
+            <label class="field field--sm">
+              <span class="field__label">المستوى</span>
+              <select id="ct-r-tier">
+                <option value="staff">موظف</option>
+                <option value="manager">مدير المطعم</option>
+                <option value="owner">المالك</option>
+              </select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">موظف من النظام (اختياري)</span>
+              <select id="ct-r-employee"></select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">الاسم</span>
+              <input id="ct-r-name" type="text" maxlength="120" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">رقم واتساب</span>
+              <input id="ct-r-phone" type="tel" dir="ltr" inputmode="tel" placeholder="05xxxxxxxx" required />
+            </label>
+          </div>
+          <div id="ct-r-staff-only">
+            <p class="hint">مناطق الموظف (اتركها فارغة ليستلم تنبيهات كل المناطق):</p>
+            <div id="ct-r-zones" class="row row--wrap"></div>
+            <label class="check"><input id="ct-r-onshift" type="checkbox" checked /> يُبلَّغ فقط وهو على رأس العمل (حسب الحضور)</label>
+          </div>
+          <div class="row row--wrap">
+            <button id="ct-r-save" class="btn btn--primary btn--sm" type="submit">إضافة مستلم</button>
+          </div>
+        </form>
+
+        <h3 class="card__title card__title--sm">سجل الإبلاغ لليوم المختار</h3>
+        <div id="ct-dispatches"></div>
+
+        <h3 class="card__title card__title--sm">التقرير الليلي للمالك</h3>
+        <div class="row row--wrap" data-sv-manage>
+          <button id="ct-brief-make" class="btn btn--ghost btn--sm" type="button">إصدار تقرير اليوم المختار</button>
+          <button id="ct-brief-send" class="btn btn--primary btn--sm" type="button">إصدار وإرسال للمالك</button>
+        </div>
+        <div id="ct-brief"></div>
+
+        <h3 class="card__title card__title--sm">تقييمات قوقل</h3>
+        <div class="row row--wrap" data-sv-manage>
+          <button id="ct-reviews-sync" class="btn btn--ghost btn--sm" type="button">سحب التقييمات الآن</button>
+        </div>
+        <div id="ct-reviews"></div>
+
+        <h3 class="card__title card__title--sm">شكاوى الطاولات (QR)</h3>
+        <div class="row row--wrap">
+          <button id="ct-qr-print" class="btn btn--ghost btn--sm" type="button">طباعة رموز QR للطاولات</button>
+        </div>
+        <div id="ct-feedback-list"></div>
+
+        <details>
+          <summary class="hint">جدول التوجيه: من يستلم كل نوع تنبيه</summary>
+          <div id="ct-routes"></div>
+        </details>
+      </section>
+
       <!-- فوديكس والرقابة الثلاثية -->
       <section class="card" data-sv-section="foodics" hidden>
         <h3 class="card__title card__title--sm">الرقابة الثلاثية: الكاميرات + فوديكس + الجرد</h3>

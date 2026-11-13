@@ -36,6 +36,7 @@ import { surveillanceRouter } from "./routes/surveillance.js";
 import { foodicsRouter } from "./routes/foodics.js";
 import { purchasesRouter } from "./routes/purchases.js";
 import { purgeRouter } from "./routes/purge.js";
+import { controlRouter } from "./routes/control.js";
 import { ensureSeeded } from "./seed.js";
 import {
   getAutoCloseHour,
@@ -456,6 +457,7 @@ export function createApp() {
   app.use("/api", foodicsRouter);
   app.use("/api", purchasesRouter);
   app.use("/api", purgeRouter);
+  app.use("/api", controlRouter);
 
   app.use("/api", (_req: Request, res: Response) => {
     res.status(404).json({ ok: false, error: "المسار غير موجود" });

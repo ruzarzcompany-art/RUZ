@@ -45,6 +45,7 @@ import { requireAuth, type AuthedRequest } from "../auth.js";
 import { encryptString } from "../crypto.js";
 import { agentJobs, fetchSnapshot, latestImageKey, loadImage, processFrame, cameraPassword, VISION_MODEL } from "../vision.js";
 import { clientIp, recordAudit } from "../audit.js";
+import { startDispatch } from "../control.js";
 import {
   PERMISSIONS,
   hasModuleDelete,
@@ -252,6 +253,38 @@ export const ALERT_TYPES: Record<string, AlertTypeSpec> = {
     severity: 2,
     action: "مراجعة الصنف: هدر فوديكس مقابل فرق الجرد اليدوي ومشاهدات الكاميرا، وتوثيق السبب.",
   },
+  dirty_table: {
+    label: "طاولة متسخة بعد مغادرة العميل",
+    role: "gm",
+    urgent: true,
+    suspicion: false,
+    severity: 2,
+    action: "تنظيف الطاولة وتجهيزها فوراً، ثم تأكيد الاستلام.",
+  },
+  cashier_queue: {
+    label: "طابور طويل عند الكاشير",
+    role: "gm",
+    urgent: true,
+    suspicion: false,
+    severity: 2,
+    action: "فتح نقطة استلام ثانية أو دعم الكاشير بموظف حتى ينتهي الطابور.",
+  },
+  table_complaint: {
+    label: "شكوى أو طلب عميل من الطاولة (QR)",
+    role: "gm",
+    urgent: true,
+    suspicion: false,
+    severity: 2,
+    action: "التوجه للطاولة فوراً ومعالجة الملاحظة، ثم تأكيد الاستلام.",
+  },
+  google_review: {
+    label: "تقييم سيئ في قوقل",
+    role: "gm",
+    urgent: true,
+    suspicion: false,
+    severity: 2,
+    action: "الرد على التقييم باحترام خلال ساعة، ومعرفة الوردية والطلب المقصود ومعالجة السبب.",
+  },
   other: {
     label: "ملاحظة أخرى",
     role: "gm",
@@ -263,7 +296,16 @@ export const ALERT_TYPES: Record<string, AlertTypeSpec> = {
 };
 
 const ALERT_TYPE_KEYS = Object.keys(ALERT_TYPES);
-const CUSTOMER_TYPES = ["customer_wait", "customer_complaint", "order_returned", "customer_left"];
+const CUSTOMER_TYPES = [
+  "customer_wait",
+  "customer_complaint",
+  "order_returned",
+  "customer_left",
+  "dirty_table",
+  "cashier_queue",
+  "table_complaint",
+  "google_review",
+];
 const ROLES = ["gm", "warehouse", "camera"] as const;
 const CONFIDENCE = ["high", "medium", "low"] as const;
 const ALERT_STATUSES = ["open", "needs_review", "confirmed", "dismissed"] as const;
@@ -501,6 +543,11 @@ interface AlertInput {
   source: "manual" | "webhook" | "auto";
   sourceRef?: string;
   createdBy?: number | null;
+  /**
+   * النص كلام عميل (تقييم قوقل أو شكوى طاولة) لا رصد كاميرا: لا يُطبَّق عليه
+   * فحص الأماكن الخاصة، فشكوى عن نظافة دورة المياه مثلاً ملاحظة مشروعة.
+   */
+  customerText?: boolean;
 }
 
 const LOW_CONFIDENCE_NOTE = "الثقة منخفضة: مطلوب مراجعة بشرية للمقطع قبل أي حكم.";
@@ -510,7 +557,7 @@ const SUSPICION_NOTE =
 export async function createAlert(input: AlertInput) {
   const spec = ALERT_TYPES[input.alertType];
   if (!spec) throw new InputError("نوع الحالة غير معروف");
-  if (isPrivateArea(input.location, input.details)) throw new InputError(PRIVACY_ERROR);
+  if (!input.customerText && isPrivateArea(input.location, input.details)) throw new InputError(PRIVACY_ERROR);
 
   const db = getDb();
   if (input.sourceRef) {
@@ -564,6 +611,9 @@ export async function createAlert(input: AlertInput) {
       createdByEmployeeId: input.createdBy ?? null,
     })
     .returning({ id: surveillanceAlerts.id });
+
+  // مركز الضبط: إبلاغ صاحب العلاقة عبر واتساب وبدء مهلة التصعيد (لا يرمي أبداً)
+  await startDispatch(created.id);
 
   return { id: created.id, duplicate: false };
 }

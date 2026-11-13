@@ -30,6 +30,7 @@ import {
   surveillanceSettings,
   surveillanceWaste,
 } from "../db/schema.js";
+import { controlSettingsFor } from "./control.js";
 import { decryptString } from "./crypto.js";
 import { sendMail } from "./mailer.js";
 import {
@@ -131,10 +132,10 @@ export async function fetchSnapshot(
 
 /** الملاحظات التي يبحث عنها النموذج في كل منطقة. */
 const ZONE_FINDINGS: Record<string, string[]> = {
-  dining: ["customer_waiting_unserved", "staff_phone", "staff_gathering", "customer_dispute", "hygiene_violation"],
-  entrance: ["customer_waiting_unserved", "customer_dispute", "staff_gathering"],
+  dining: ["customer_waiting_unserved", "dirty_table", "staff_phone", "staff_gathering", "customer_dispute", "hygiene_violation"],
+  entrance: ["customer_waiting_unserved", "long_queue", "customer_dispute", "staff_gathering"],
   kitchen: ["hygiene_violation", "staff_phone", "staff_gathering", "station_unattended", "food_waste", "fridge_door_open"],
-  cashier: ["drawer_open_unattended", "staff_phone", "station_unattended", "customer_waiting_unserved", "customer_dispute"],
+  cashier: ["drawer_open_unattended", "long_queue", "staff_phone", "station_unattended", "customer_waiting_unserved", "customer_dispute"],
   warehouse: ["person_in_storage", "goods_carried_out", "food_waste"],
   fridge: ["person_in_storage", "goods_carried_out", "food_waste", "fridge_door_open"],
   back_door: ["person_in_storage", "goods_carried_out"],
@@ -159,6 +160,10 @@ const FINDING_GUIDE: Record<string, string> = {
     "a fridge, freezer or walk-in cold room door left open (ajar or fully open) with nobody actively loading or unloading it",
   goods_carried_out:
     "a person carrying boxes, bags, crates or stock items out of the storage area, back door or into a vehicle",
+  dirty_table:
+    "a dining table with NO customers seated at it that still has used plates, cups, leftovers or rubbish on it (not yet cleared). Mention which table by position. Do not report a table where customers are still sitting",
+  long_queue:
+    "more than {queueMax} customers standing in line waiting at the cash counter / order point. State the number of people in the queue",
 };
 
 /** تحويل ملاحظة النموذج إلى نوع تنبيه في النظام. */
@@ -172,6 +177,8 @@ const FINDING_TO_ALERT: Record<string, string> = {
   drawer_open_unattended: "drawer_no_sale",
   goods_carried_out: "warehouse_exit",
   fridge_door_open: "fridge_door_open",
+  dirty_table: "dirty_table",
+  long_queue: "cashier_queue",
 };
 
 export interface VisionFinding {
@@ -198,6 +205,8 @@ export async function analyzeFrame(input: {
   reference: { data: Buffer; contentType: string } | null;
   zone: string;
   location: string;
+  /** عدد الواقفين الذي يُعدّ بعده طابور الكاشير طويلاً */
+  queueMax?: number;
 }): Promise<VisionResult> {
   anthropic ??= new Anthropic();
   const allowed = ZONE_FINDINGS[input.zone] ?? ZONE_FINDINGS.dining;
@@ -240,7 +249,7 @@ export async function analyzeFrame(input: {
         "   | private_area (the frame shows a toilet/restroom, changing/locker room, prayer area or private rest area — if so, report NOTHING else).",
         "",
         "2) Report ONLY these findings when clearly visible in the CURRENT frame:",
-        ...allowed.map((key) => `   - ${key}: ${FINDING_GUIDE[key]}`),
+        ...allowed.map((key) => `   - ${key}: ${FINDING_GUIDE[key].replace("{queueMax}", String(input.queueMax ?? 4))}`),
         "",
         "Rules:",
         "- Do not guess. If you are unsure, either omit the finding or set confidence to low.",
@@ -359,7 +368,7 @@ export function isOffHours(at: Date, timeZone: string, openTime: string, closeTi
 }
 
 /** الموظفون على رأس العمل في الفرع لحظة اللقطة (من سجل الحضور). */
-async function onShiftEmployees(branchId: number, at: Date) {
+export async function onShiftEmployees(branchId: number, at: Date) {
   const db = getDb();
   const since = new Date(at.getTime() - 20 * 3600_000);
   const logs = await db
@@ -574,6 +583,7 @@ export async function processFrame(input: {
       reference,
       zone: camera.zone,
       location: camera.location,
+      queueMax: (await controlSettingsFor(branch.id)).queueMax,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

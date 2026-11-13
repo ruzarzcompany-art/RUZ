@@ -2146,3 +2146,9 @@ select option {
     margin: 16mm 8mm;
   }
 }
+
+/* ── تبويب التنبيه والتصعيد ─────────────────────────────────── */
+
+[data-sv-section="control"] > .card__title--sm:not(:first-child) {
+  margin-top: 1.6rem;
+}
