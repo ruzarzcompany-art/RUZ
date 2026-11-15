@@ -2331,7 +2331,8 @@
         </p>
         <div id="sv-tabs">
           <div class="tabs" role="tablist">
-            <button class="tab is-active" type="button" data-sv="alerts">التنبيهات</button>
+            <button class="tab is-active" type="button" data-sv="live">المراقبة المباشرة</button>
+            <button class="tab" type="button" data-sv="alerts">التنبيهات</button>
             <button class="tab" type="button" data-sv="cameras">الكاميرات والمناطق</button>
             <button class="tab" type="button" data-sv="people">المستلمون والتصعيد</button>
             <button class="tab" type="button" data-sv="report">التقرير والتقييمات</button>
@@ -2360,7 +2361,17 @@
       </section>
 
       <!-- التنبيهات -->
-      <section class="card" data-sv-section="alerts">
+      <section class="card" data-sv-section="live">
+        <p id="lv-status" class="row row--wrap"></p>
+        <div id="lv-alerts" class="live-alerts"></div>
+        <div id="lv-grid" class="live-grid"></div>
+        <p class="hint">
+          الأخضر: طاولة مخدومة. الأصفر: عملاء ينتظرون موظفاً. البرتقالي: طاولة تحتاج تنظيفاً. الأحمر
+          الوامض: تجاوز المهلة وأُرسل تنبيه. اضغط على أي كاميرا لتكبيرها.
+        </p>
+      </section>
+
+      <section class="card" data-sv-section="alerts" hidden>
         <div class="filters">
           <label class="field field--sm">
             <span class="field__label">من</span>

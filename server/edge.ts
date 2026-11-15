@@ -88,7 +88,60 @@ export async function zonesForBranch(branchId: number) {
       .where(and(eq(surveillanceCameras.branchId, branchId), eq(surveillanceCameras.isActive, true)))
       .orderBy(asc(surveillanceCameras.cameraNumber)),
   ]);
-  return { zones: zones.map(zoneView), cameras };
+  return { zones: zones.map(zoneView), cameras: cameras.sort(byCameraNumber) };
+}
+
+/** ترتيب الكاميرات بأرقامها: 1، 2، … 10، 11 (لا 1، 10، 11، 2). */
+export function byCameraNumber(a: { cameraNumber: string }, b: { cameraNumber: string }): number {
+  return a.cameraNumber.localeCompare(b.cameraNumber, "en", { numeric: true });
+}
+
+const LIVE_HOLD_MS = 45_000;
+
+/** هل شاشة المراقبة المباشرة مفتوحة الآن؟ يُسأل عنه جهاز المطعم مع كل نبضة. */
+export async function liveRequested(branchId: number): Promise<boolean> {
+  const settings = await controlSettingsFor(branchId);
+  return Boolean(settings.liveUntil && settings.liveUntil.getTime() > Date.now());
+}
+
+/** شاشة المراقبة المباشرة: الكاميرات بالترتيب، مناطقها، وحالة كل منطقة الآن. */
+export async function liveView(branch: BranchRow) {
+  await patchControlSettings(branch.id, { liveUntil: new Date(Date.now() + LIVE_HOLD_MS) });
+  const db = getDb();
+  const [settings, { zones }, cameras] = await Promise.all([
+    controlSettingsFor(branch.id),
+    zonesForBranch(branch.id),
+    db
+      .select()
+      .from(surveillanceCameras)
+      .where(and(eq(surveillanceCameras.branchId, branch.id), eq(surveillanceCameras.isActive, true))),
+  ]);
+  let status: { zones?: Array<Record<string, unknown>>; cameras?: Array<{ number: string; ok: boolean }> } = {};
+  try {
+    status = settings.edgeStatusJson ? JSON.parse(settings.edgeStatusJson) : {};
+  } catch {
+    status = {};
+  }
+  const last = settings.edgeLastSeenAt;
+  const online = Boolean(last && Date.now() - last.getTime() < EDGE_OFFLINE_AFTER_MS);
+  // حالة قديمة لا تُعرض كأنها حيّة: بعد 30 ثانية بلا نبض تُعتبر المناطق بلا حالة.
+  const fresh = Boolean(last && Date.now() - last.getTime() < 30_000);
+  const live = new Map((fresh ? (status.zones ?? []) : []).map((zone) => [Number(zone.id), zone]));
+  return {
+    online,
+    fresh,
+    lastSeenAt: last,
+    thresholds: { tableWaitSeconds: Math.round(settings.tableWaitMinutes * 60), tableClearSeconds: Math.round(settings.tableClearMinutes * 60) },
+    cameras: cameras.sort(byCameraNumber).map((camera) => ({
+      id: camera.id,
+      cameraNumber: camera.cameraNumber,
+      name: camera.name,
+      lastFrameAt: camera.lastFrameAt,
+      zones: zones
+        .filter((zone) => zone.cameraId === camera.id && zone.isActive)
+        .map((zone) => ({ id: zone.id, kind: zone.kind, label: zone.label, points: zone.points, live: live.get(zone.id) ?? null })),
+    })),
+  };
 }
 
 /** ما يحتاجه جهاز التحليل: المناطق لكل كاميرا والحدود وساعات العمل. */
@@ -121,7 +174,7 @@ export async function touchEdge(branchId: number, status?: unknown) {
   await patchControlSettings(branchId, {
     edgeLastSeenAt: new Date(),
     edgeOfflineNotified: false,
-    ...(status !== undefined ? { edgeStatusJson: JSON.stringify(status).slice(0, 4000) } : {}),
+    ...(status !== undefined ? { edgeStatusJson: JSON.stringify(status).slice(0, 30000) } : {}),
   });
 }
 

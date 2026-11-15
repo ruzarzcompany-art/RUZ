@@ -1368,7 +1368,12 @@ surveillanceRouter.get("/surveillance/cameras", ...canRead, async (req: AuthedRe
     .from(surveillanceCameras)
     .where(eq(surveillanceCameras.branchId, branchId))
     .orderBy(asc(surveillanceCameras.cameraNumber));
-  res.json({ ok: true, cameras: cameras.map(publicCamera) });
+  res.json({
+    ok: true,
+    cameras: cameras
+      .sort((a, b) => a.cameraNumber.localeCompare(b.cameraNumber, "en", { numeric: true }))
+      .map(publicCamera),
+  });
 });
 
 type CameraRecord = typeof surveillanceCameras.$inferSelect;

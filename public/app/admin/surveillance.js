@@ -22,6 +22,7 @@ import {
 } from "../api.js";
 import { refreshFoodicsTab } from "./foodics.js";
 import { refreshControlTab } from "./control.js";
+import { refreshLiveTab, stopLive } from "./live.js";
 
 const state = {
   meta: null,
@@ -30,7 +31,7 @@ const state = {
   report: null,
   reviewId: null,
   editingCameraId: null,
-  tab: "alerts",
+  tab: "live",
   wired: false,
   /** أعلى رقم تنبيه فوري رآه المستخدم — لإشعار التنبيهات الجديدة */
   lastUrgentId: null,
@@ -1186,6 +1187,7 @@ async function removeRecord(kind, id, after) {
 /* ── التنقّل ───────────────────────────────────────────────────── */
 
 const TAB_LOADERS = {
+  live: () => refreshLiveTab(branchId()),
   alerts: refreshAlerts,
   new: async () => {},
   orders: refreshOrders,
@@ -1215,6 +1217,7 @@ function setMoreOpen(open) {
 
 async function showTab(tab) {
   state.tab = tab;
+  if (tab !== "live") stopLive();
   const sections = TAB_SECTIONS[tab] ?? [tab];
   for (const node of el("sv-tabs").querySelectorAll(".tab[data-sv]")) {
     node.classList.toggle("is-active", node.dataset.sv === tab);

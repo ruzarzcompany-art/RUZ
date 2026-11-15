@@ -54,8 +54,11 @@ log = logging.getLogger("edge")
 
 TABLE_EXPAND = 1.45  # تكبير مضلّع الطاولة ليشمل الجالسين حولها
 CONFIG_REFRESH_SECONDS = 60
-HEARTBEAT_SECONDS = 60
+HEARTBEAT_SECONDS = 20
 PREVIEW_SECONDS = 600
+LIVE_HEARTBEAT_SECONDS = 4  # حين تكون شاشة المراقبة المباشرة مفتوحة في «سِجل»
+LIVE_PREVIEW_SECONDS = 8
+LIVE_HOLD_SECONDS = 40
 FOOTFALL_SECONDS = 300
 
 
@@ -261,6 +264,17 @@ class CameraState:
         else:
             event["image"] = encode_jpeg(frame, 960, 75)
 
+    def live(self, now: float) -> list[dict]:
+        """حالة كل منطقة الآن — تُرسل مع النبض لشاشة المراقبة المباشرة."""
+        out = []
+        for zone_id, tracker in self.trackers.items():
+            if isinstance(tracker, DoorCounter):
+                item = {"state": "ok", "seconds": 0, "people": 0, "alert": False, "entries": tracker.entries, "exits": tracker.exits}
+            else:
+                item = tracker.live(now)
+            out.append({"id": zone_id, **item})
+        return out
+
     def door_totals(self) -> tuple[int, int]:
         doors = [t for t in self.trackers.values() if isinstance(t, DoorCounter)]
         return sum(d.entries for d in doors), sum(d.exits for d in doors)
@@ -302,6 +316,7 @@ class Agent:
         self.hour_base: dict[str, tuple[int, int]] = {}
         self.hour_key = ""
         self.started = time.time()
+        self.live_until = 0.0
 
     # الإعدادات من الخادم
     def refresh(self) -> bool:
@@ -349,7 +364,15 @@ class Agent:
             "fps": self.fps,
             "cameras": [{"number": number, "ok": camera.ok} for number, camera in sorted(self.cameras.items())],
             "pending": self.outbox.qsize(),
+            "zones": [zone for state in list(self.states.values()) for zone in state.live(time.time())],
         }
+
+    def is_live(self) -> bool:
+        return time.time() < self.live_until
+
+    def note_reply(self, reply: dict) -> None:
+        if reply.get("live"):
+            self.live_until = time.time() + LIVE_HOLD_SECONDS
 
     def enqueue(self, number: str, event: dict) -> None:
         try:
@@ -362,13 +385,13 @@ class Agent:
         last_beat = 0.0
         while True:
             try:
-                number, event = self.outbox.get(timeout=5)
+                number, event = self.outbox.get(timeout=2)
             except queue.Empty:
                 number, event = None, None
             if event is None:
-                if time.time() - last_beat >= HEARTBEAT_SECONDS:
+                if time.time() - last_beat >= (LIVE_HEARTBEAT_SECONDS if self.is_live() else HEARTBEAT_SECONDS):
                     try:
-                        self.server.events([], self.status())
+                        self.note_reply(self.server.events([], self.status()))
                         last_beat = time.time()
                     except Exception as error:
                         log.warning("تعذّر إرسال النبض: %s", error)
@@ -377,6 +400,7 @@ class Agent:
             for attempt in range(4):
                 try:
                     reply = self.server.events([wire_event(event)], self.status())
+                    self.note_reply(reply)
                     last_beat = time.time()
                     result = (reply.get("results") or [{}])[0]
                     if not reply.get("ok") or not result.get("ok"):
@@ -423,9 +447,10 @@ class Agent:
                 frame = camera.latest()
                 if frame is None:
                     continue
-                if tick - last_preview.get(number, 0) >= PREVIEW_SECONDS:
+                live = self.is_live()
+                if tick - last_preview.get(number, 0) >= (LIVE_PREVIEW_SECONDS if live else PREVIEW_SECONDS):
                     last_preview[number] = tick
-                    threading.Thread(target=self._preview, args=(number, frame.copy()), daemon=True).start()
+                    threading.Thread(target=self._preview, args=(number, frame.copy(), live), daemon=True).start()
                 state = self.states.get(number)
                 if state is None:
                     continue
@@ -445,9 +470,9 @@ class Agent:
                 self.refresh()
             time.sleep(max(0.0, interval - (time.time() - tick)))
 
-    def _preview(self, number: str, frame) -> None:
+    def _preview(self, number: str, frame, live: bool = False) -> None:
         try:
-            image = encode_jpeg(frame, 1280, 80)
+            image = encode_jpeg(frame, 960, 60) if live else encode_jpeg(frame, 1280, 80)
             reply = {}
             for candidate in dict.fromkeys([self.server_numbers.get(number, number), number, short_number(number)]):
                 reply = self.server.preview(candidate, image)
@@ -455,7 +480,8 @@ class Agent:
                     self.server_numbers[number] = candidate
                     break
             if reply.get("ok"):
-                log.info("رُفعت معاينة الكاميرا %s", number)
+                if not live:
+                    log.info("رُفعت معاينة الكاميرا %s", number)
             else:
                 log.warning("الخادم لم يقبل معاينة الكاميرا %s — تأكد أن رقمها في «سِجل» هو %s: %s", number, number, reply.get("error"))
         except Exception as error:

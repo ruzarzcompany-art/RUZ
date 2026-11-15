@@ -139,6 +139,7 @@ export async function controlSettingsFor(branchId: number) {
     edgeOfflineNotified: row?.edgeOfflineNotified ?? false,
     waEdgeSeenAt: row?.waEdgeSeenAt ?? null,
     waEdgeState: row?.waEdgeState ?? "",
+    liveUntil: row?.liveUntil ?? null,
     notifyMinor: row?.notifyMinor ?? false,
     googleLocation: row?.googleLocation ?? "",
     reviewMaxStars: row?.reviewMaxStars ?? 3,
