@@ -46,6 +46,7 @@
       </div>
       <div class="tabgroup">
         <span class="tabgroup__label">المالية</span>
+        <button class="tab" type="button" data-panel="finance">ملخّص المالية</button>
         <button class="tab" type="button" data-panel="cashier">تقفيل الكاشير</button>
         <button class="tab" type="button" data-panel="cashbox">النقدية والإقفال</button>
       </div>
@@ -1035,6 +1036,50 @@
     </main>
 
     <!-- ── تقفيل الكاشير اليومي ───────────────────────────────── -->
+    <!-- ── ملخّص المالية ──────────────────────────────────────── -->
+    <main id="panel-finance" class="panel" hidden>
+      <p id="fh-alert" class="alert" role="status" hidden></p>
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">ملخّص المالية</h2>
+          <div class="row row--wrap">
+            <label class="field field--sm">
+              <span class="field__label">الفرع</span>
+              <select id="fh-branch"><option value="">فرعي</option></select>
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">الشهر</span>
+              <input id="fh-month-input" type="month" />
+            </label>
+            <button id="fh-refresh" class="btn btn--ghost btn--xs" type="button">تحديث</button>
+          </div>
+        </div>
+        <h3 class="card__title card__title--sm">يحتاج انتباهك</h3>
+        <div id="fh-attention" class="fin-attn-list"></div>
+        <h3 class="card__title card__title--sm">اليوم</h3>
+        <div id="fh-today" class="fin-tiles"></div>
+        <h3 class="card__title card__title--sm">الشهر</h3>
+        <div id="fh-month" class="fin-tiles"></div>
+      </section>
+
+      <section class="card">
+        <h3 class="card__title card__title--sm">مبيعات الأيام</h3>
+        <div id="fh-chart" class="fin-chart"></div>
+        <p id="fh-chart-empty" class="empty" hidden>لا تقفيلات في هذا الشهر بعد.</p>
+        <p class="hint">العمود الأحمر يوم فيه عجز في الصندوق.</p>
+      </section>
+
+      <section class="card">
+        <h3 class="card__title card__title--sm">فرق الصندوق حسب الكاشير</h3>
+        <div id="fh-cashiers"></div>
+      </section>
+
+      <section class="card">
+        <h3 class="card__title card__title--sm">مستحقات الشبكات وتطبيقات التوصيل</h3>
+        <div id="fh-receivables"></div>
+      </section>
+    </main>
+
     <main id="panel-cashier" class="panel" hidden>
       <section class="card">
         <div class="card__head">

@@ -3813,3 +3813,195 @@ financeRouter.get(
     });
   },
 );
+
+/* ══ ملخّص المالية: الصورة الكاملة للشهر في نداء واحد ══════════════════ */
+
+/**
+ * يجمع ما يحتاجه المالك أو المحاسب أول ما يفتح المالية: مبيعات الشهر ومكوّناتها،
+ * عجز وزيادة الصندوق حسب الكاشير، الأيام التي لم يُرفع لها تقفيل، التقفيلات
+ * المنتظرة للمراجعة، النقد المتبقي بعد المصاريف، وما لم تحوّله الشبكات والتطبيقات.
+ * كل الأرقام من التقفيلات والمصاريف والتسويات المحفوظة — لا إدخال جديد.
+ */
+financeRouter.get(
+  "/finance/overview",
+  requireAuth,
+  requireAnyPermission(
+    PERMISSIONS.cashierReadAll,
+    PERMISSIONS.cashExpensesRead,
+    PERMISSIONS.settlementsRead,
+  ),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const branchId = await resolveBranchId(req, req.query.branchId);
+    if (branchId === null) {
+      res.status(400).json({ ok: false, error: "حدّد الفرع أولاً" });
+      return;
+    }
+    const timezone = await branchTimezone(branchId);
+    const today = isoDateInZone(new Date(), timezone);
+    const period = parseMonthKey(req.query.month) ?? {
+      year: Number.parseInt(today.slice(0, 4), 10),
+      month: Number.parseInt(today.slice(5, 7), 10),
+    };
+    if (!isValidPeriod(period.year, period.month)) {
+      res.status(400).json({ ok: false, error: "الشهر المطلوب غير صالح" });
+      return;
+    }
+    const { from, to } = monthBounds(period.year, period.month);
+    const lastDay = to < today ? to : today;
+
+    const [closings, expenseRows] = await Promise.all([
+      db
+        .select({
+          id: cashierClosings.id,
+          businessDate: cashierClosings.businessDate,
+          employeeId: cashierClosings.employeeId,
+          employeeName: employees.fullName,
+          totalSales: cashierClosings.totalSales,
+          cashSales: cashierClosings.cashSales,
+          cardSales: cashierClosings.cardSales,
+          deliverySales: cashierClosings.deliverySales,
+          discounts: cashierClosings.discounts,
+          refunds: cashierClosings.refunds,
+          difference: cashierClosings.difference,
+          status: cashierClosings.status,
+        })
+        .from(cashierClosings)
+        .leftJoin(employees, eq(cashierClosings.employeeId, employees.id))
+        .where(
+          and(
+            eq(cashierClosings.branchId, branchId),
+            gte(cashierClosings.businessDate, from),
+            lte(cashierClosings.businessDate, to),
+          ),
+        ),
+      db
+        .select({ businessDate: cashExpenses.businessDate, amount: cashExpenses.amount })
+        .from(cashExpenses)
+        .where(
+          and(
+            eq(cashExpenses.branchId, branchId),
+            gte(cashExpenses.businessDate, from),
+            lte(cashExpenses.businessDate, to),
+          ),
+        ),
+    ]);
+
+    const num = (value: unknown) => Number(value) || 0;
+    const days = new Map<string, { date: string; sales: number; cash: number; card: number; delivery: number; difference: number; expenses: number; closings: number }>();
+    const day = (date: string) => {
+      let entry = days.get(date);
+      if (!entry) {
+        entry = { date, sales: 0, cash: 0, card: 0, delivery: 0, difference: 0, expenses: 0, closings: 0 };
+        days.set(date, entry);
+      }
+      return entry;
+    };
+    const cashiers = new Map<number, { name: string; closings: number; shortage: number; surplus: number }>();
+    for (const row of closings) {
+      const entry = day(row.businessDate);
+      entry.sales += num(row.totalSales);
+      entry.cash += num(row.cashSales);
+      entry.card += num(row.cardSales);
+      entry.delivery += num(row.deliverySales);
+      entry.difference += num(row.difference);
+      entry.closings += 1;
+      const cashier = cashiers.get(row.employeeId) ?? { name: row.employeeName ?? "—", closings: 0, shortage: 0, surplus: 0 };
+      cashier.closings += 1;
+      const diff = num(row.difference);
+      if (diff < 0) cashier.shortage += -diff;
+      else cashier.surplus += diff;
+      cashiers.set(row.employeeId, cashier);
+    }
+    for (const row of expenseRows) day(row.businessDate).expenses += num(row.amount);
+
+    const dayList = [...days.values()]
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((entry) => ({
+        ...entry,
+        sales: round2(entry.sales),
+        cash: round2(entry.cash),
+        card: round2(entry.card),
+        delivery: round2(entry.delivery),
+        difference: round2(entry.difference),
+        expenses: round2(entry.expenses),
+      }));
+
+    // الأيام الماضية من الشهر التي لم يُرفع لها أي تقفيل (اليوم نفسه لا يُحسب ناقصاً).
+    const missingDays: string[] = [];
+    for (let cursor = new Date(`${from}T00:00:00Z`); ; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+      const date = cursor.toISOString().slice(0, 10);
+      if (date > lastDay || (date === today && lastDay === today)) break;
+      if (!days.get(date)?.closings) missingDays.push(date);
+    }
+
+    const sales = sumBy(closings, (row) => row.totalSales);
+    const cashSales = sumBy(closings, (row) => row.cashSales);
+    const expenses = sumBy(expenseRows, (row) => row.amount);
+    const shortage = round2(closings.reduce((total, row) => total + Math.max(0, -num(row.difference)), 0));
+    const surplus = round2(closings.reduce((total, row) => total + Math.max(0, num(row.difference)), 0));
+    const daysWithSales = dayList.filter((entry) => entry.closings > 0).length;
+
+    const receivables = [];
+    if (await hasAnyPermission(req, [PERMISSIONS.settlementsRead])) {
+      for (const providerType of PROVIDER_TYPES) {
+        const data = await monthlyProviderRows(branchId, providerType, period.year, period.month);
+        for (const row of data.rows) {
+          if (row.monthlySales <= 0 && row.carriedInAmount <= 0) continue;
+          receivables.push({
+            providerType,
+            typeLabel: PROVIDER_TYPE_LABEL[providerType],
+            name: row.providerName,
+            due: row.settlementBase,
+            received: row.receivedAmount,
+            outstanding: row.carriedOutAmount,
+            status: row.status,
+          });
+        }
+      }
+    }
+
+    const todayEntry = days.get(today);
+    res.json({
+      ok: true,
+      branchId,
+      month: monthKeyOf(period.year, period.month),
+      from,
+      to,
+      today,
+      totals: {
+        sales,
+        cashSales,
+        cardSales: sumBy(closings, (row) => row.cardSales),
+        deliverySales: sumBy(closings, (row) => row.deliverySales),
+        discounts: sumBy(closings, (row) => row.discounts),
+        refunds: sumBy(closings, (row) => row.refunds),
+        expenses,
+        remainingCash: remainingCash(cashSales, expenses),
+        shortage,
+        surplus,
+        netDifference: round2(surplus - shortage),
+        averageDailySales: daysWithSales ? round2(sales / daysWithSales) : 0,
+        closings: closings.length,
+        pendingReview: closings.filter((row) => row.status === "submitted").length,
+      },
+      todayFigures: {
+        closings: todayEntry?.closings ?? 0,
+        sales: round2(todayEntry?.sales ?? 0),
+        difference: round2(todayEntry?.difference ?? 0),
+        expenses: round2(todayEntry?.expenses ?? 0),
+      },
+      days: dayList,
+      missingDays,
+      cashiers: [...cashiers.values()]
+        .map((item) => ({ ...item, shortage: round2(item.shortage), surplus: round2(item.surplus) }))
+        .sort((a, b) => b.shortage - a.shortage),
+      receivables,
+      receivablesTotal: {
+        due: round2(receivables.reduce((total, row) => total + row.due, 0)),
+        received: round2(receivables.reduce((total, row) => total + row.received, 0)),
+        outstanding: round2(receivables.reduce((total, row) => total + row.outstanding, 0)),
+      },
+    });
+  },
+);

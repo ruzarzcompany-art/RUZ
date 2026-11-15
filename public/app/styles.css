@@ -2232,3 +2232,90 @@ select option {
   color: #5fae6a;
   font-weight: 600;
 }
+
+/* ملخّص المالية */
+.fin-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.6rem;
+  margin: 0.5rem 0 1rem;
+}
+.fin-tile {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: 12px;
+  border: 1px solid rgba(236, 228, 210, 0.14);
+  background: rgba(236, 228, 210, 0.04);
+}
+.fin-tile__label {
+  font-size: 0.8rem;
+  opacity: 0.8;
+}
+.fin-tile__value {
+  font-size: 1.15rem;
+  font-variant-numeric: tabular-nums;
+}
+.fin-tile__note {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+.fin-tile--good .fin-tile__value {
+  color: #6fbf7a;
+}
+.fin-tile--bad .fin-tile__value {
+  color: #ef6a5b;
+}
+.fin-tile--warn .fin-tile__value {
+  color: #e0a030;
+}
+.fin-attn-list {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.5rem 0 1rem;
+}
+.fin-attn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  border-inline-start: 4px solid #e0a030;
+  background: rgba(224, 160, 48, 0.12);
+  font-size: 0.9rem;
+}
+.fin-attn--bad {
+  border-inline-start-color: #e5483a;
+  background: rgba(229, 72, 58, 0.14);
+}
+.fin-attn--good {
+  border-inline-start-color: #5fae6a;
+  background: rgba(95, 174, 106, 0.12);
+}
+.fin-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 150px;
+  padding-bottom: 1.2rem;
+  direction: ltr;
+}
+.fin-bar {
+  position: relative;
+  flex: 1;
+  min-width: 6px;
+  border-radius: 4px 4px 0 0;
+  background: #c9a14a;
+}
+.fin-bar--bad {
+  background: #e5483a;
+}
+.fin-bar span {
+  position: absolute;
+  bottom: -1.15rem;
+  inset-inline: 0;
+  text-align: center;
+  font-size: 0.65rem;
+  opacity: 0.7;
+}

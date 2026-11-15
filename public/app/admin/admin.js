@@ -49,6 +49,7 @@ import { initReportsModule } from "./reports.js";
 import { initSettingsModule, refreshSettingsPanel } from "./settings.js";
 import { mountPurge } from "./purge.js";
 import { initCashierModule, refreshCashierPanel } from "./cashier.js";
+import { initFinanceHome, refreshFinanceHome } from "./finance-home.js";
 import { initCashboxModule, refreshCashboxPanel } from "./cashbox.js";
 import { initInventoryModule, refreshInventoryPanel } from "./inventory.js";
 import { initSurveillanceModule, refreshSurveillancePanel } from "./surveillance.js";
@@ -1003,6 +1004,7 @@ function fillNewPanelSelects() {
   fillEmployees(el("cashier-employee"), { placeholder: "أنا" });
 
   fillBranches(el("cashier-branch"), { placeholder: "فرعي" });
+  fillBranches(el("fh-branch"), { placeholder: "فرعي" });
   fillBranches(el("cashier-filter-branch"), { placeholder: "الكل" });
   fillBranches(el("inventory-branch"), { placeholder: "فرعي" });
   fillBranches(el("doc-branch"), { placeholder: "فرعي" });
@@ -1077,6 +1079,7 @@ const PANEL_LOADERS = {
   },
   branches: refreshBranchesPanel,
   documents: refreshDocumentsPanel,
+  finance: refreshFinanceHome,
   cashier: refreshCashierPanel,
   cashbox: refreshCashboxPanel,
   inventory: refreshInventoryPanel,
@@ -1328,6 +1331,7 @@ const TAB_PERMISSIONS = {
   people: ["employees.read"],
   branches: ["branches.read"],
   documents: ["documents.print", "documents.read_all", "disciplinary.manage", "forms.read_all"],
+  finance: ["cashier.read_all", "cash_expenses.read", "settlements.read"],
   cashier: ["cashier.submit", "cashier.review", "cashier.read_all", "sections.cashier"],
   cashbox: [
     "cash_expenses.read",
@@ -1421,6 +1425,9 @@ async function boot() {
   initReportsModule();
   initSettingsModule({ can, employees: state.employees });
   initCashierModule({ can, levelOf, canDeleteIn });
+  initFinanceHome({
+    openPanel: (panel) => el("admin-tabs").querySelector(`[data-panel="${panel}"]:not([hidden])`)?.click(),
+  });
   initCashboxModule({ can, levelOf, canDeleteIn });
   initInventoryModule({ can, levelOf, canDeleteIn });
   initSurveillanceModule();
