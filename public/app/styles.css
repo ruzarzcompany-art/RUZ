@@ -2168,3 +2168,12 @@ select option {
   cursor: crosshair;
   touch-action: manipulation;
 }
+
+/* الرقابة والكاميرات: صف التبويبات الثانوية تحت «المزيد» */
+.tabs--more {
+  margin-top: 0.4rem;
+  opacity: 0.9;
+}
+.tabs--more .tab {
+  font-size: 0.85em;
+}
