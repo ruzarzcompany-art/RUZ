@@ -464,7 +464,7 @@ function drawZones() {
     ctx.textAlign = "center";
     ctx.direction = "rtl";
     ctx.fillText("لا توجد لقطة لهذه الكاميرا بعد", width / 2, height / 2 - 14);
-    ctx.fillText("شغّل على جهاز التحليل: python agent.py --check", width / 2, height / 2 + 18);
+    ctx.fillText("تصل تلقائياً خلال دقائق من تشغيل جهاز التحليل", width / 2, height / 2 + 18);
   }
   const path = (points, close) => {
     ctx.beginPath();

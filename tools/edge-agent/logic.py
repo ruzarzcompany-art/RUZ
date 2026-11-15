@@ -135,6 +135,7 @@ class TableTracker:
         self._reset_session()
         self.presence_since: float | None = None
         self.zero_since: float | None = None
+        self.count = 0
 
     def _reset_session(self) -> None:
         self.seated_at: float | None = None
@@ -175,8 +176,24 @@ class TableTracker:
 
     # ── التحديث ──
 
+    def live(self, now: float) -> dict:
+        """الحالة اللحظية للعرض المباشر: فارغة | waiting | served | vacated."""
+        if self.state == "occupied" and self.seated_at is not None:
+            waiting = self.first_visit_seconds is None
+            return {
+                "state": "waiting" if waiting else "served",
+                "seconds": int(now - self.seated_at),
+                "people": self.count,
+                "alert": waiting and self.unattended_sent,
+            }
+        if self.state == "vacated" and self.left_at is not None:
+            seconds = int(now - self.left_at)
+            return {"state": "vacated", "seconds": seconds, "people": self.count, "alert": seconds > self.config.clear_seconds}
+        return {"state": "empty", "seconds": 0, "people": self.count, "alert": False}
+
     def update(self, now: float, raw_count: int) -> list[dict]:
         count = self.smoother.add(now, raw_count)
+        self.count = count
         events: list[dict] = []
         config = self.config
 
@@ -324,9 +341,15 @@ class SustainedTracker:
         self.clear_since: float | None = None
         self.fired = False
         self.peak = 0
+        self.count = 0
+
+    def live(self, now: float) -> dict:
+        seconds = int(now - self.since) if self.since is not None else 0
+        return {"state": "alert" if self.fired else "ok", "seconds": seconds, "people": self.count, "alert": self.fired}
 
     def update(self, now: float, raw_count: int, enabled: bool = True) -> list[dict]:
         count = self.smoother.add(now, raw_count)
+        self.count = count
         if not enabled:
             self.since = None
             self.fired = False

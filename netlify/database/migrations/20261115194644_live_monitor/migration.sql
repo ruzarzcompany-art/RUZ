@@ -1,0 +1,1 @@
+ALTER TABLE "control_settings" ADD COLUMN "live_until" timestamp with time zone;

@@ -28,7 +28,7 @@
  */
 
 import { Router, type Request, type Response } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, gte } from "drizzle-orm";
 import { getDb } from "../../db/index.js";
 import {
   branches,
@@ -65,6 +65,8 @@ import {
   ZONE_KINDS,
   edgeConfig,
   ingestEdgeEvent,
+  liveRequested,
+  liveView,
   parsePoints,
   savePreview,
   touchEdge,
@@ -98,6 +100,37 @@ controlRouter.get("/control/overview", ...canRead, async (req: AuthedRequest, re
   if (!branch) return bad(res, "اختر الفرع");
   const date = asDateOnly(req.query.date) ?? isoDateInZone(new Date(), safeTimeZone(branch.timezone));
   res.json({ ok: true, ...(await controlOverview(branch, date)) });
+});
+
+/** شاشة المراقبة المباشرة: يُستدعى كل بضع ثوانٍ ما دامت الشاشة مفتوحة. */
+controlRouter.get("/control/live", ...canRead, async (req: AuthedRequest, res: Response) => {
+  const branch = await loadBranch(branchIdOf(req, req.query.branchId));
+  if (!branch) return bad(res, "اختر الفرع");
+  const db = getDb();
+  const since = new Date(Date.now() - 6 * 3600_000);
+  const [view, open] = await Promise.all([
+    liveView(branch),
+    db
+      .select()
+      .from(surveillanceAlerts)
+      .where(and(eq(surveillanceAlerts.branchId, branch.id), eq(surveillanceAlerts.status, "open"), gte(surveillanceAlerts.occurredAt, since)))
+      .orderBy(desc(surveillanceAlerts.occurredAt))
+      .limit(12),
+  ]);
+  res.json({
+    ok: true,
+    ...view,
+    alerts: open.map((alert) => ({
+      id: alert.id,
+      type: alert.alertType,
+      label: ALERT_TYPES[alert.alertType]?.label ?? alert.alertType,
+      location: alert.location,
+      details: alert.details.slice(0, 200),
+      occurredAt: alert.occurredAt,
+      urgent: alert.isUrgent,
+      cameraId: alert.cameraId,
+    })),
+  });
 });
 
 controlRouter.put("/control/settings", ...canManage, async (req: AuthedRequest, res: Response) => {
@@ -528,7 +561,7 @@ controlRouter.post("/control/edge/events", async (req: Request, res: Response) =
       results.push({ ok: false, type: String((event as { type?: unknown })?.type ?? ""), error: error instanceof Error ? error.message : String(error) });
     }
   }
-  res.json({ ok: true, results });
+  res.json({ ok: true, results, live: await liveRequested(branch.id) });
 });
 
 controlRouter.post("/control/edge/outbox", async (req: Request, res: Response) => {

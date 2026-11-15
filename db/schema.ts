@@ -2079,6 +2079,8 @@ export const controlSettings = pgTable("control_settings", {
   /** آخر اتصال لمرسل واتساب في جهاز المطعم، وحالته: connected | need_qr | disconnected */
   waEdgeSeenAt: timestamp("wa_edge_seen_at", { withTimezone: true }),
   waEdgeState: text("wa_edge_state").notNull().default(""),
+  /** شاشة المراقبة المباشرة مفتوحة حتى هذا الوقت — يطلب من جهاز المطعم تحديثاً سريعاً */
+  liveUntil: timestamp("live_until", { withTimezone: true }),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
