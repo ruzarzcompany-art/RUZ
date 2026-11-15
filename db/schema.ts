@@ -2076,8 +2076,31 @@ export const controlSettings = pgTable("control_settings", {
   briefTime: text("brief_time").notNull().default("23:45"),
   /** تاريخ آخر تقرير ليلي أُرسل (YYYY-MM-DD) */
   briefLastDate: text("brief_last_date").notNull().default(""),
+  /** آخر اتصال لمرسل واتساب في جهاز المطعم، وحالته: connected | need_qr | disconnected */
+  waEdgeSeenAt: timestamp("wa_edge_seen_at", { withTimezone: true }),
+  waEdgeState: text("wa_edge_state").notNull().default(""),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * control_outbox — رسائل واتساب تنتظر أن يرسلها جهاز المطعم من رقم المطعم نفسه
+ * (المزوّد «edge»: بلا اشتراك ولا مزوّد خارجي).
+ */
+export const controlOutbox = pgTable(
+  "control_outbox",
+  {
+    id: serial().primaryKey(),
+    phone: text().notNull(),
+    body: text().notNull(),
+    /** queued | sending | sent | failed */
+    status: text().notNull().default("queued"),
+    attempts: integer().notNull().default(0),
+    error: text().notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("control_outbox_status_idx").on(table.status, table.id)],
+);
 
 /** control_recipients — من يستلم التنبيهات في كل مستوى وأرقام واتساب. */
 export const controlRecipients = pgTable(

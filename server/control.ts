@@ -22,6 +22,7 @@ import {
   controlBriefs,
   controlDispatches,
   controlMessages,
+  controlOutbox,
   controlRecipients,
   controlFootfall,
   controlSettings,
@@ -136,6 +137,8 @@ export async function controlSettingsFor(branchId: number) {
     edgeLastSeenAt: row?.edgeLastSeenAt ?? null,
     edgeStatusJson: row?.edgeStatusJson ?? "",
     edgeOfflineNotified: row?.edgeOfflineNotified ?? false,
+    waEdgeSeenAt: row?.waEdgeSeenAt ?? null,
+    waEdgeState: row?.waEdgeState ?? "",
     notifyMinor: row?.notifyMinor ?? false,
     googleLocation: row?.googleLocation ?? "",
     reviewMaxStars: row?.reviewMaxStars ?? 3,
@@ -171,9 +174,18 @@ export function whatsappConfig() {
   const phoneId = (env("WHATSAPP_PHONE_ID") ?? "").trim();
   const instance = (env("WHATSAPP_INSTANCE") ?? "").trim();
   const explicit = (env("WHATSAPP_PROVIDER") ?? "").trim().toLowerCase();
-  const provider = explicit === "meta" || explicit === "ultramsg" ? explicit : phoneId ? "meta" : instance ? "ultramsg" : "";
+  // بلا أي مزوّد مضبوط تُرسل الرسائل من رقم المطعم عبر جهاز المطعم (edge) — بلا اشتراك.
+  const provider =
+    explicit === "meta" || explicit === "ultramsg" || explicit === "edge"
+      ? explicit
+      : token && phoneId
+        ? "meta"
+        : token && instance
+          ? "ultramsg"
+          : "edge";
   const configured =
-    Boolean(token) && ((provider === "meta" && Boolean(phoneId)) || (provider === "ultramsg" && Boolean(instance)));
+    provider === "edge" ||
+    (Boolean(token) && ((provider === "meta" && Boolean(phoneId)) || (provider === "ultramsg" && Boolean(instance))));
   return {
     configured,
     provider,
@@ -211,6 +223,14 @@ function flattenForTemplate(text: string): string {
 export async function sendWhatsapp(phone: string, text: string): Promise<{ ok: boolean; error: string }> {
   const config = whatsappConfig();
   if (!config.configured) return { ok: false, error: "واتساب غير مضبوط (WHATSAPP_TOKEN)" };
+  if (config.provider === "edge") {
+    try {
+      await getDb().insert(controlOutbox).values({ phone, body: text.slice(0, 3500) });
+      return { ok: true, error: "" };
+    } catch (error) {
+      return { ok: false, error: `تعذّر وضع الرسالة في قائمة الإرسال: ${error instanceof Error ? error.message : error}`.slice(0, 300) };
+    }
+  }
   try {
     let response: Response;
     if (config.provider === "meta") {
@@ -252,6 +272,65 @@ export async function sendWhatsapp(phone: string, text: string): Promise<{ ok: b
   } catch (error) {
     return { ok: false, error: `تعذّر الوصول إلى مزوّد واتساب: ${error instanceof Error ? error.message : error}`.slice(0, 300) };
   }
+}
+
+/* ── قائمة إرسال جهاز المطعم ─────────────────────────────────── */
+
+const OUTBOX_MAX_AGE_MS = 20 * 60_000;
+const OUTBOX_RETRY_MS = 2 * 60_000;
+const WA_EDGE_ONLINE_MS = 3 * 60_000;
+
+/** يسجّل نتائج الإرسال السابقة وحالة الربط، ثم يسلّم الرسائل المنتظرة لجهاز المطعم. */
+export async function exchangeOutbox(
+  branchId: number,
+  state: string,
+  results: Array<{ id: number; ok: boolean; error: string }>,
+): Promise<Array<{ id: number; phone: string; text: string }>> {
+  const db = getDb();
+  const now = new Date();
+  const link = { waEdgeSeenAt: now, waEdgeState: state.slice(0, 40) };
+  await db
+    .insert(controlSettings)
+    .values({ branchId, ...link })
+    .onConflictDoUpdate({ target: controlSettings.branchId, set: link });
+  for (const result of results.slice(0, 50)) {
+    await db
+      .update(controlOutbox)
+      .set({ status: result.ok ? "sent" : "failed", error: result.ok ? "" : result.error.slice(0, 300), updatedAt: now })
+      .where(and(eq(controlOutbox.id, result.id), eq(controlOutbox.status, "sending")));
+  }
+  // التنبيه القديم لا قيمة له: ما تجاوز المهلة يُعلَّم فاشلاً بدل أن يصل متأخراً.
+  await db
+    .update(controlOutbox)
+    .set({ status: "failed", error: "انتهت المهلة قبل اتصال جهاز المطعم", updatedAt: now })
+    .where(
+      and(inArray(controlOutbox.status, ["queued", "sending"]), lt(controlOutbox.createdAt, new Date(now.getTime() - OUTBOX_MAX_AGE_MS))),
+    );
+  if (state !== "connected") return [];
+  // «sending» العالقة (انقطع الجهاز قبل تأكيدها) تُعاد بعد دقيقتين وحتى 3 محاولات.
+  await db
+    .update(controlOutbox)
+    .set({ status: "queued", updatedAt: now })
+    .where(
+      and(
+        eq(controlOutbox.status, "sending"),
+        lt(controlOutbox.updatedAt, new Date(now.getTime() - OUTBOX_RETRY_MS)),
+        lt(controlOutbox.attempts, 3),
+      ),
+    );
+  const rows = await db.select().from(controlOutbox).where(eq(controlOutbox.status, "queued")).orderBy(asc(controlOutbox.id)).limit(10);
+  if (rows.length === 0) return [];
+  await db
+    .update(controlOutbox)
+    .set({ status: "sending", attempts: sql`${controlOutbox.attempts} + 1`, updatedAt: now })
+    .where(inArray(controlOutbox.id, rows.map((row) => row.id)));
+  return rows.map((row) => ({ id: row.id, phone: row.phone, text: row.body }));
+}
+
+/** حالة ربط واتساب جهاز المطعم كما تُعرض في شاشة «المستلمون والتصعيد». */
+export function waEdgeStatus(settings: { waEdgeSeenAt: Date | null; waEdgeState: string }) {
+  const online = Boolean(settings.waEdgeSeenAt && Date.now() - settings.waEdgeSeenAt.getTime() < WA_EDGE_ONLINE_MS);
+  return { online, state: online ? settings.waEdgeState : "offline", seenAt: settings.waEdgeSeenAt };
 }
 
 /* ── رمز تأكيد الاستلام ──────────────────────────────────────── */
@@ -1156,7 +1235,12 @@ export async function controlOverview(branch: BranchRow, date: string) {
   return {
     edge: await edgeOverview(branch, date),
     settings,
-    whatsapp: { configured: wa.configured, provider: wa.provider, template: wa.provider === "meta" ? wa.template : "" },
+    whatsapp: {
+      configured: wa.configured,
+      provider: wa.provider,
+      template: wa.provider === "meta" ? wa.template : "",
+      edge: wa.provider === "edge" ? waEdgeStatus(settings) : null,
+    },
     google: { configured: googleConfig().configured },
     labels: { tiers: TIER_LABELS, zones: LABELS.zones, feedback: FEEDBACK_CATEGORIES },
     routes: Object.entries(ROUTES).map(([type, route]) => ({
