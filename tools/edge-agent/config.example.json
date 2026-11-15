@@ -1,0 +1,20 @@
+{
+  "serverUrl": "https://ruzarzcompany.com",
+  "agentKey": "نفس قيمة SURVEILLANCE_WEBHOOK_SECRET في Netlify",
+  "branchCode": "BR-001",
+  "nvr": {
+    "host": "192.168.1.64",
+    "port": 554,
+    "username": "admin",
+    "password": "كلمة مرور جهاز التسجيل",
+    "stream": 2
+  },
+  "cameras": {
+    "CAM-01": 1,
+    "CAM-02": 2
+  },
+  "fps": 2,
+  "model": "yolo11n.pt",
+  "confidence": 0.35,
+  "imageSize": 640
+}

@@ -2146,3 +2146,25 @@ select option {
     margin: 16mm 8mm;
   }
 }
+
+/* ── تبويب التنبيه والتصعيد ─────────────────────────────────── */
+
+[data-sv-section="control"] > .card__title--sm:not(:first-child) {
+  margin-top: 1.6rem;
+}
+
+.zone-stage {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--ink-900);
+  max-width: 960px;
+}
+
+.zone-stage canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: crosshair;
+  touch-action: manipulation;
+}

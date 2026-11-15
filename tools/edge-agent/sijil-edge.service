@@ -1,0 +1,16 @@
+# خدمة systemd لتشغيل جهاز التحليل دائماً (لينكس):
+#   sudo cp sijil-edge.service /etc/systemd/system/
+#   sudo systemctl enable --now sijil-edge
+[Unit]
+Description=Sijil live analysis agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/sijil-edge
+ExecStart=/opt/sijil-edge/.venv/bin/python agent.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

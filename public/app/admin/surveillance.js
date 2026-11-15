@@ -21,6 +21,7 @@ import {
   toLocalInputValue,
 } from "../api.js";
 import { refreshFoodicsTab } from "./foodics.js";
+import { refreshControlTab } from "./control.js";
 
 const state = {
   meta: null,
@@ -1194,6 +1195,7 @@ const TAB_LOADERS = {
   limits: async () => renderTargets(),
   connect: async () => renderConnect(),
   foodics: () => refreshFoodicsTab(branchId(), day()),
+  control: () => refreshControlTab(branchId(), day(), { employees: state.meta?.employees ?? [], canManage: state.access.canManage }),
 };
 
 async function showTab(tab) {

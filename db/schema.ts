@@ -2025,3 +2025,271 @@ export const purchaseReceiptLines = pgTable(
   },
   (table) => [index("purchase_receipt_lines_receipt_idx").on(table.receiptId)],
 );
+
+/* ══ مركز الضبط: التوجيه والتصعيد وواتساب وتقييمات قوقل وشكاوى الطاولات ══
+ *
+ * جداول جديدة كلها (`control_*`) فوق وحدة الرقابة: لا تعدّل جدولاً قائماً.
+ * كل تنبيه رقابي يُنشأ له «مسار إبلاغ» واحد يبدأ بمستوى (موظف/مدير/مالك)
+ * ويُصعَّد للمستوى الأعلى إن لم يؤكَّد استلامه خلال المهلة المعتمدة.
+ * ══════════════════════════════════════════════════════════════════ */
+
+/** control_settings — مهل التصعيد وحدود الخدمة وربط قوقل لكل فرع. */
+export const controlSettings = pgTable("control_settings", {
+  branchId: integer("branch_id")
+    .primaryKey()
+    .references(() => branches.id, { onDelete: "cascade" }),
+  /** تشغيل الإبلاغ عبر واتساب لهذا الفرع */
+  enabled: boolean().notNull().default(true),
+  /** مهلة استلام الموظف قبل التصعيد للمدير (دقائق) — التنبيهات العامة */
+  staffAckMinutes: doublePrecision("staff_ack_minutes").notNull().default(1),
+  /** مهلة استلام الموظف لتنبيهات تأخر الطلبات (دقائق) */
+  orderStaffAckMinutes: doublePrecision("order_staff_ack_minutes").notNull().default(2),
+  /** مهلة استلام المدير قبل التصعيد للمالك (دقائق) */
+  managerAckMinutes: doublePrecision("manager_ack_minutes").notNull().default(3),
+  /** عدد الواقفين في طابور الكاشير الذي يُعدّ بعده الطابور طويلاً */
+  queueMax: integer("queue_max").notNull().default(4),
+  /* ── التحليل المباشر (جهاز التحليل داخل المطعم) ── */
+  /** دقائق جلوس العميل على الطاولة بلا وصول موظف قبل التنبيه */
+  tableWaitMinutes: doublePrecision("table_wait_minutes").notNull().default(5),
+  /** دقائق مسموحة لتنظيف الطاولة بعد مغادرة العميل */
+  tableClearMinutes: doublePrecision("table_clear_minutes").notNull().default(1),
+  /** ثواني استمرار الطابور فوق الحد قبل التنبيه */
+  queueSeconds: integer("queue_seconds").notNull().default(60),
+  /** آخر اتصال من جهاز التحليل، وحالته كما أرسلها */
+  edgeLastSeenAt: timestamp("edge_last_seen_at", { withTimezone: true }),
+  edgeStatusJson: text("edge_status_json").notNull().default(""),
+  /** هل نُبّه المالك عن انقطاع الجهاز الحالي؟ (تنبيه واحد لكل انقطاع) */
+  edgeOfflineNotified: boolean("edge_offline_notified").notNull().default(false),
+  /** إرسال الملاحظات البسيطة (جوال، تجمع…) للمدير فور وقوعها بدل الاكتفاء بالتقرير */
+  notifyMinor: boolean("notify_minor").notNull().default(false),
+  /** مسار موقع النشاط في قوقل: accounts/{id}/locations/{id} */
+  googleLocation: text("google_location").notNull().default(""),
+  /** يُنبَّه المدير عند تقييم بهذا العدد من النجوم أو أقل */
+  reviewMaxStars: integer("review_max_stars").notNull().default(3),
+  reviewsLastSyncAt: timestamp("reviews_last_sync_at", { withTimezone: true }),
+  reviewsLastError: text("reviews_last_error").notNull().default(""),
+  /** استقبال شكاوى الطاولات عبر رمز QR */
+  feedbackEnabled: boolean("feedback_enabled").notNull().default(true),
+  /** عدد طاولات الصالة (لطباعة رموز QR) */
+  tableCount: integer("table_count").notNull().default(20),
+  /** وقت إرسال التقرير الليلي للمالك (HH:MM بتوقيت الفرع) — فارغ = لا يُرسل */
+  briefTime: text("brief_time").notNull().default("23:45"),
+  /** تاريخ آخر تقرير ليلي أُرسل (YYYY-MM-DD) */
+  briefLastDate: text("brief_last_date").notNull().default(""),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** control_recipients — من يستلم التنبيهات في كل مستوى وأرقام واتساب. */
+export const controlRecipients = pgTable(
+  "control_recipients",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** staff | manager | owner */
+    tier: text().notNull(),
+    name: text().notNull(),
+    /** رقم واتساب بالصيغة الدولية أرقاماً فقط (9665xxxxxxxx) */
+    phone: text().notNull(),
+    employeeId: integer("employee_id").references(() => employees.id, { onDelete: "set null" }),
+    /** مناطق الموظف (dining, kitchen, cashier…) — فارغة = كل المناطق */
+    zones: text().array().notNull().default(sql`'{}'::text[]`),
+    /** للموظفين: يُبلَّغ فقط وهو على رأس العمل حسب سجل الحضور */
+    onShiftOnly: boolean("on_shift_only").notNull().default(true),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("control_recipients_branch_tier_idx").on(table.branchId, table.tier)],
+);
+
+/** control_dispatches — مسار إبلاغ واحد لكل تنبيه: المستوى الحالي والاستلام. */
+export const controlDispatches = pgTable(
+  "control_dispatches",
+  {
+    id: serial().primaryKey(),
+    alertId: integer("alert_id")
+      .notNull()
+      .references(() => surveillanceAlerts.id, { onDelete: "cascade" }),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** staff | manager | owner — المستوى الذي أُبلغ آخراً */
+    currentTier: text("current_tier").notNull(),
+    /** هل يُصعَّد عند عدم الاستلام؟ */
+    escalates: boolean().notNull().default(true),
+    /** موعد التصعيد التالي — null = لا تصعيد قادم */
+    nextEscalateAt: timestamp("next_escalate_at", { withTimezone: true }),
+    /** open | acked | exhausted | closed */
+    status: text().notNull().default("open"),
+    ackAt: timestamp("ack_at", { withTimezone: true }),
+    ackByRecipientId: integer("ack_by_recipient_id").references(() => controlRecipients.id, {
+      onDelete: "set null",
+    }),
+    ackByName: text("ack_by_name").notNull().default(""),
+    ackTier: text("ack_tier").notNull().default(""),
+    ackNote: text("ack_note").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("control_dispatches_alert_idx").on(table.alertId),
+    index("control_dispatches_due_idx").on(table.status, table.nextEscalateAt),
+    index("control_dispatches_branch_time_idx").on(table.branchId, table.createdAt),
+  ],
+);
+
+/** control_messages — سجل كل رسالة خرجت (أو فشلت) لكل مستلم. */
+export const controlMessages = pgTable(
+  "control_messages",
+  {
+    id: serial().primaryKey(),
+    dispatchId: integer("dispatch_id").references(() => controlDispatches.id, {
+      onDelete: "cascade",
+    }),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    recipientId: integer("recipient_id").references(() => controlRecipients.id, {
+      onDelete: "set null",
+    }),
+    tier: text().notNull().default(""),
+    /** alert | escalation | brief | test */
+    kind: text().notNull().default("alert"),
+    phone: text().notNull().default(""),
+    /** sent | failed | skipped */
+    status: text().notNull().default("sent"),
+    error: text().notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("control_messages_dispatch_idx").on(table.dispatchId)],
+);
+
+/** google_reviews — تقييمات قوقل المسحوبة، لمنع تكرار التنبيه عن التقييم نفسه. */
+export const googleReviews = pgTable(
+  "google_reviews",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    reviewId: text("review_id").notNull(),
+    rating: integer().notNull().default(0),
+    author: text().notNull().default(""),
+    comment: text().notNull().default(""),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }).notNull(),
+    hasReply: boolean("has_reply").notNull().default(false),
+    alertId: integer("alert_id").references(() => surveillanceAlerts.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("google_reviews_branch_review_idx").on(table.branchId, table.reviewId),
+    index("google_reviews_branch_time_idx").on(table.branchId, table.reviewedAt),
+  ],
+);
+
+/** customer_feedback — شكاوى وطلبات العملاء من رمز QR على الطاولة. */
+export const customerFeedback = pgTable(
+  "customer_feedback",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    tableNo: text("table_no").notNull().default(""),
+    /** call_staff | late | cleanliness | food | service | other */
+    category: text().notNull().default("other"),
+    message: text().notNull().default(""),
+    phone: text().notNull().default(""),
+    alertId: integer("alert_id").references(() => surveillanceAlerts.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("customer_feedback_branch_time_idx").on(table.branchId, table.createdAt)],
+);
+
+/** control_briefs — التقرير الليلي للمالك كما صدر (النص وأرقامه). */
+export const controlBriefs = pgTable(
+  "control_briefs",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    businessDate: date("business_date").notNull(),
+    /** تقييم اليوم من 10 كما قدّره التحليل — null إن تعذّر */
+    score: doublePrecision(),
+    briefText: text("brief_text").notNull().default(""),
+    factsJson: text("facts_json").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("control_briefs_branch_date_idx").on(table.branchId, table.businessDate)],
+);
+
+/**
+ * control_zones — المناطق المرسومة على صورة الكاميرا للتحليل المباشر:
+ * طاولة (مضلّع فوق سطحها)، طابور الكاشير، خط الباب لعدّ الداخلين، أو منطقة
+ * ممنوعة خارج الدوام. النقاط نسب من عرض وارتفاع الصورة (0–1).
+ */
+export const controlZones = pgTable(
+  "control_zones",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    cameraId: integer("camera_id")
+      .notNull()
+      .references(() => surveillanceCameras.id, { onDelete: "cascade" }),
+    /** table | queue | door | restricted */
+    kind: text().notNull().default("table"),
+    /** رقم الطاولة أو اسم المنطقة */
+    label: text().notNull().default(""),
+    /** [[x,y],…] نسب 0–1 — للباب نقطتان فقط (خط العبور) */
+    pointsJson: text("points_json").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("control_zones_branch_camera_idx").on(table.branchId, table.cameraId)],
+);
+
+/** control_table_sessions — كل جلسة طاولة: متى جلسوا، متى وصلهم الموظف، متى نُظّفت. */
+export const controlTableSessions = pgTable(
+  "control_table_sessions",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    zoneId: integer("zone_id").references(() => controlZones.id, { onDelete: "set null" }),
+    tableLabel: text("table_label").notNull().default(""),
+    seatedAt: timestamp("seated_at", { withTimezone: true }).notNull(),
+    leftAt: timestamp("left_at", { withTimezone: true }),
+    /** ثواني حتى أول وصول موظف — null إن لم يصل أحد */
+    firstVisitSeconds: integer("first_visit_seconds"),
+    /** ثواني من المغادرة حتى تنظيف الطاولة — null إن لم تُرصد */
+    clearedSeconds: integer("cleared_seconds"),
+    maxPeople: integer("max_people").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("control_table_sessions_zone_seated_idx").on(table.zoneId, table.seatedAt),
+    index("control_table_sessions_branch_time_idx").on(table.branchId, table.seatedAt),
+  ],
+);
+
+/** control_footfall — عدد الداخلين والخارجين من الباب لكل ساعة (لحساب نسبة الشراء). */
+export const controlFootfall = pgTable(
+  "control_footfall",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    hourStart: timestamp("hour_start", { withTimezone: true }).notNull(),
+    entries: integer().notNull().default(0),
+    exits: integer().notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("control_footfall_branch_hour_idx").on(table.branchId, table.hourStart)],
+);

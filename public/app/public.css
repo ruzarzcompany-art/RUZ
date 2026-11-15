@@ -1,0 +1,77 @@
+/* صفحات «سِجل» العامة (تأكيد الاستلام وشكوى الطاولة): خفيفة وتعمل بلا دخول. */
+:root {
+  --ink: #16150f;
+  --ink-soft: #5d584a;
+  --paper: #f6f1e4;
+  --card: #fffdf7;
+  --line: #e2d9c3;
+  --saffron: #d9a13b;
+  --saffron-deep: #a97522;
+  --ok: #55783a;
+  --bad: #b3452d;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+main { max-width: 30rem; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
+.brand { font-size: 0.85rem; color: var(--ink-soft); margin: 0 0 0.25rem; }
+h1 { font-size: 1.45rem; line-height: 1.35; margin: 0 0 0.75rem; }
+.panel {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+.meta { color: var(--ink-soft); font-size: 0.95rem; margin: 0 0 0.5rem; }
+.detail { margin: 0 0 0.5rem; overflow-wrap: anywhere; }
+.action { margin: 0; padding-top: 0.6rem; border-top: 1px dashed var(--line); font-weight: 600; }
+label { display: block; font-size: 0.9rem; color: var(--ink-soft); margin: 0.75rem 0 0.3rem; }
+input, textarea {
+  width: 100%;
+  font: inherit;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.7rem 0.8rem;
+}
+textarea { min-height: 5.5rem; resize: vertical; }
+input:focus-visible, textarea:focus-visible, button:focus-visible { outline: 3px solid var(--saffron); outline-offset: 2px; }
+.btn {
+  width: 100%;
+  min-height: 3.25rem;
+  margin-top: 1rem;
+  font: inherit;
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--ink);
+  background: var(--saffron);
+  border: 0;
+  border-radius: 12px;
+  cursor: pointer;
+}
+.btn:disabled { opacity: 0.55; cursor: default; }
+.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+.choice {
+  min-height: 3.5rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink);
+  background: #fff;
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  cursor: pointer;
+}
+.choice[aria-pressed="true"] { border-color: var(--saffron-deep); background: #fbefd3; }
+.choice--wide { grid-column: 1 / -1; }
+.msg { margin: 1rem 0 0; padding: 0.8rem 1rem; border-radius: 12px; font-weight: 600; }
+.msg--ok { background: #e6efd9; color: var(--ok); }
+.msg--bad { background: #f7e0d9; color: var(--bad); }
+[hidden] { display: none !important; }

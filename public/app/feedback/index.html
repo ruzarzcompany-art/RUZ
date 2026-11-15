@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>كيف نخدمك؟</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/app/public.css" />
+  </head>
+  <body>
+    <main>
+      <p class="brand" id="brand">&nbsp;</p>
+      <h1 id="title">كيف نخدمك؟</h1>
+
+      <form id="form" hidden>
+        <div class="choices" id="choices" role="group" aria-label="نوع الملاحظة"></div>
+        <label for="message">تفاصيل (اختياري)</label>
+        <textarea id="message" maxlength="500"></textarea>
+        <label for="phone">جوالك إن أحببت أن نتواصل معك (اختياري)</label>
+        <input id="phone" type="tel" dir="ltr" inputmode="tel" autocomplete="tel" placeholder="05xxxxxxxx" />
+        <button class="btn" id="submit" type="submit" disabled>إرسال</button>
+      </form>
+
+      <p class="msg" id="msg" role="status" hidden></p>
+    </main>
+
+    <script>
+      const params = new URLSearchParams(location.search);
+      const branch = params.get("b") ?? "";
+      const table = params.get("t") ?? "";
+      const $ = (id) => document.getElementById(id);
+      let category = "";
+
+      function message(text, ok) {
+        $("msg").textContent = text;
+        $("msg").className = `msg ${ok ? "msg--ok" : "msg--bad"}`;
+        $("msg").hidden = false;
+      }
+
+      async function load() {
+        let data;
+        try {
+          const res = await fetch(`/api/public/feedback-info?b=${encodeURIComponent(branch)}`);
+          data = await res.json();
+        } catch {
+          message("تعذّر الاتصال. نرجو إبلاغ أقرب موظف.", false);
+          return;
+        }
+        if (!data.ok || !data.enabled) {
+          message("هذه الخدمة غير متاحة الآن. نرجو إبلاغ أقرب موظف.", false);
+          return;
+        }
+        $("brand").textContent = table ? `${data.branch} — طاولة ${table}` : data.branch;
+        for (const [key, label] of Object.entries(data.categories)) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = `choice${key === "call_staff" ? " choice--wide" : ""}`;
+          button.textContent = label;
+          button.setAttribute("aria-pressed", "false");
+          button.addEventListener("click", () => {
+            category = key;
+            for (const other of $("choices").children) other.setAttribute("aria-pressed", String(other === button));
+            $("submit").disabled = false;
+          });
+          $("choices").append(button);
+        }
+        $("form").hidden = false;
+      }
+
+      $("form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        $("submit").disabled = true;
+        try {
+          const res = await fetch("/api/public/feedback", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ b: branch, t: table, category, message: $("message").value, phone: $("phone").value }),
+          });
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.error);
+          $("form").hidden = true;
+          $("title").textContent = "وصلتنا ملاحظتك";
+          message("شكراً لك. الموظف في الطريق إليك الآن.", true);
+        } catch (error) {
+          $("submit").disabled = false;
+          message(error.message || "تعذّر الإرسال، نرجو إبلاغ أقرب موظف.", false);
+        }
+      });
+
+      load();
+    </script>
+  </body>
+</html>
