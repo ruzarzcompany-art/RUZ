@@ -270,6 +270,12 @@ def iso(seconds: float | None) -> str | None:
     return None if seconds is None else datetime.fromtimestamp(seconds, timezone.utc).isoformat()
 
 
+def short_number(number: str) -> str:
+    """«CAM-01» ← «1»: رقم الكاميرا مجرداً ليطابق ترقيم «سِجل» أياً كانت الصيغة."""
+    digits = "".join(ch for ch in str(number) if ch.isdigit())
+    return str(int(digits)) if digits else str(number)
+
+
 def wire_event(event: dict) -> dict:
     """يحوّل أوقات الحدث إلى ISO قبل الإرسال."""
     out = dict(event)
@@ -291,6 +297,7 @@ class Agent:
         self.cameras: dict[str, Camera] = {}
         self.states: dict[str, CameraState] = {}
         self.remote: dict = {}
+        self.server_numbers: dict[str, str] = {}
         self.outbox: queue.Queue = queue.Queue(maxsize=300)
         self.hour_base: dict[str, tuple[int, int]] = {}
         self.hour_key = ""
@@ -308,20 +315,25 @@ class Agent:
             return False
         self.remote = remote
         channels = self.config.get("cameras", {})
-        wanted = set()
+        zoned = set()
         for camera in remote.get("cameras", []):
-            number = camera["cameraNumber"]
-            if number not in channels:
-                log.warning("الكاميرا %s لها مناطق مرسومة لكنها غير معرّفة في config.json (cameras)", number)
+            remote_number = camera["cameraNumber"]
+            number = remote_number if remote_number in channels else next(
+                (key for key in channels if short_number(key) == short_number(remote_number)), None
+            )
+            if number is None:
+                log.warning("الكاميرا %s لها مناطق مرسومة لكنها غير معرّفة في config.json (cameras)", remote_number)
                 continue
-            wanted.add(number)
+            self.server_numbers[number] = remote_number
+            zoned.add(number)
             self.states.setdefault(number, CameraState(number)).apply(camera["zones"], remote["thresholds"])
-            if number not in self.cameras:
-                self.cameras[number] = Camera(number, rtsp_url(self.config.get("nvr", {}), channels[number]))
-                self.cameras[number].start()
-        for number in [n for n in self.cameras if n not in wanted]:
-            self.cameras.pop(number).stop_flag.set()
+        for number in [n for n in self.states if n not in zoned]:
             self.states.pop(number, None)
+        # كل كاميرا في config.json تُفتح ولو بلا مناطق: ترفع لقطة معاينة لتُرسم عليها المناطق من «سِجل».
+        for number, channel in channels.items():
+            if number not in self.cameras:
+                self.cameras[number] = Camera(number, rtsp_url(self.config.get("nvr", {}), channel))
+                self.cameras[number].start()
         return True
 
     def off_hours(self, now: float) -> bool:
@@ -399,7 +411,7 @@ class Agent:
         while not self.refresh():
             time.sleep(15)
         threading.Thread(target=self.sender, daemon=True, name="sender").start()
-        log.info("بدأ التحليل: %d كاميرا، %.1f إطار/ث", len(self.cameras), self.fps)
+        log.info("بدأ التحليل: %d كاميرا (%d منها عليها مناطق)، %.1f إطار/ث", len(self.cameras), len(self.states), self.fps)
         last_refresh = time.time()
         last_preview: dict[str, float] = {}
         last_footfall = time.time()
@@ -411,18 +423,20 @@ class Agent:
                 frame = camera.latest()
                 if frame is None:
                     continue
+                if tick - last_preview.get(number, 0) >= PREVIEW_SECONDS:
+                    last_preview[number] = tick
+                    threading.Thread(target=self._preview, args=(number, frame.copy()), daemon=True).start()
+                state = self.states.get(number)
+                if state is None:
+                    continue
                 try:
                     boxes = self.detector.people(frame)
                 except Exception as error:
                     log.error("فشل الكشف على الكاميرا %s: %s", number, error)
                     continue
-                state = self.states[number]
                 for event in state.update(tick, boxes, off_hours):
                     state.attach_image(event, frame)
                     self.enqueue(number, event)
-                if tick - last_preview.get(number, 0) >= PREVIEW_SECONDS:
-                    last_preview[number] = tick
-                    threading.Thread(target=self._preview, args=(number, frame.copy()), daemon=True).start()
             if tick - last_footfall >= FOOTFALL_SECONDS:
                 last_footfall = tick
                 self.send_footfall(tick)
@@ -433,7 +447,17 @@ class Agent:
 
     def _preview(self, number: str, frame) -> None:
         try:
-            self.server.preview(number, encode_jpeg(frame, 1280, 80))
+            image = encode_jpeg(frame, 1280, 80)
+            reply = {}
+            for candidate in dict.fromkeys([self.server_numbers.get(number, number), number, short_number(number)]):
+                reply = self.server.preview(candidate, image)
+                if reply.get("ok"):
+                    self.server_numbers[number] = candidate
+                    break
+            if reply.get("ok"):
+                log.info("رُفعت معاينة الكاميرا %s", number)
+            else:
+                log.warning("الخادم لم يقبل معاينة الكاميرا %s — تأكد أن رقمها في «سِجل» هو %s: %s", number, number, reply.get("error"))
         except Exception as error:
             log.warning("تعذّر رفع معاينة الكاميرا %s: %s", number, error)
 
@@ -464,7 +488,13 @@ class Agent:
                 problems += 1
                 continue
             people = len(self.detector.people(frame))
-            sent = self.server.preview(number, encode_jpeg(frame, 1280, 80)) if remote.get("ok") else {"ok": False}
+            sent = {"ok": False}
+            if remote.get("ok"):
+                image = encode_jpeg(frame, 1280, 80)
+                for candidate in dict.fromkeys([number, short_number(number)]):
+                    sent = self.server.preview(candidate, image)
+                    if sent.get("ok"):
+                        break
             print(f"✓ الكاميرا {number}: {frame.shape[1]}×{frame.shape[0]}، {people} شخص في اللقطة، المعاينة {'رُفعت' if sent.get('ok') else 'لم تُرفع'}")
         return 1 if problems else 0
 
