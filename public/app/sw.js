@@ -10,7 +10,7 @@
  */
 
 /** رقم نسخة القشرة — يُرفع مع كل تحديث للواجهة (يُطابق APP_VERSION في api.js). */
-const VERSION = "v25";
+const VERSION = "v26";
 const CACHE = `restaurant-hr-shell-${VERSION}`;
 const OFFLINE_FALLBACK = "/app/index.html";
 
@@ -45,6 +45,7 @@ const SHELL = [
   "/app/admin/foodics.js",
   "/app/admin/control.js",
   "/app/admin/live.js",
+  "/app/admin/finance-home.js",
   "/app/admin/documents.js",
   "/app/admin/access.js",
   "/app/print/",
