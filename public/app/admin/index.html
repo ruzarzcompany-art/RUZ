@@ -2329,17 +2329,22 @@
           دائماً إلى مراجعة بشرية. ولا تُرصد دورات المياه أو غرف تبديل الملابس أو أماكن
           الصلاة أو الاستراحة الخاصة.
         </p>
-        <div class="tabs" id="sv-tabs" role="tablist">
-          <button class="tab is-active" type="button" data-sv="alerts">التنبيهات</button>
-          <button class="tab" type="button" data-sv="new" data-sv-write>تسجيل حالة</button>
-          <button class="tab" type="button" data-sv="orders">الطلبات والكاشير</button>
-          <button class="tab" type="button" data-sv="waste">الهدر</button>
-          <button class="tab" type="button" data-sv="cameras">الكاميرات</button>
-          <button class="tab" type="button" data-sv="report">التقرير اليومي</button>
-          <button class="tab" type="button" data-sv="limits">الحدود المعتمدة</button>
-          <button class="tab" type="button" data-sv="connect">ربط الكاميرات</button>
-          <button class="tab" type="button" data-sv="foodics">فوديكس والرقابة الثلاثية</button>
-          <button class="tab" type="button" data-sv="control">التنبيه والتصعيد</button>
+        <div id="sv-tabs">
+          <div class="tabs" role="tablist">
+            <button class="tab is-active" type="button" data-sv="alerts">التنبيهات</button>
+            <button class="tab" type="button" data-sv="cameras">الكاميرات والمناطق</button>
+            <button class="tab" type="button" data-sv="people">المستلمون والتصعيد</button>
+            <button class="tab" type="button" data-sv="report">التقرير والتقييمات</button>
+            <button class="tab" type="button" id="sv-more" aria-expanded="false">المزيد ▾</button>
+          </div>
+          <div class="tabs tabs--more" id="sv-more-tabs" role="tablist" hidden>
+            <button class="tab" type="button" data-sv="new" data-sv-write>تسجيل حالة يدوياً</button>
+            <button class="tab" type="button" data-sv="orders">الطلبات والكاشير</button>
+            <button class="tab" type="button" data-sv="waste">الهدر</button>
+            <button class="tab" type="button" data-sv="limits">الحدود المعتمدة</button>
+            <button class="tab" type="button" data-sv="connect">ربط الكاميرات</button>
+            <button class="tab" type="button" data-sv="foodics">فوديكس والرقابة الثلاثية</button>
+          </div>
         </div>
         <p id="sv-result" class="alert" role="status" hidden></p>
         <p id="sv-live-note" class="hint"></p>
@@ -2893,7 +2898,7 @@
 
       <!-- ربط الكاميرات -->
       <!-- مركز الضبط: واتساب، التصعيد، تقييمات قوقل، شكاوى الطاولات، التقرير الليلي -->
-      <section class="card" data-sv-section="control" hidden>
+      <section class="card" data-sv-section="ct-settings" hidden>
         <h3 class="card__title card__title--sm">التنبيه والتصعيد: من يُبلَّغ بماذا ومتى</h3>
         <p id="ct-status" class="row row--wrap"></p>
         <p class="hint">
@@ -2959,6 +2964,9 @@
           </div>
         </form>
 
+      </section>
+
+      <section class="card" data-sv-section="ct-recipients" hidden>
         <h3 class="card__title card__title--sm">المستلمون</h3>
         <div class="table-wrap">
           <table class="table" id="ct-recipients-table">
@@ -3001,6 +3009,9 @@
           </div>
         </form>
 
+      </section>
+
+      <section class="card" data-sv-section="ct-zones" hidden>
         <h3 class="card__title card__title--sm">التحليل المباشر: الطاولات والطابور والباب</h3>
         <p id="ct-edge-status" class="row row--wrap"></p>
         <p class="hint">
@@ -3035,9 +3046,15 @@
         </div>
         <div id="ct-zones"></div>
 
+      </section>
+
+      <section class="card" data-sv-section="ct-log" hidden>
         <h3 class="card__title card__title--sm">سجل الإبلاغ لليوم المختار</h3>
         <div id="ct-dispatches"></div>
 
+      </section>
+
+      <section class="card" data-sv-section="ct-brief" hidden>
         <h3 class="card__title card__title--sm">التقرير الليلي للمالك</h3>
         <div class="row row--wrap" data-sv-manage>
           <button id="ct-brief-make" class="btn btn--ghost btn--sm" type="button">إصدار تقرير اليوم المختار</button>
@@ -3045,6 +3062,9 @@
         </div>
         <div id="ct-brief"></div>
 
+      </section>
+
+      <section class="card" data-sv-section="ct-reviews" hidden>
         <h3 class="card__title card__title--sm">تقييمات قوقل</h3>
         <div class="row row--wrap" data-sv-manage>
           <button id="ct-reviews-sync" class="btn btn--ghost btn--sm" type="button">سحب التقييمات الآن</button>
@@ -3057,6 +3077,9 @@
         </div>
         <div id="ct-feedback-list"></div>
 
+      </section>
+
+      <section class="card" data-sv-section="ct-routes" hidden>
         <details>
           <summary class="hint">جدول التوجيه: من يستلم كل نوع تنبيه</summary>
           <div id="ct-routes"></div>

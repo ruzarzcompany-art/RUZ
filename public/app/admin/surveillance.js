@@ -1198,15 +1198,34 @@ const TAB_LOADERS = {
   control: () => refreshControlTab(branchId(), day(), { employees: state.meta?.employees ?? [], canManage: state.access.canManage }),
 };
 
+/* كل تبويب يعرض قسماً أو أكثر؛ أقسام «ct-*» يحمّلها تبويب التنبيه والتصعيد. */
+const TAB_SECTIONS = {
+  alerts: ["alerts", "ct-log"],
+  cameras: ["ct-zones", "cameras"],
+  people: ["ct-recipients", "ct-settings", "ct-routes"],
+  report: ["report", "ct-brief", "ct-reviews"],
+};
+const MORE_TABS = new Set(["new", "orders", "waste", "limits", "connect", "foodics"]);
+
+function setMoreOpen(open) {
+  el("sv-more-tabs").hidden = !open;
+  el("sv-more").setAttribute("aria-expanded", String(open));
+  el("sv-more").textContent = open ? "المزيد ▴" : "المزيد ▾";
+}
+
 async function showTab(tab) {
   state.tab = tab;
-  for (const node of el("sv-tabs").querySelectorAll(".tab")) {
+  const sections = TAB_SECTIONS[tab] ?? [tab];
+  for (const node of el("sv-tabs").querySelectorAll(".tab[data-sv]")) {
     node.classList.toggle("is-active", node.dataset.sv === tab);
   }
+  el("sv-more").classList.toggle("is-active", MORE_TABS.has(tab));
+  if (MORE_TABS.has(tab)) setMoreOpen(true);
   for (const node of document.querySelectorAll("#panel-surveillance [data-sv-section]")) {
-    node.hidden = node.dataset.svSection !== tab;
+    node.hidden = !sections.includes(node.dataset.svSection);
   }
-  await TAB_LOADERS[tab]?.();
+  const loaders = [...new Set(sections.map((key) => (key.startsWith("ct-") ? "control" : key)))];
+  await Promise.all(loaders.map((key) => TAB_LOADERS[key]?.()));
 }
 
 async function refreshAll() {
@@ -1225,7 +1244,9 @@ function wire() {
 
   el("sv-tabs").addEventListener("click", (event) => {
     const tab = event.target.closest(".tab");
-    if (tab) showTab(tab.dataset.sv);
+    if (!tab) return;
+    if (tab.id === "sv-more") setMoreOpen(el("sv-more-tabs").hidden);
+    else showTab(tab.dataset.sv);
   });
   el("sv-branch").addEventListener("change", async () => {
     await loadMeta();
