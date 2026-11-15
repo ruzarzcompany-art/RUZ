@@ -64,9 +64,15 @@ function renderStatus() {
   const { whatsapp, google, settings, recipients } = state.data;
   const box = el("ct-status");
   box.replaceChildren(
-    whatsapp.configured
-      ? chip(`واتساب مضبوط (${whatsapp.provider === "meta" ? `Meta — قالب ${whatsapp.template}` : "UltraMsg"})`, "badge--ok")
-      : chip("واتساب غير مضبوط — لن تخرج رسائل", "badge--disputed"),
+    whatsapp.provider === "edge"
+      ? whatsapp.edge?.state === "connected"
+        ? chip("واتساب جوال المطعم مربوط ويرسل", "badge--ok")
+        : whatsapp.edge?.state === "need_qr"
+          ? chip("واتساب: امسح رمز QR على جهاز المطعم", "badge--warn")
+          : chip("واتساب جوال المطعم غير مربوط — لن تخرج رسائل", "badge--disputed")
+      : whatsapp.configured
+        ? chip(`واتساب مضبوط (${whatsapp.provider === "meta" ? `Meta — قالب ${whatsapp.template}` : "UltraMsg"})`, "badge--ok")
+        : chip("واتساب غير مضبوط — لن تخرج رسائل", "badge--disputed"),
     settings.enabled ? chip("الإبلاغ مفعّل", "badge--ok") : chip("الإبلاغ متوقف", "badge--warn"),
     google.configured && settings.googleLocation
       ? chip("تقييمات قوقل مربوطة", "badge--ok")

@@ -53,6 +53,8 @@ import {
   normalizePhone,
   parseAckToken,
   patchControlSettings,
+  exchangeOutbox,
+  waEdgeStatus,
   sendWhatsapp,
   submitFeedback,
   syncGoogleReviews,
@@ -271,6 +273,9 @@ controlRouter.post("/control/recipients/:id/test", ...canManage, async (req: Aut
   const [recipient] = id ? await db.select().from(controlRecipients).where(eq(controlRecipients.id, id)) : [];
   if (!recipient) return bad(res, "المستلم غير موجود", 404);
   if (!whatsappConfig().configured) return bad(res, "واتساب غير مضبوط بعد — أضف WHATSAPP_TOKEN ومعرّف الرقم في إعدادات Netlify.");
+  if (whatsappConfig().provider === "edge" && waEdgeStatus(await controlSettingsFor(recipient.branchId)).state !== "connected") {
+    return bad(res, "واتساب جوال المطعم غير مربوط بعد — شغّل مرسل واتساب على جهاز المطعم وامسح رمز QR.");
+  }
   const result = await sendWhatsapp(
     recipient.phone,
     `✅ رسالة تجريبية من «سِجل»\n${recipient.name} — أنت مسجَّل لاستلام تنبيهات المطعم بمستوى ${TIER_LABELS[recipient.tier as Tier] ?? recipient.tier}.`,
@@ -524,6 +529,18 @@ controlRouter.post("/control/edge/events", async (req: Request, res: Response) =
     }
   }
   res.json({ ok: true, results });
+});
+
+controlRouter.post("/control/edge/outbox", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const branch = await edgeBranch(req, res, body.branchCode);
+  if (!branch) return;
+  const results = (Array.isArray(body.results) ? body.results : [])
+    .map((item) => (item ?? {}) as Record<string, unknown>)
+    .filter((item) => Number.isInteger(item.id))
+    .map((item) => ({ id: item.id as number, ok: item.ok === true, error: String(item.error ?? "") }));
+  const messages = await exchangeOutbox(branch.id, asString(body.state, 40) ?? "", results);
+  res.json({ ok: true, messages });
 });
 
 controlRouter.post("/control/edge/preview", async (req: Request, res: Response) => {

@@ -4,3 +4,5 @@ agent.log*
 *_openvino_model/
 __pycache__/
 .venv/
+whatsapp-qr.png
+whatsapp-session.sqlite3*
