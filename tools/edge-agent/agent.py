@@ -19,6 +19,7 @@ import base64
 import json
 import logging
 import logging.handlers
+import os
 import queue
 import sys
 import threading
@@ -30,9 +31,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import cv2
+# ضجيج مفكّك الفيديو عند بداية كل بث (hevc: Could not find ref…) لا يفيد المشغّل
+os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
 
-from logic import (
+import cv2  # noqa: E402
+
+from logic import (  # noqa: E402
     DoorCounter,
     TableConfig,
     TableTracker,
@@ -447,7 +451,13 @@ class Agent:
             problems += 1
         for number, channel in self.config.get("cameras", {}).items():
             capture = cv2.VideoCapture(rtsp_url(self.config.get("nvr", {}), channel), cv2.CAP_FFMPEG)
-            grabbed, frame = capture.read() if capture.isOpened() else (False, None)
+            grabbed, frame = False, None
+            if capture.isOpened():
+                # أول الإطارات قد تكون مشوّهة قبل وصول إطار مفتاحي، فيُؤخذ إطار بعد استقرار البث
+                for _ in range(25):
+                    ok, candidate = capture.read()
+                    if ok and candidate is not None:
+                        grabbed, frame = True, candidate
             capture.release()
             if not grabbed:
                 print(f"✗ الكاميرا {number} (قناة {channel}): لا بث — راجع عنوان الجهاز واسم المستخدم وكلمة المرور")
