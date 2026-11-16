@@ -3984,6 +3984,7 @@ financeRouter.get(
         averageDailySales: daysWithSales ? round2(sales / daysWithSales) : 0,
         closings: closings.length,
         pendingReview: closings.filter((row) => row.status === "submitted").length,
+        awaitingCash: closings.filter((row) => row.status === "pending" || row.status === "auto_closed").length,
       },
       todayFigures: {
         closings: todayEntry?.closings ?? 0,

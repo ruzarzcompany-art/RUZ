@@ -260,10 +260,10 @@ function readRequest(source: Record<string, unknown>, res: Response): Request | 
     res.status(400).json({ ok: false, error: "حدّد تاريخ البداية الجديدة" });
     return null;
   }
-  // تاريخ في المستقبل يعني حذف أرقام لم تُسجَّل بعد حين الطلب — لا معنى له
-  const today = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  if (before > today) {
-    res.status(400).json({ ok: false, error: "تاريخ البداية الجديدة لا يكون في المستقبل" });
+  // أقصاه الغد: «قبل الغد» يعني حذف كل السجلات حتى اليوم (البدء من صفر)
+  const tomorrow = new Date(Date.now() + 27 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  if (before > tomorrow) {
+    res.status(400).json({ ok: false, error: "تاريخ البداية الجديدة لا يتجاوز الغد" });
     return null;
   }
   const scopes = parseScopes(source.scopes);
