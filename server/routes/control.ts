@@ -120,7 +120,14 @@ controlRouter.get("/control/live", ...canRead, async (req: AuthedRequest, res: R
   res.json({
     ok: true,
     ...view,
-    alerts: open.map((alert) => ({
+    alerts: open
+      // تنبيه «توقف كاميرا» لكاميرا وصلت لقطتها قبل دقائق لم يعد صحيحاً — لا يُعرض في المباشر.
+      .filter((alert) => {
+        if (alert.alertType !== "camera_down") return true;
+        const camera = view.cameras.find((item) => item.id === alert.cameraId);
+        return !(camera?.lastFrameAt && Date.now() - new Date(camera.lastFrameAt).getTime() < 15 * 60_000);
+      })
+      .map((alert) => ({
       id: alert.id,
       type: alert.alertType,
       label: ALERT_TYPES[alert.alertType]?.label ?? alert.alertType,
