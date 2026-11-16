@@ -1,0 +1,2385 @@
+import {
+  pgTable,
+  serial,
+  text,
+  timestamp,
+  integer,
+  boolean,
+  doublePrecision,
+  date,
+  index,
+  uniqueIndex,
+  type AnyPgColumn,
+} from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+
+/**
+ * المبالغ المالية تُخزَّن كأرقام عشرية مضاعفة الدقة وتُقرَّب إلى منزلتين
+ * عند العرض والحساب النهائي (انظر `server/money.ts`).
+ */
+const money = (name: string) => doublePrecision(name).notNull().default(0);
+
+/*
+ * نظام الأدوار القديم (roles / permissions / role_permissions) حُذف بعد ترحيل
+ * صلاحيات كل موظف إلى قواعد صريحة في `access_rules`. لم يبق للصلاحيات مصدر
+ * غير ذلك الجدول، ولا تُستنتج صلاحية من أي دور. أما الرموز الذرّية فقاموسها
+ * ثابت في الكود (`server/permissions.ts`) لا في جدول قاعدة بيانات.
+ */
+
+/**
+ * branches — فروع المطعم مع الإحداثيات ونطاق تسجيل الحضور المسموح
+ */
+export const branches = pgTable("branches", {
+  id: serial().primaryKey(),
+  code: text().notNull().unique(),
+  name: text().notNull(),
+  address: text().notNull().default(""),
+  latitude: doublePrecision().notNull(),
+  longitude: doublePrecision().notNull(),
+  /** نصف قطر السماح بتسجيل الحضور بالأمتار (geofence) */
+  radiusMeters: integer("radius_meters").notNull().default(150),
+  timezone: text().notNull().default("Asia/Riyadh"),
+  /**
+   * أقل مدة يجب أن تمضي على الحضور قبل قبول الانصراف (بالساعات).
+   * تمنع تكرار الدخول والخروج المتقارب: لا يُقبل انصراف قبل مرورها.
+   * تُضبط لكل فرع من لوحة الإعدادات (بصلاحية «الفروع»)، والافتراضي أربع
+   * ساعات، والقيمة 0 تُعطّل القاعدة.
+   */
+  minShiftHours: doublePrecision("min_shift_hours").notNull().default(4),
+  /**
+   * المدير المسؤول عن الفرع — يُختار من الموظفين بدور «مدير فرع»،
+   * ويظهر اسمه في ملف كل موظف تابع للفرع. المرجع دائري بين الجدولين
+   * (موظف ← فرع، فرع ← موظف) فنُصرّح بنوع العمود لكسر حلقة الاستدلال.
+   */
+  managerEmployeeId: integer("manager_employee_id").references(
+    (): AnyPgColumn => employees.id,
+    { onDelete: "set null" },
+  ),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * employees — الموظفون. تسجيل الدخول يتم برقم الموظف أو البريد + كلمة المرور.
+ */
+export const employees = pgTable(
+  "employees",
+  {
+    id: serial().primaryKey(),
+    employeeCode: text("employee_code").notNull().unique(),
+    fullName: text("full_name").notNull(),
+    email: text(),
+    phone: text(),
+    /** الجنسية كما في الهوية/الإقامة */
+    nationality: text().notNull().default(""),
+    /** رقم الهوية الوطنية أو الإقامة */
+    nationalId: text("national_id"),
+    /** القسم داخل الفرع (المطبخ، الصالة، الكاشير...) */
+    department: text().notNull().default(""),
+    /** scrypt hash بصيغة scrypt$<salt-hex>$<hash-hex> */
+    passwordHash: text("password_hash").notNull(),
+    branchId: integer("branch_id").references(() => branches.id, {
+      onDelete: "set null",
+    }),
+    jobTitle: text("job_title").notNull().default(""),
+    isActive: boolean("is_active").notNull().default(true),
+    mustChangePassword: boolean("must_change_password").notNull().default(false),
+    /**
+     * تفعيل بصمة الوجه لهذا الموظف تحديداً (علامة صح في شاشة الموظفين).
+     * عند إلغائها يُعامل الموظف كأن وضع المطابقة `off` مهما كان الإعداد العام،
+     * فيسجّل حضوره دون تحقق بالوجه.
+     */
+    faceEnabled: boolean("face_enabled").notNull().default(true),
+    /**
+     * تجزئة رمز PIN محطة "تحضير" (الكيوسك) بنفس دالة كلمات المرور (scrypt).
+      * تبقى فارغة (null) حتى تحدّدها الموارد البشرية من ملف الموظف، وتُستخدم
+       * فقط كمسار احتياطي عند تعذّر مطابقة الوجه في الكيوسك.
+        */
+    kioskPinHash: text("kiosk_pin_hash"),
+    /** تاريخ الانضمام للعمل */
+    hiredAt: timestamp("hired_at", { withTimezone: true }),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("employees_email_unique_idx").on(table.email),
+    index("employees_branch_idx").on(table.branchId),
+    index("employees_national_id_idx").on(table.nationalId),
+  ],
+);
+
+/**
+ * sessions — جلسات JWT الصادرة، تسمح بإبطال التوكن قبل انتهاء صلاحيته
+ */
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: serial().primaryKey(),
+    /** jti الموجود داخل التوكن */
+    tokenId: text("token_id").notNull().unique(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    userAgent: text("user_agent").notNull().default(""),
+    ipAddress: text("ip_address").notNull().default(""),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    /**
+     * آخر طلب موثَّق بهذه الجلسة — يُحدَّث في `requireAuth` وتُبطل الجلسة
+     * تلقائياً إذا تجاوز الخمول المدة المسموحة (خروج تلقائي بعد ترك الصفحة).
+     */
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("sessions_employee_idx").on(table.employeeId)],
+);
+
+/**
+ * attendance_logs — سجلات الحضور والانصراف.
+ * `server_time` هو الوقت المعتمد رسمياً ويُكتب من توقيت الخادم دائماً،
+ * أما `client_reported_time` فيُحفظ للمراجعة فقط ولا يُعتمد عليه.
+ */
+export const attendanceLogs = pgTable(
+  "attendance_logs",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "restrict" }),
+    /** check_in | check_out */
+    type: text().notNull(),
+    /** الوقت الرسمي — توقيت الخادم دائماً */
+    serverTime: timestamp("server_time", { withTimezone: true }).notNull().defaultNow(),
+    /** الوقت الذي أرسله الجهاز — للمراجعة فقط */
+    clientReportedTime: timestamp("client_reported_time", { withTimezone: true }),
+    latitude: doublePrecision(),
+    longitude: doublePrecision(),
+    accuracyMeters: doublePrecision("accuracy_meters"),
+    /** المسافة المحسوبة بين الموظف والفرع (Haversine) بالأمتار */
+    distanceMeters: doublePrecision("distance_meters"),
+    withinGeofence: boolean("within_geofence").notNull().default(false),
+    /** approved | rejected | flagged */
+    status: text().notNull().default("approved"),
+    reason: text().notNull().default(""),
+    deviceInfo: text("device_info").notNull().default(""),
+    ipAddress: text("ip_address").notNull().default(""),
+    /** device = من تطبيق الموظف، manual = إدخال يدوي، auto_close = إقفال تلقائي */
+    source: text().notNull().default("device"),
+    /** هل تحقّق الخادم من قالب الوجه المُرسل من الجهاز؟ */
+    faceVerified: boolean("face_verified").notNull().default(false),
+    /** مسافة إقليدية بين القالب المُرسل والقالب المسجَّل (أصغر = أقرب) */
+    faceDistance: doublePrecision("face_distance"),
+    /** مَن أنشأ السجل يدوياً (الموارد البشرية) */
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    /** مَن صحّح وقت الانصراف بعد الإقفال التلقائي */
+    correctedByEmployeeId: integer("corrected_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    correctedAt: timestamp("corrected_at", { withTimezone: true }),
+    /** الوقت قبل التصحيح — يُحفظ للمراجعة */
+    originalServerTime: timestamp("original_server_time", { withTimezone: true }),
+    /** ساعات تُخصم من الموظف بتقدير المسؤول عند تصحيح الانصراف */
+    deductedHours: doublePrecision("deducted_hours").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("attendance_logs_employee_time_idx").on(
+      table.employeeId,
+      table.serverTime,
+    ),
+    index("attendance_logs_branch_time_idx").on(table.branchId, table.serverTime),
+  ],
+);
+
+/**
+ * work_schedules — جدول دوام الموظف: وقت البدء والانتهاء، الساعات اليومية،
+ * وعدد أيام الإجازة الشهرية (2 أو 4) مع تحديد أيام الأسبوع تحديداً.
+ *
+ * يُستخدم في حساب التأخير والدوام الإضافي والساعات المتوقّعة شهرياً بدلاً من
+ * الافتراضات الثابتة. الموظف الذي لا يملك صفاً هنا يُحسب بالافتراضات القديمة
+ * (240 ساعة شهرياً) حتى لا تتغيّر أي حسابات قائمة.
+ */
+export const workSchedules = pgTable(
+  "work_schedules",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    /** وقت بدء الوردية بصيغة HH:MM بتوقيت الفرع */
+    shiftStart: text("shift_start").notNull().default("09:00"),
+    /** وقت انتهاء الوردية بصيغة HH:MM (أصغر من البدء = وردية تمتد لليوم التالي) */
+    shiftEnd: text("shift_end").notNull().default("17:00"),
+    /** عدد ساعات العمل اليومية المتعاقد عليها */
+    dailyHours: doublePrecision("daily_hours").notNull().default(8),
+    breakMinutes: integer("break_minutes").notNull().default(0),
+    /** عدد أيام الإجازة في الشهر (0–15) */
+    daysOffPerMonth: integer("days_off_per_month").notNull().default(4),
+    /**
+     * طريقة تحديد أيام الإجازة:
+     * - `weekly` : أيام أسبوعية متكرّرة تُقرأ من `off_days`.
+     * - `dates`  : تواريخ محدّدة داخل كل شهر تُقرأ من `schedule_off_dates`.
+     */
+    offMode: text("off_mode").notNull().default("weekly"),
+    /** أيام الإجازة تحديداً: أرقام أيام الأسبوع 0=الأحد … 6=السبت مفصولة بفاصلة */
+    offDays: text("off_days").notNull().default(""),
+    /** دقائق السماح قبل اعتبار الحضور تأخيراً */
+    graceMinutes: integer("grace_minutes").notNull().default(10),
+    note: text().notNull().default(""),
+    updatedByEmployeeId: integer("updated_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("work_schedules_employee_unique_idx").on(table.employeeId)],
+);
+
+/**
+ * schedule_off_dates — أيام إجازة الموظف بتواريخ محدّدة داخل الشهر.
+ *
+ * تُستخدم عندما يكون `work_schedules.off_mode = 'dates'`: يختار المسؤول عدد
+ * أيام الإجازة الشهرية (2 أو 4 أو 8 …) ثم يحدّد تواريخها فعلياً في التقويم،
+ * فلا تُفرض أياماً أسبوعية متكرّرة. الحذف يتسلسل مع الموظف.
+ */
+export const scheduleOffDates = pgTable(
+  "schedule_off_dates",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    /** تاريخ الإجازة (يوم كامل) بتوقيت الفرع */
+    offDate: date("off_date").notNull(),
+    note: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("schedule_off_dates_unique_idx").on(table.employeeId, table.offDate),
+    index("schedule_off_dates_date_idx").on(table.offDate),
+  ],
+);
+
+/**
+ * employee_permission_overrides — تخصيص صلاحيات العرض لموظف بعينه فوق
+ * صلاحيات دوره: `allow` تمنح صلاحية لا يملكها دوره، و`deny` تسحب صلاحية
+ * يمنحها دوره. الصلاحية الفعلية = صلاحيات الدور + المسموح − الممنوع.
+ */
+export const employeePermissionOverrides = pgTable(
+  "employee_permission_overrides",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    /** رمز الصلاحية كما في جدول `permissions` (مثال: sections.payroll) */
+    permissionCode: text("permission_code").notNull(),
+    /** allow | deny */
+    effect: text().notNull().default("allow"),
+    note: text().notNull().default(""),
+    grantedByEmployeeId: integer("granted_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("employee_permission_overrides_unique_idx").on(
+      table.employeeId,
+      table.permissionCode,
+    ),
+  ],
+);
+
+/**
+ * access_rules — قواعد الصلاحيات المتدرّجة (شاشة «إدارة الصلاحيات»).
+ *
+ * كل صف = بند واحد من النظام (`module_key`) مع درجة واحدة (`level`) تُمنح
+ * لنطاق واحد:
+ *   • `employee`   — موظف محدّد بالاسم (`employee_id`، و`scope_key` = رقمه)
+ *   • `department` — قسم كامل (`scope_key` = اسم القسم)
+ *   • `job_title`  — مسمى وظيفي (`scope_key` = اسم المسمى)
+ *
+ * الدرجات تراكمية: (1) قراءة فقط، (2) رفع/تسجيل حركة، (3) إضافة/تعديل/حذف،
+ * (4) إعطاء موافقات — فالدرجة المخزّنة هي أعلى درجة، وما تحتها مُفعَّل حكماً.
+ * الأخصّ يفوز عند التعارض: الموظف ثم القسم ثم المسمى الوظيفي.
+ */
+export const accessRules = pgTable(
+  "access_rules",
+  {
+    id: serial().primaryKey(),
+    /** employee | department | job_title */
+    scopeType: text("scope_type").notNull(),
+    /** مرجع الموظف عند نطاق «موظف محدّد» — يُحذف الصف بحذف الموظف */
+    employeeId: integer("employee_id").references(() => employees.id, {
+      onDelete: "cascade",
+    }),
+    /** مفتاح النطاق النصّي: رقم الموظف، أو اسم القسم، أو اسم المسمى الوظيفي */
+    scopeKey: text("scope_key").notNull(),
+    /** رمز البند كما في `MODULE_CATALOG` (مثال: cashier_closing) */
+    moduleKey: text("module_key").notNull(),
+    /**
+     * 0..4 — الدرجة النهائية لهذا البند في هذا النطاق. القاعدة **تحسم**
+     * الدرجة ولا تُضاف فقط: الصفر يعني سحب البند كاملاً، ولا يعلوها نطاق
+     * أعمّ (الموظف يغلب القسم، والقسم يغلب المسمى الوظيفي).
+     */
+    level: integer().notNull().default(1),
+    /** درجة الحذف المستقلة — تُمنح أو تُسحب بمعزل عن درجة الإضافة والتعديل */
+    canDelete: boolean("can_delete").notNull().default(false),
+    note: text().notNull().default(""),
+    grantedByEmployeeId: integer("granted_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("access_rules_scope_module_unique_idx").on(
+      table.scopeType,
+      table.scopeKey,
+      table.moduleKey,
+    ),
+    index("access_rules_scope_idx").on(table.scopeType, table.scopeKey),
+    index("access_rules_employee_idx").on(table.employeeId),
+  ],
+);
+
+/**
+ * face_templates — القالب الرقمي للوجه (embedding) لكل موظف.
+ *
+ * لا تُخزَّن أي صورة إطلاقاً: القالب يُستخرج على جهاز الموظف داخل المتصفح،
+ * ويصل الخادم كمتجّه أرقام فقط، ثم يُخزَّن **مشفَّراً AES-256-GCM**
+ * (انظر `server/crypto.ts`). القالب غير قابل لإعادة توليد الصورة منه.
+ */
+export const faceTemplates = pgTable(
+  "face_templates",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    /** اسم/إصدار النموذج الذي أنتج القالب — القوالب غير متبادلة بين النماذج */
+    algorithm: text().notNull().default("face-api:faceRecognitionNet@1.7"),
+    /**
+     * ترتيب البصمة للموظف (1..3): تطبيق الحضور يسجّل ثلاث بصمات من زوايا
+     * وإضاءات مختلفة، والمطابقة تأخذ أقرب مسافة بينها.
+     */
+    slot: integer().notNull().default(1),
+    dimensions: integer().notNull().default(128),
+    /** النص المشفَّر بصيغة v1.<iv>.<tag>.<ciphertext> — base64url */
+    encryptedTemplate: text("encrypted_template").notNull(),
+    keyVersion: text("key_version").notNull().default("v1"),
+    enrolledByEmployeeId: integer("enrolled_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    enrolledAt: timestamp("enrolled_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("face_templates_employee_unique_idx").on(table.employeeId, table.slot),
+  ],
+);
+
+/**
+ * audit_logs — سجل تدقيق لكل إجراء إداري حسّاس (تعديل حضور، اعتماد طلب،
+ * تصحيح انصراف، تسجيل قالب وجه...) مع القيم قبل/بعد والسبب.
+ */
+export const auditLogs = pgTable(
+  "audit_logs",
+  {
+    id: serial().primaryKey(),
+    actorEmployeeId: integer("actor_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    /** مثال: attendance.manual_create, attendance.correct_checkout, advance.decide */
+    action: text().notNull(),
+    entityType: text("entity_type").notNull(),
+    entityId: integer("entity_id"),
+    /** لقطة JSON قبل/بعد التعديل */
+    beforeJson: text("before_json"),
+    afterJson: text("after_json"),
+    reason: text().notNull().default(""),
+    ipAddress: text("ip_address").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("audit_logs_entity_idx").on(table.entityType, table.entityId),
+    index("audit_logs_actor_time_idx").on(table.actorEmployeeId, table.createdAt),
+  ],
+);
+
+/**
+ * salary_definitions — تعريف راتب الموظف: الأساسي والبدلات ومعامل الأوفرتايم.
+ * صف واحد لكل موظف (آخر تعريف سارٍ).
+ */
+export const salaryDefinitions = pgTable(
+  "salary_definitions",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    basicSalary: money("basic_salary"),
+    housingAllowance: money("housing_allowance"),
+    transportAllowance: money("transport_allowance"),
+    otherAllowances: money("other_allowances"),
+    /** أجر الساعة — إن تُرك فارغاً يُحسب من الأساسي ÷ (contractHoursPerMonth) */
+    hourlyRate: doublePrecision("hourly_rate"),
+    contractHoursPerMonth: doublePrecision("contract_hours_per_month")
+      .notNull()
+      .default(240),
+    /** معامل ساعة الأوفرتايم (نظام العمل السعودي: 1.5) */
+    overtimeMultiplier: doublePrecision("overtime_multiplier").notNull().default(1.5),
+    currency: text().notNull().default("SAR"),
+    effectiveFrom: date("effective_from"),
+    note: text().notNull().default(""),
+    updatedByEmployeeId: integer("updated_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("salary_definitions_employee_unique_idx").on(table.employeeId),
+  ],
+);
+
+/**
+ * advances — طلبات السلف. تُخصم من الراتب عند الاعتماد
+ * (`deduct_from_payroll` + `deduction_month`).
+ */
+export const advances = pgTable(
+  "advances",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    amount: money("amount"),
+    requestDate: date("request_date").notNull(),
+    reason: text().notNull().default(""),
+    /** pending | approved | rejected */
+    status: text().notNull().default("pending"),
+    deductFromPayroll: boolean("deduct_from_payroll").notNull().default(true),
+    /** شهر الخصم بصيغة YYYY-MM (أول قسط) */
+    deductionMonth: text("deduction_month"),
+    /**
+     * تقسيط السلفة على عدد أشهر: 1 = تُخصم كاملة في شهر الخصم،
+     * وأكثر من ذلك يوزّع المبلغ بالتساوي بدءاً من شهر الخصم
+     * (القسط الأخير يستوعب فروق التقريب).
+     */
+    installmentMonths: integer("installment_months").notNull().default(1),
+    decisionNote: text("decision_note").notNull().default(""),
+    decidedByEmployeeId: integer("decided_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("advances_employee_idx").on(table.employeeId, table.requestDate)],
+);
+
+/**
+ * overtime_requests — طلبات العمل الإضافي بعدد الساعات وموافقة المسؤول.
+ */
+export const overtimeRequests = pgTable(
+  "overtime_requests",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    workDate: date("work_date").notNull(),
+    hours: doublePrecision().notNull().default(0),
+    reason: text().notNull().default(""),
+    /** pending | approved | rejected */
+    status: text().notNull().default("pending"),
+    decisionNote: text("decision_note").notNull().default(""),
+    decidedByEmployeeId: integer("decided_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("overtime_requests_employee_idx").on(table.employeeId, table.workDate),
+  ],
+);
+
+/**
+ * bonuses — المكافآت التي تُصرف للموظف (تُضاف إلى مسير الراتب).
+ */
+export const bonuses = pgTable(
+  "bonuses",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    amount: money("amount"),
+    bonusDate: date("bonus_date").notNull(),
+    reason: text().notNull().default(""),
+    /** pending | approved | rejected */
+    status: text().notNull().default("approved"),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("bonuses_employee_idx").on(table.employeeId, table.bonusDate)],
+);
+
+/**
+ * contracts — عقود العمل، قابلة للطباعة كـPDF من شاشة الطباعة.
+ */
+export const contracts = pgTable(
+  "contracts",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    contractNumber: text("contract_number").notNull().unique(),
+    jobTitle: text("job_title").notNull().default(""),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date"),
+    basicSalary: money("basic_salary"),
+    allowancesTotal: money("allowances_total"),
+    probationMonths: integer("probation_months").notNull().default(3),
+    workingHours: text("working_hours").notNull().default("8 ساعات يومياً / 6 أيام أسبوعياً"),
+    terms: text().notNull().default(""),
+    /** draft | active | ended */
+    status: text().notNull().default("draft"),
+    signedAt: date("signed_at"),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("contracts_employee_idx").on(table.employeeId)],
+);
+
+/**
+ * payroll_slips — مسير الراتب الشهري لكل موظف (لقطة محسوبة ومحفوظة).
+ * صافي الراتب = الأساسي + البدلات + الأوفرتايم + المكافآت − السلف − الخصومات.
+ */
+export const payrollSlips = pgTable(
+  "payroll_slips",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    periodYear: integer("period_year").notNull(),
+    periodMonth: integer("period_month").notNull(),
+    basicSalary: money("basic_salary"),
+    allowancesTotal: money("allowances_total"),
+    overtimeHours: doublePrecision("overtime_hours").notNull().default(0),
+    overtimeAmount: money("overtime_amount"),
+    bonusesAmount: money("bonuses_amount"),
+    advancesAmount: money("advances_amount"),
+    deductedHours: doublePrecision("deducted_hours").notNull().default(0),
+    hoursDeductionAmount: money("hours_deduction_amount"),
+    otherDeductions: money("other_deductions"),
+    workedHours: doublePrecision("worked_hours").notNull().default(0),
+    /** الساعات المتوقّعة حسب جدول دوام الموظف (0 = لا جدول مُعرَّف) */
+    expectedHours: doublePrecision("expected_hours").notNull().default(0),
+    /** إجمالي دقائق التأخير في الشهر حسب جدول الدوام */
+    lateMinutes: doublePrecision("late_minutes").notNull().default(0),
+    netPay: money("net_pay"),
+    hourlyRate: doublePrecision("hourly_rate").notNull().default(0),
+    currency: text().notNull().default("SAR"),
+    /** draft | final */
+    status: text().notNull().default("draft"),
+    notes: text().notNull().default(""),
+    generatedByEmployeeId: integer("generated_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("payroll_slips_period_unique_idx").on(
+      table.employeeId,
+      table.periodYear,
+      table.periodMonth,
+    ),
+  ],
+);
+
+/**
+ * vouchers — سند قبض (receipt) وسند صرف (payment)، قابلان للطباعة.
+ */
+export const vouchers = pgTable(
+  "vouchers",
+  {
+    id: serial().primaryKey(),
+    voucherNumber: text("voucher_number").notNull().unique(),
+    /** receipt = سند قبض، payment = سند صرف */
+    type: text().notNull(),
+    amount: money("amount"),
+    voucherDate: date("voucher_date").notNull(),
+    description: text().notNull().default(""),
+    /** الموظف المرتبط بالسند إن وُجد */
+    employeeId: integer("employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    /** cash | bank | transfer */
+    method: text().notNull().default("cash"),
+    beneficiaryName: text("beneficiary_name").notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("vouchers_type_date_idx").on(table.type, table.voucherDate)],
+);
+
+/**
+ * custody_items — إخراج عهدة (جهاز، زي، مفتاح...) مع تاريخ التسليم والاستلام.
+ */
+export const custodyItems = pgTable(
+  "custody_items",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    itemName: text("item_name").notNull(),
+    /** device | uniform | key | other */
+    itemType: text("item_type").notNull().default("other"),
+    serialNumber: text("serial_number").notNull().default(""),
+    quantity: integer().notNull().default(1),
+    estimatedValue: money("estimated_value"),
+    issuedAt: date("issued_at").notNull(),
+    dueReturnAt: date("due_return_at"),
+    returnedAt: date("returned_at"),
+    conditionNote: text("condition_note").notNull().default(""),
+    /** issued | returned | lost */
+    status: text().notNull().default("issued"),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("custody_items_employee_idx").on(table.employeeId)],
+);
+
+/**
+ * leave_requests — طلبات الإجازة المرتبطة بملف الموظف.
+ */
+export const leaveRequests = pgTable(
+  "leave_requests",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    /** annual | sick | unpaid | emergency | other */
+    leaveType: text("leave_type").notNull().default("annual"),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    days: doublePrecision().notNull().default(0),
+    reason: text().notNull().default(""),
+    /** pending | approved | rejected */
+    status: text().notNull().default("pending"),
+    decisionNote: text("decision_note").notNull().default(""),
+    decidedByEmployeeId: integer("decided_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("leave_requests_employee_idx").on(table.employeeId, table.startDate),
+  ],
+);
+
+/**
+ * company_settings — هوية المؤسسة وإعدادات الورق والطباعة.
+ * صف واحد فقط (`settings_key = 'default'`) يُقرأ في كل المطبوعات.
+ * الشعار يُخزَّن كـData URL داخل قاعدة البيانات حتى يعمل في المعاينة
+ * والإنتاج بلا أي خدمة تخزين خارجية.
+ */
+export const companySettings = pgTable("company_settings", {
+  id: serial().primaryKey(),
+  settingsKey: text("settings_key").notNull().unique().default("default"),
+  companyName: text("company_name").notNull().default("مؤسسة المطعم"),
+  companyNameEn: text("company_name_en").notNull().default(""),
+  legalForm: text("legal_form").notNull().default(""),
+  commercialRegister: text("commercial_register").notNull().default(""),
+  taxNumber: text("tax_number").notNull().default(""),
+  address: text().notNull().default(""),
+  city: text().notNull().default(""),
+  country: text().notNull().default("المملكة العربية السعودية"),
+  phone: text().notNull().default(""),
+  email: text().notNull().default(""),
+  website: text().notNull().default(""),
+  /** بيانات التذييل التي تظهر أسفل كل ورقة مطبوعة */
+  footerText: text("footer_text").notNull().default(""),
+  footerNote: text("footer_note").notNull().default(""),
+  /** صورة الشعار كـdata URL (base64) */
+  logoDataUrl: text("logo_data_url").notNull().default(""),
+  logoUpdatedAt: timestamp("logo_updated_at", { withTimezone: true }),
+  // ------------------------------------------------ تخصيص تصميم الورقة
+  /** A4 | A5 | letter */
+  paperSize: text("paper_size").notNull().default("A4"),
+  /** portrait | landscape */
+  paperOrientation: text("paper_orientation").notNull().default("portrait"),
+  marginMm: integer("margin_mm").notNull().default(16),
+  baseFontPt: doublePrecision("base_font_pt").notNull().default(11),
+  fontFamily: text("font_family").notNull().default("system"),
+  accentColor: text("accent_color").notNull().default("#0f766e"),
+  textColor: text("text_color").notNull().default("#111827"),
+  showLogo: boolean("show_logo").notNull().default(true),
+  showFooter: boolean("show_footer").notNull().default(true),
+  showSignatures: boolean("show_signatures").notNull().default(true),
+  showWatermark: boolean("show_watermark").notNull().default(false),
+  watermarkText: text("watermark_text").notNull().default(""),
+  headerNote: text("header_note").notNull().default(""),
+  currency: text().notNull().default("SAR"),
+  updatedByEmployeeId: integer("updated_by_employee_id").references(
+    () => employees.id,
+    { onDelete: "set null" },
+  ),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * document_identity_fields — أي البيانات تظهر على مطبوعات كل نموذج.
+ *
+ * الأصل أن كل مطبوعة تحمل هوية المؤسسة كاملةً كما هي في `company_settings`
+ * وجدول تعريف الموظف كاملاً، لكن بعض النماذج لا يُناسبها ذلك (طلب إجازة
+ * داخلي لا يحتاج الرقم الضريبي ولا المدير المسؤول مثلاً). فيُسجَّل هنا صفٌّ
+ * واحد لكل نموذج يُستثنى فيه ما لا يُراد ظهوره، وغياب الصف يعني الظهور
+ * الافتراضي الكامل — فلا يتغيّر سلوك أي نموذج لم يُخصَّص.
+ *
+ * هذه المفاتيح تُقيّد الإظهار ولا تُنشئه: مفتاح المؤسسة العام في
+ * `company_settings` (الشعار، التذييل، التوقيعات، العلامة المائية) يبقى
+ * الأعلى، فإن أُغلق هناك لا يفتحه تخصيص نموذج.
+ *
+ * حقول لا تُعطَّل أصلاً فلا عمود لها هنا: تاريخ المستند، اسم الموظف، الرقم
+ * الوظيفي، الجنسية، ورقم الهوية/الإقامة — لأنها تعريف المستند وصاحبه.
+ */
+export const documentIdentityFields = pgTable("document_identity_fields", {
+  id: serial().primaryKey(),
+  /** مفتاح النموذج في حزمة النماذج (advance، leave، payroll_slip ...) */
+  docKey: text("doc_key").notNull().unique(),
+  showLogo: boolean("show_logo").notNull().default(true),
+  showCompanyName: boolean("show_company_name").notNull().default(true),
+  showCompanyNameEn: boolean("show_company_name_en").notNull().default(true),
+  showCommercialRegister: boolean("show_commercial_register").notNull().default(true),
+  showTaxNumber: boolean("show_tax_number").notNull().default(true),
+  showAddress: boolean("show_address").notNull().default(true),
+  showCity: boolean("show_city").notNull().default(true),
+  showCountry: boolean("show_country").notNull().default(true),
+  showPhone: boolean("show_phone").notNull().default(true),
+  showEmail: boolean("show_email").notNull().default(true),
+  showWebsite: boolean("show_website").notNull().default(true),
+  showHeaderNote: boolean("show_header_note").notNull().default(true),
+  showFooter: boolean("show_footer").notNull().default(true),
+  showFooterNote: boolean("show_footer_note").notNull().default(true),
+  showSignatures: boolean("show_signatures").notNull().default(true),
+  showWatermark: boolean("show_watermark").notNull().default(true),
+  /**
+   * بيانات الموظف في جدول تعريف المستند. تُطبع اليوم في كل النماذج، فالأصل
+   * `true` كي لا يتغيّر شكل مطبوعة قائمة.
+   */
+  showJobTitle: boolean("show_job_title").notNull().default(true),
+  showDepartment: boolean("show_department").notNull().default(true),
+  showBranch: boolean("show_branch").notNull().default(true),
+  showManager: boolean("show_manager").notNull().default(true),
+  showHiredAt: boolean("show_hired_at").notNull().default(true),
+  /** بيانات اتصال الموظف: تظهر في النماذج التي تعرضها أصلاً (نموذج التعيين). */
+  showEmployeeEmail: boolean("show_employee_email").notNull().default(true),
+  showEmployeePhone: boolean("show_employee_phone").notNull().default(true),
+  updatedByEmployeeId: integer("updated_by_employee_id").references(() => employees.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * departments — الأقسام (المطبخ، الكاشير، الصالة ...) لإدارتها من لوحة الإعدادات.
+ */
+export const departments = pgTable("departments", {
+  id: serial().primaryKey(),
+  name: text().notNull().unique(),
+  nameEn: text("name_en").notNull().default(""),
+  branchId: integer("branch_id").references(() => branches.id, {
+    onDelete: "set null",
+  }),
+  managerEmployeeId: integer("manager_employee_id").references(
+    (): AnyPgColumn => employees.id,
+    { onDelete: "set null" },
+  ),
+  note: text().notNull().default(""),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * job_titles — المسميات الوظيفية المعتمدة.
+ */
+export const jobTitles = pgTable("job_titles", {
+  id: serial().primaryKey(),
+  name: text().notNull().unique(),
+  nameEn: text("name_en").notNull().default(""),
+  departmentId: integer("department_id").references(() => departments.id, {
+    onDelete: "set null",
+  }),
+  defaultBasicSalary: money("default_basic_salary"),
+  note: text().notNull().default(""),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * salary_components — بنود الرواتب القابلة للتعريف (بدلات وخصومات).
+ */
+export const salaryComponents = pgTable("salary_components", {
+  id: serial().primaryKey(),
+  code: text().notNull().unique(),
+  name: text().notNull(),
+  /** allowance | deduction */
+  kind: text().notNull().default("allowance"),
+  /** fixed | percent — النسبة تُحسب من الراتب الأساسي */
+  calculation: text().notNull().default("fixed"),
+  defaultValue: money("default_value"),
+  taxable: boolean().notNull().default(false),
+  note: text().notNull().default(""),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * cashier_closings — تقفيل الكاشير اليومي: يرفعه الكاشير بنفسه
+ * (مبيعات، نقد، شبكة، فروقات) مرتبطاً بالفرع والتاريخ.
+ * الفارق = النقد المعدود − النقد المتوقّع، ويُحسب في الخادم.
+ */
+export const cashierClosings = pgTable(
+  "cashier_closings",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    /** تاريخ العمل بتوقيت الفرع */
+    businessDate: date("business_date").notNull(),
+    /** morning | evening | full — الوردية */
+    shift: text().notNull().default("full"),
+    openingFloat: money("opening_float"),
+    totalSales: money("total_sales"),
+    cashSales: money("cash_sales"),
+    cardSales: money("card_sales"),
+    /** مبيعات شبكة فودكس (Foodics) — تُرصد منفصلة عن باقي الشبكات */
+    foodicsSales: money("foodics_sales"),
+    transferSales: money("transfer_sales"),
+    deliverySales: money("delivery_sales"),
+    otherSales: money("other_sales"),
+    discounts: money("discounts"),
+    refunds: money("refunds"),
+    expenses: money("expenses"),
+    countedCash: money("counted_cash"),
+    /** النقد المتوقّع في الدرج = عهدة البداية + النقد − المصروفات − المرتجعات */
+    expectedCash: money("expected_cash"),
+    /** الفارق: سالب = عجز، موجب = زيادة */
+    difference: money("difference"),
+    invoiceCount: integer("invoice_count").notNull().default(0),
+    notes: text().notNull().default(""),
+    /** submitted | reviewed | disputed */
+    status: text().notNull().default("submitted"),
+    reviewNote: text("review_note").notNull().default(""),
+    reviewedByEmployeeId: integer("reviewed_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    /** تقفيل واحد لكل كاشير في نفس الفرع والتاريخ والوردية */
+    uniqueIndex("cashier_closings_unique_idx").on(
+      table.branchId,
+      table.employeeId,
+      table.businessDate,
+      table.shift,
+    ),
+    index("cashier_closings_branch_date_idx").on(table.branchId, table.businessDate),
+  ],
+);
+
+/**
+ * cashier_closing_lines — بنود التقفيل التي يضيفها المستخدم بنفسه:
+ * `network` = أجهزة/حسابات الشبكة، و`delivery_app` = تطبيقات التواصل والتوصيل
+ * (هنجرستيشن، كيتا، جاهز، ذاشيف...). كل بند سطر مستقل يمكن إضافته وتعديله
+ * وحذفه، ومجموع كل تصنيف يُرحّل إلى `card_sales` و`delivery_sales`.
+ */
+export const cashierClosingLines = pgTable(
+  "cashier_closing_lines",
+  {
+    id: serial().primaryKey(),
+    closingId: integer("closing_id")
+      .notNull()
+      .references(() => cashierClosings.id, { onDelete: "cascade" }),
+    /** network | delivery_app */
+    category: text().notNull().default("network"),
+    label: text().notNull(),
+    amount: money("amount"),
+    /** رقم الجهاز أو رقم الدفعة كما في التقرير */
+    reference: text().notNull().default(""),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("cashier_closing_lines_closing_idx").on(table.closingId, table.category),
+  ],
+);
+
+/**
+ * inventory_items — أصناف المخزون (مواد أولية، مستهلكات).
+ */
+export const inventoryItems = pgTable("inventory_items", {
+  id: serial().primaryKey(),
+  code: text().notNull().unique(),
+  name: text().notNull(),
+  category: text().notNull().default(""),
+  /** وحدة القياس: كجم، لتر، علبة ... */
+  unit: text().notNull().default("قطعة"),
+  unitCost: money("unit_cost"),
+  /**
+   * fixed = سعر الوحدة ثابت كما هو مُعرَّف هنا.
+   * variable = السعر متغيّر ويُؤخذ من فاتورة الشراء في كل حركة إدخال،
+   * وآخر سعر شراء يصبح سعر الوحدة المحتسب للصنف.
+   */
+  priceMode: text("price_mode").notNull().default("fixed"),
+  minQuantity: doublePrecision("min_quantity").notNull().default(0),
+  note: text().notNull().default(""),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * inventory_movements — حركة المخزون اليومية لكل فرع:
+ * `in` إدخال، `out` إخراج/استهلاك، `count` جرد (الكمية المعدودة فعلياً)،
+ * `manufacture` تصنيع (خصم المادة الخام مقابل إضافة المنتج النهائي).
+ * الرصيد = آخر جرد + الإدخالات − الإخراجات والتصنيع بعد تاريخ ذلك الجرد.
+ */
+export const inventoryMovements = pgTable(
+  "inventory_movements",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    itemId: integer("item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "cascade" }),
+    /** in | out | count | manufacture */
+    movementType: text("movement_type").notNull().default("in"),
+    businessDate: date("business_date").notNull(),
+    quantity: doublePrecision().notNull().default(0),
+    unitCost: money("unit_cost"),
+    totalCost: money("total_cost"),
+    /** purchase | consumption | waste | transfer | stocktake | manufacture | other */
+    reason: text().notNull().default("other"),
+    reference: text().notNull().default(""),
+    /** فرق الجرد عن الرصيد الدفتري (يُحسب في الخادم لحركات الجرد) */
+    variance: doublePrecision().notNull().default(0),
+    /** التصنيع: الصنف النهائي الناتج عن استهلاك هذا الخام */
+    producedItemId: integer("produced_item_id").references(() => inventoryItems.id, {
+      onDelete: "set null",
+    }),
+    /** عدد الوحدات المنتجة — صفر يعني أنه لم يُسجَّل بعد ويمكن إكماله لاحقاً */
+    producedUnits: doublePrecision("produced_units").notNull().default(0),
+    /**
+     * وزن الوحدة المنتجة الواحدة بوحدة `unitWeightUnit` (جرام عادةً):
+     * وزن الوحدة × عدد الوحدات (بعد التحويل إلى وحدة الخام) = الكمية الخام.
+     */
+    unitWeight: doublePrecision("unit_weight").notNull().default(0),
+    /**
+     * وحدة قياس `unitWeight` — تُخزَّن صريحةً لأنها تختلف عن وحدة الخام
+     * (جرام للوحدة مقابل كيلوجرام للخام)، فلا يُفسَّر الرقم بوحدة خاطئة لاحقاً.
+     */
+    unitWeightUnit: text("unit_weight_unit").notNull().default(""),
+    /**
+     * ربط حركتَي التصنيع: حركة خصم الخام ↔ حركة إضافة المنتج. عمود عادي بلا
+     * مفتاح أجنبي لأن الجدول يشير إلى نفسه، والحذف يتكفّل بإزالة الطرفين معاً.
+     */
+    linkedMovementId: integer("linked_movement_id"),
+    notes: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("inventory_movements_branch_date_idx").on(table.branchId, table.businessDate),
+    index("inventory_movements_item_idx").on(table.itemId, table.businessDate),
+  ],
+);
+
+/**
+ * disciplinary_actions — الإنذارات التأديبية (نموذج قابل للطباعة).
+ */
+export const disciplinaryActions = pgTable(
+  "disciplinary_actions",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    /** notice | first | second | final | suspension */
+    level: text().notNull().default("first"),
+    incidentDate: date("incident_date").notNull(),
+    incidentDescription: text("incident_description").notNull().default(""),
+    violationType: text("violation_type").notNull().default("other"),
+    actionTaken: text("action_taken").notNull().default(""),
+    deductionAmount: money("deduction_amount"),
+    /** draft | issued | acknowledged | cancelled */
+    status: text().notNull().default("issued"),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    notes: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("disciplinary_actions_employee_idx").on(table.employeeId, table.incidentDate),
+  ],
+);
+
+/**
+ * document_issues — سجل النماذج والمستندات التي صُدرت/طُبعت،
+ * يُستخدم لتقرير «النماذج المُصدرة» ولتتبّع من طبع ماذا ومتى.
+ */
+export const documentIssues = pgTable(
+  "document_issues",
+  {
+    id: serial().primaryKey(),
+    /** مفتاح النموذج: contract | nda | appointment | warning ... */
+    docType: text("doc_type").notNull(),
+    title: text().notNull().default(""),
+    employeeId: integer("employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    branchId: integer("branch_id").references(() => branches.id, {
+      onDelete: "set null",
+    }),
+    /** نوع ومعرّف السجل المرتبط (سلفة، سند، عهدة ...) إن وُجد */
+    refType: text("ref_type").notNull().default(""),
+    refId: integer("ref_id"),
+    /** بيانات إضافية عن اللحظة التي صُدر فيها المستند (JSON نصي) */
+    payload: text().notNull().default(""),
+    notes: text().notNull().default(""),
+    issuedByEmployeeId: integer("issued_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("document_issues_type_idx").on(table.docType, table.issuedAt),
+    index("document_issues_employee_idx").on(table.employeeId, table.issuedAt),
+  ],
+);
+
+/**
+ * password_reset_requests — طلبات «نسيت الرقم السري».
+ *
+ * لا يُخزَّن الرمز نفسه أبداً بل تجزئته (نفس دالة كلمات المرور)، ويُرسل الرمز
+ * إلى بريد الموظف عند توفّر مزوّد بريد. وإن لم يتوفّر يبقى الطلب معلّقاً
+ * (`status = pending`) في قائمة مسؤول البرنامج ليصدر رمزاً مؤقتاً بنفسه.
+ */
+export const passwordResetRequests = pgTable(
+  "password_reset_requests",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    /** ما كتبه الموظف في شاشة الدخول (رقم موظف أو بريد) — للمراجعة فقط */
+    requestedIdentifier: text("requested_identifier").notNull().default(""),
+    /** تجزئة رمز الاستعادة بصيغة scrypt$<salt>$<hash> */
+    codeHash: text("code_hash").notNull(),
+    /** عدد محاولات إدخال الرمز الخاطئة على هذا الطلب */
+    attempts: integer().notNull().default(0),
+    /** pending | sent | used | expired | cancelled */
+    status: text().notNull().default("pending"),
+    /** email | admin — كيف وصل الرمز للموظف */
+    deliveryChannel: text("delivery_channel").notNull().default(""),
+    /** البريد الذي أُرسل إليه الرمز (إن أُرسل) */
+    deliveredTo: text("delivered_to").notNull().default(""),
+    /** المسؤول الذي أصدر الرمز يدوياً */
+    issuedByEmployeeId: integer("issued_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    ipAddress: text("ip_address").notNull().default(""),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("password_reset_employee_idx").on(table.employeeId, table.createdAt),
+    index("password_reset_status_idx").on(table.status, table.createdAt),
+  ],
+);
+
+/**
+ * system_flags — أعلام تشغيلية دائمة (مفتاح/قيمة).
+ * أهم استخدامها: العلم `demo_data_purged` الذي يمنع إعادة بذر البيانات
+ * التجريبية بعد حذفها من لوحة الإعدادات.
+ */
+export const systemFlags = pgTable("system_flags", {
+  id: serial().primaryKey(),
+  flagKey: text("flag_key").notNull().unique(),
+  flagValue: text("flag_value").notNull().default(""),
+  note: text().notNull().default(""),
+  setByEmployeeId: integer("set_by_employee_id").references(() => employees.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/* ══════════════════════════════════════════════════════════════════════
+ * نظام تقفيل الكاشير والنقدية — جداول مستقلة تماماً.
+ *
+ * هذه الجداول **إضافة** لا تعديل: لم يُمسّ أي عمود في `cashier_closings`
+ * ولا في بنودها، فالتقفيلات السابقة وحساباتها تبقى كما سُجِّلت حرفياً.
+ * والمتبقي النقدي والرصيد الشهري يُحسبان قراءةً من هذه الجداول وقت العرض،
+ * فلا يوجد مبلغ مخزَّن مرتين ولا خصم مزدوج.
+ */
+
+/**
+ * cash_expenses — السجل الموحّد للمصاريف والمشتريات النقدية.
+ *
+ * كل عملية دفع نقدي (مصروف أو شراء) صفٌّ واحد بفاتورته: البيان، رقم
+ * الفاتورة، الكمية، سعر الوحدة، المبلغ الإجمالي، والتاريخ. الفاتورة تُسجَّل
+ * مرة واحدة فقط — يمنع ذلك فهرس فريد جزئي على (الفرع + رقم الفاتورة) لا
+ * يشمل الصفوف بلا رقم فاتورة. ويقرأ منها التقفيل اليومي والتقرير الشهري
+ * معاً من هذا المصدر الواحد، فلا يتكرّر الخصم.
+ */
+export const cashExpenses = pgTable(
+  "cash_expenses",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** تاريخ الصرف بتوقيت الفرع — عليه يقع الخصم في تقفيلة اليوم */
+    businessDate: date("business_date").notNull(),
+    /** morning | evening | full — وردية الصرف، لحصر المصروف بوردية بعينها */
+    shift: text().notNull().default("full"),
+    /** expense = مصروف تشغيلي، purchase = شراء بضاعة */
+    kind: text().notNull().default("expense"),
+    /** البيان: غاز، دجاج، لبن ... */
+    description: text().notNull(),
+    /** رقم الفاتورة — فريد داخل الفرع متى وُجد */
+    invoiceNumber: text("invoice_number").notNull().default(""),
+    quantity: doublePrecision().notNull().default(1),
+    unitPrice: money("unit_price"),
+    /** المبلغ الإجمالي المدفوع فعلاً (الكمية × سعر الوحدة ما لم يُصرَّح بغيره) */
+    amount: money("amount"),
+    supplier: text().notNull().default(""),
+    /** cash دائماً في هذا السجل — العمود للتوثيق ولأي توسّع لاحق */
+    paymentMethod: text("payment_method").notNull().default("cash"),
+    /** ربط اختياري بتقفيلة بعينها؛ الخصم يقع بالتاريخ والفرع لا بالربط */
+    closingId: integer("closing_id").references(() => cashierClosings.id, {
+      onDelete: "set null",
+    }),
+    notes: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    /**
+     * فاتورة واحدة لا تُسجَّل مرتين في الفرع نفسه. الفهرس **جزئي** فلا يمنع
+     * تعدّد المصاريف التي بلا رقم فاتورة (نثريات، بقشيش، مصروف بلا سند).
+     */
+    uniqueIndex("cash_expenses_invoice_unique_idx")
+      .on(table.branchId, table.invoiceNumber)
+      .where(sql.raw("invoice_number <> ''")),
+    index("cash_expenses_branch_date_idx").on(table.branchId, table.businessDate),
+    index("cash_expenses_closing_idx").on(table.closingId),
+  ],
+);
+
+/**
+ * provider_settlements — تسوية الشبكات وتطبيقات التوصيل.
+ *
+ * تُسجَّل مبيعات الجهة في التقفيلة أولاً، وعند وصول المبلغ إلى البنك يؤكّد
+ * المحاسب السداد ويُدخل المستلم، فيحسب الخادم: العمولة = المبيعات − المستلم،
+ * والنسبة المئوية منها، والضريبة الاختيارية على العمولة.
+ */
+export const providerSettlements = pgTable(
+  "provider_settlements",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** network = شبكة (فودكس، مدى...)، delivery_app = تطبيق توصيل */
+    providerType: text("provider_type").notNull().default("network"),
+    /** الجهة كما تُكتب في بنود التقفيلة تماماً */
+    providerName: text("provider_name").notNull(),
+    periodFrom: date("period_from").notNull(),
+    periodTo: date("period_to").notNull(),
+    /** المبيعات كما رُصدت في تقفيلات المدة */
+    salesAmount: money("sales_amount"),
+    /** المبلغ الذي وصل البنك فعلاً */
+    receivedAmount: money("received_amount"),
+    /** العمولة = المبيعات − المستلم (يحسبها الخادم) */
+    commissionAmount: money("commission_amount"),
+    /** نسبة العمولة المئوية من المبيعات */
+    commissionRate: doublePrecision("commission_rate").notNull().default(0),
+    /** نسبة ضريبة القيمة المضافة على العمولة — اختيارية (0 = بلا ضريبة) */
+    vatRate: doublePrecision("vat_rate").notNull().default(0),
+    vatAmount: money("vat_amount"),
+    /** هل العمولة المحسوبة شاملة للضريبة أم تُضاف إليها؟ */
+    vatIncluded: boolean("vat_included").notNull().default(true),
+    /** العمولة بلا ضريبة — تُفيد التقرير الضريبي */
+    commissionBeforeVat: money("commission_before_vat"),
+    /**
+     * نسبة العقد المتفق عليها مع الجهة (%) — يُدخلها المحاسب من العقد نفسه،
+     * ومنها يُحسب «المبلغ المتوقع خصمه» فيُقارن بالمخصوم الفعلي في الكشف.
+     */
+    contractRate: doublePrecision("contract_rate").notNull().default(0),
+    /** المتوقع خصمه = الأساس المستحق × نسبة العقد ÷ 100 */
+    expectedAmount: money("expected_amount"),
+    /** المخصوم الفعلي كما في كشف الجهة — رقم واقعي لا مُستنتج */
+    actualDeducted: money("actual_deducted"),
+    /** الفرق = المخصوم الفعلي − المتوقع (موجب = خُصم أكثر من العقد) */
+    varianceAmount: money("variance_amount"),
+    /** المرحّل من الشهر السابق: مبالغ لم تُحوَّل بعد فانتقلت إلى هذا الشهر */
+    carriedInAmount: money("carried_in_amount"),
+    /** المرحّل إلى الشهر التالي = الأساس − المحوّل − المخصوم الفعلي */
+    carriedOutAmount: money("carried_out_amount"),
+    /** الشهر الذي جاء منه المرحّل (YYYY-MM) — للتتبّع لا للحساب */
+    carriedFromMonth: text("carried_from_month").notNull().default(""),
+    /** الشهر الذي رُحّل إليه المتبقي (YYYY-MM) */
+    carriedToMonth: text("carried_to_month").notNull().default(""),
+    /** pending | confirmed */
+    status: text().notNull().default("pending"),
+    reference: text().notNull().default(""),
+    notes: text().notNull().default(""),
+    confirmedByEmployeeId: integer("confirmed_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    /** اسم المحاسب وقت التأكيد — لقطة نصّية تبقى ولو تغيّر ملفه لاحقاً */
+    confirmedByName: text("confirmed_by_name").notNull().default(""),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("provider_settlements_branch_period_idx").on(
+      table.branchId,
+      table.periodFrom,
+    ),
+    index("provider_settlements_provider_idx").on(
+      table.providerType,
+      table.providerName,
+    ),
+  ],
+);
+
+/**
+ * provider_settlement_payments — دفعات التحويل الواصلة إلى البنك.
+ *
+ * التحويلات ليست يومية ولا دفعة واحدة: تصل على دفعات طوال الشهر وبعده،
+ * فكل دفعة صفٌّ مستقل بتاريخها ومرجعها. والمستلم في التسوية = مجموع دفعاتها،
+ * فلا يُكتب رقم مجمّع بيد أحد ولا تضيع دفعة ولا تُحسب مرتين.
+ *
+ * جدول **إضافة** لا تعديل: لم يُمسّ أي عمود قائم ولا أي صف محفوظ، والتسويات
+ * القديمة تبقى كما سُجِّلت (مستلمها المكتوب يبقى أساساً حتى تُضاف أول دفعة).
+ */
+export const providerSettlementPayments = pgTable(
+  "provider_settlement_payments",
+  {
+    id: serial().primaryKey(),
+    settlementId: integer("settlement_id")
+      .notNull()
+      .references(() => providerSettlements.id, { onDelete: "cascade" }),
+    /** تاريخ وصول الدفعة إلى البنك */
+    paymentDate: date("payment_date").notNull(),
+    amount: money("amount"),
+    /** رقم الحوالة أو مرجع كشف الجهة */
+    reference: text().notNull().default(""),
+    notes: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("provider_settlement_payments_settlement_idx").on(
+      table.settlementId,
+      table.paymentDate,
+    ),
+  ],
+);
+
+/**
+ * monthly_cash_closings — إقفال الشهر والترحيل.
+ *
+ * يجهّز النظام ملخّص الشهر (الإجمالي، المصاريف، الصافي) فيبقى الشهر بحالة
+ * `pending_approval` لا يُعدّل عليه، حتى يقرّر صاحب الصلاحية: `carry_forward`
+ * فيُرحَّل الصافي إلى بداية الشهر التالي، أو `reset` فيبدأ الشهر الجديد من صفر.
+ * وفي الحالتين يُقفل الشهر (`locked_at`) فلا يُعدَّل بعدها.
+ */
+export const monthlyCashClosings = pgTable(
+  "monthly_cash_closings",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    periodYear: integer("period_year").notNull(),
+    periodMonth: integer("period_month").notNull(),
+    /** المرحّل من الشهر السابق (صفر إن كان قرار الشهر السابق تصفيراً) */
+    openingBalance: money("opening_balance"),
+    cashSalesTotal: money("cash_sales_total"),
+    expensesTotal: money("expenses_total"),
+    settlementsReceived: money("settlements_received"),
+    commissionTotal: money("commission_total"),
+    vatTotal: money("vat_total"),
+    /** الصافي = المرحّل + النقدي المتراكم − المصاريف والمشتريات النقدية */
+    netAmount: money("net_amount"),
+    /** ما رُحّل فعلاً إلى الشهر التالي بعد القرار */
+    carriedAmount: money("carried_amount"),
+    /** pending_approval | carried_forward | reset */
+    status: text().notNull().default("pending_approval"),
+    /** carry_forward | reset — يبقى فارغاً قبل القرار */
+    decision: text().notNull().default(""),
+    decisionNote: text("decision_note").notNull().default(""),
+    decidedByEmployeeId: integer("decided_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    decidedByName: text("decided_by_name").notNull().default(""),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    preparedByEmployeeId: integer("prepared_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    preparedAt: timestamp("prepared_at", { withTimezone: true }).notNull().defaultNow(),
+    /** لحظة إقفال الشهر — وجودها يمنع أي تعديل على بيانات الشهر */
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    /** لقطة JSON من الملخّص وقت التجهيز (للمراجعة والطباعة) */
+    summaryJson: text("summary_json").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("monthly_cash_closings_period_unique_idx").on(
+      table.branchId,
+      table.periodYear,
+      table.periodMonth,
+    ),
+    index("monthly_cash_closings_status_idx").on(
+      table.status,
+      table.periodYear,
+      table.periodMonth,
+    ),
+  ],
+);
+
+/**
+ * cash_notifications — إشعار ملخّص الإقفال للأونر ولمن يملك صلاحية الترحيل.
+ * صفٌّ لكل مستلم، ويبقى غير مقروء حتى يفتحه صاحبه.
+ */
+export const cashNotifications = pgTable(
+  "cash_notifications",
+  {
+    id: serial().primaryKey(),
+    employeeId: integer("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    /** month_close_ready | month_closed */
+    kind: text().notNull().default("month_close_ready"),
+    title: text().notNull().default(""),
+    body: text().notNull().default(""),
+    refType: text("ref_type").notNull().default(""),
+    refId: integer("ref_id"),
+    isRead: boolean("is_read").notNull().default(false),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("cash_notifications_employee_idx").on(table.employeeId, table.isRead),
+  ],
+);
+
+/* ══════════════════════════════════════════════════════════════════
+ * وحدة الرقابة والكاميرات — جداول مستقلة تماماً عن بقية النظام.
+ *
+ * لا تُعدّل هذه الوحدة أي جدول قائم ولا تحذف منه شيئاً؛ تقرأ فقط من
+ * الفروع والموظفين والحضور وتقفيل الكاشير والمخزون لبناء التقرير اليومي.
+ * كل حالة اشتباه تبقى «اشتباهاً يحتاج مراجعة» حتى يحسمها إنسان مخوَّل.
+ * ══════════════════════════════════════════════════════════════════ */
+
+/**
+ * surveillance_cameras — سجل الكاميرات ومواقعها وحالتها الحالية.
+ * المناطق محصورة بقائمة مسموحة: لا تُسجَّل كاميرا في دورات المياه أو غرف
+ * التبديل أو أماكن الصلاة أو الاستراحة الخاصة.
+ */
+export const surveillanceCameras = pgTable(
+  "surveillance_cameras",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** رقم الكاميرا كما في جهاز التسجيل (مثال: CAM-03) */
+    cameraNumber: text("camera_number").notNull(),
+    name: text().notNull().default(""),
+    /** dining | kitchen | cashier | warehouse | fridge | back_door | entrance | delivery | outdoor */
+    zone: text().notNull().default("dining"),
+    location: text().notNull().default(""),
+    /** online | offline | covered | moved | unknown */
+    status: text().notNull().default("unknown"),
+    isRecording: boolean("is_recording").notNull().default(true),
+    lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
+    /** النقاط العمياء المرصودة حول الكاميرا ومقترحات التغطية */
+    blindSpots: text("blind_spots").notNull().default(""),
+    notes: text().notNull().default(""),
+    isActive: boolean("is_active").notNull().default(true),
+    /* ── الكشف الآلي بالذكاء الاصطناعي ── */
+    /** تشغيل الكشف الآلي على هذه الكاميرا */
+    autoDetect: boolean("auto_detect").notNull().default(false),
+    /** agent = جهاز الربط داخل المطعم يجلب الصورة، pull = الخادم يجلبها من رابط عام */
+    connectionMode: text("connection_mode").notNull().default("agent"),
+    /** رابط لقطة الكاميرا (Snapshot) كما في جهاز التسجيل */
+    snapshotUrl: text("snapshot_url").notNull().default(""),
+    snapshotUsername: text("snapshot_username").notNull().default(""),
+    /** كلمة مرور الكاميرا مشفّرة AES-256-GCM */
+    snapshotPasswordEnc: text("snapshot_password_enc").notNull().default(""),
+    /** كل كم دقيقة تُحلَّل لقطة */
+    intervalMinutes: integer("interval_minutes").notNull().default(5),
+    /** مفتاح الصورة المرجعية (الزاوية المعتمدة) لكشف التحريك */
+    referenceKey: text("reference_key").notNull().default(""),
+    lastFrameAt: timestamp("last_frame_at", { withTimezone: true }),
+    lastAnalysisAt: timestamp("last_analysis_at", { withTimezone: true }),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    lastError: text("last_error").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("surveillance_cameras_branch_number_idx").on(
+      table.branchId,
+      table.cameraNumber,
+    ),
+  ],
+);
+
+/** surveillance_camera_checks — سجل الفحص اليومي لكل كاميرا. */
+export const surveillanceCameraChecks = pgTable(
+  "surveillance_camera_checks",
+  {
+    id: serial().primaryKey(),
+    cameraId: integer("camera_id")
+      .notNull()
+      .references(() => surveillanceCameras.id, { onDelete: "cascade" }),
+    status: text().notNull().default("online"),
+    isRecording: boolean("is_recording").notNull().default(true),
+    note: text().notNull().default(""),
+    /** manual | webhook */
+    source: text().notNull().default("manual"),
+    checkedByEmployeeId: integer("checked_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("surveillance_camera_checks_camera_idx").on(table.cameraId, table.checkedAt)],
+);
+
+/**
+ * surveillance_alerts — التنبيهات والملاحظات الرقابية بالصيغة المعتمدة:
+ * النوع، الموقع والكاميرا، الوقت، الموظفون، درجة الثقة، مرجع المقطع،
+ * والإجراء المقترح. القرار النهائي (`confirmed`/`dismissed`) لا يُتّخذ إلا
+ * بمراجعة بشرية من صاحب درجة الموافقة.
+ */
+export const surveillanceAlerts = pgTable(
+  "surveillance_alerts",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    cameraId: integer("camera_id").references(() => surveillanceCameras.id, {
+      onDelete: "set null",
+    }),
+    alertType: text("alert_type").notNull(),
+    /** gm = المدير العام، warehouse = مدير المستودعات، camera = مراقب الكاميرات */
+    role: text().notNull().default("gm"),
+    /** هل هي حالة تنبيه فوري (لا ملاحظة عادية)؟ */
+    isUrgent: boolean("is_urgent").notNull().default(false),
+    /** هل هي حالة اشتباه مخالفة/سرقة؟ — تبقى اشتباهاً حتى المراجعة */
+    isSuspicion: boolean("is_suspicion").notNull().default(false),
+    /** 1 = عالية، 2 = متوسطة، 3 = منخفضة */
+    severity: integer().notNull().default(2),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    location: text().notNull().default(""),
+    employeeIds: integer("employee_ids").array().notNull().default(sql`'{}'::integer[]`),
+    /** وصف الظاهرين في المقطع إن تعذّر التعرف عليهم */
+    peopleNote: text("people_note").notNull().default(""),
+    /** high | medium | low */
+    confidence: text().notNull().default("medium"),
+    clipRef: text("clip_ref").notNull().default(""),
+    details: text().notNull().default(""),
+    suggestedAction: text("suggested_action").notNull().default(""),
+    /** open | needs_review | confirmed | dismissed */
+    status: text().notNull().default("open"),
+    reviewNote: text("review_note").notNull().default(""),
+    reviewedByEmployeeId: integer("reviewed_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    /** manual | webhook | auto */
+    source: text().notNull().default("manual"),
+    /** مفتاح منع التكرار للتنبيهات الآلية */
+    sourceRef: text("source_ref").notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("surveillance_alerts_branch_time_idx").on(table.branchId, table.occurredAt),
+    index("surveillance_alerts_status_idx").on(table.status),
+    index("surveillance_alerts_source_ref_idx").on(table.sourceRef),
+  ],
+);
+
+/**
+ * surveillance_orders — توقيت تجهيز الطلبات: من تسجيله في نقطة البيع إلى
+ * تسليمه، مع علامة وجود الفاتورة المقابلة.
+ */
+export const surveillanceOrders = pgTable(
+  "surveillance_orders",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    orderRef: text("order_ref").notNull(),
+    itemName: text("item_name").notNull().default(""),
+    /** dine_in | takeaway | delivery */
+    channel: text().notNull().default("dine_in"),
+    registeredAt: timestamp("registered_at", { withTimezone: true }).notNull(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    prepSeconds: integer("prep_seconds"),
+    hasInvoice: boolean("has_invoice").notNull().default(true),
+    preparedByEmployeeId: integer("prepared_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    cameraId: integer("camera_id").references(() => surveillanceCameras.id, {
+      onDelete: "set null",
+    }),
+    source: text().notNull().default("manual"),
+    notes: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("surveillance_orders_ref_item_idx").on(
+      table.branchId,
+      table.orderRef,
+      table.itemName,
+    ),
+    index("surveillance_orders_branch_time_idx").on(table.branchId, table.registeredAt),
+  ],
+);
+
+/**
+ * surveillance_pos_events — أحداث الكاشير الحساسة: فتح الدرج بلا بيع،
+ * الإلغاء، الخصم، الاسترجاع.
+ */
+export const surveillancePosEvents = pgTable(
+  "surveillance_pos_events",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** drawer_no_sale | void | discount | refund */
+    eventType: text("event_type").notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    cashierEmployeeId: integer("cashier_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    cashierName: text("cashier_name").notNull().default(""),
+    amount: money("amount"),
+    orderRef: text("order_ref").notNull().default(""),
+    /** نتيجة المطابقة مع فوديكس: '' لم تُطابق بعد | matched | unmatched */
+    matchStatus: text("match_status").notNull().default(""),
+    matchNote: text("match_note").notNull().default(""),
+    cameraId: integer("camera_id").references(() => surveillanceCameras.id, {
+      onDelete: "set null",
+    }),
+    source: text().notNull().default("manual"),
+    notes: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("surveillance_pos_events_branch_time_idx").on(table.branchId, table.occurredAt)],
+);
+
+/** surveillance_waste — الهدر المرصود: الكمية والسبب والمحطة. */
+export const surveillanceWaste = pgTable(
+  "surveillance_waste",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    itemName: text("item_name").notNull(),
+    quantity: doublePrecision().notNull().default(0),
+    unit: text().notNull().default(""),
+    /** spoiled | over_prep | dropped | returned | over_recipe | expired | other */
+    reason: text().notNull().default("other"),
+    station: text().notNull().default(""),
+    cameraId: integer("camera_id").references(() => surveillanceCameras.id, {
+      onDelete: "set null",
+    }),
+    employeeId: integer("employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    notes: text().notNull().default(""),
+    createdByEmployeeId: integer("created_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("surveillance_waste_branch_time_idx").on(table.branchId, table.occurredAt)],
+);
+
+/** surveillance_prep_targets — الحد المعتمد لوقت تجهيز كل صنف (بالدقائق). */
+export const surveillancePrepTargets = pgTable("surveillance_prep_targets", {
+  id: serial().primaryKey(),
+  itemName: text("item_name").notNull().unique(),
+  maxMinutes: doublePrecision("max_minutes").notNull().default(15),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** surveillance_settings — حدود الرقابة لكل فرع. */
+export const surveillanceSettings = pgTable("surveillance_settings", {
+  branchId: integer("branch_id")
+    .primaryKey()
+    .references(() => branches.id, { onDelete: "cascade" }),
+  /** الحد الافتراضي لتجهيز صنف بلا حد خاص */
+  defaultPrepMinutes: doublePrecision("default_prep_minutes").notNull().default(15),
+  /** أقصى انتظار للعميل بلا خدمة */
+  customerWaitMinutes: doublePrecision("customer_wait_minutes").notNull().default(10),
+  /** عدد الإلغاءات/الخصومات/الاسترجاعات من نفس الكاشير في اليوم قبل التنبيه */
+  repeatPosThreshold: integer("repeat_pos_threshold").notNull().default(3),
+  /** ساعات عمل الفرع (HH:MM) — الدخول للمستودع خارجها تنبيه فوري */
+  openTime: text("open_time").notNull().default("06:00"),
+  closeTime: text("close_time").notNull().default("02:00"),
+  /** بريد (أو أكثر مفصولة بفاصلة) يستلم التنبيهات الفورية */
+  alertEmails: text("alert_emails").notNull().default(""),
+  /**
+   * تحليل الكاميرات داخل ساعات العمل فقط (openTime–closeTime) لتوفير التكلفة.
+   * كاميرات المستودع والباب الخلفي والثلاجات تبقى تُحلَّل خارجها لأن الدخول
+   * خارج الدوام هو ما تراقبه.
+   */
+  analyzeOpenHoursOnly: boolean("analyze_open_hours_only").notNull().default(false),
+  /** الحد الأعلى لعدد اللقطات المحلَّلة في اليوم للفرع (0 = بلا حد) */
+  dailyAnalysisCap: integer("daily_analysis_cap").notNull().default(0),
+  /** تاريخ آخر إشعار ببلوغ الحد اليومي (YYYY-MM-DD) — إشعار واحد في اليوم */
+  capNotifiedDate: text("cap_notified_date").notNull().default(""),
+  /* ── الربط مع فوديكس ── */
+  /** معرّف الفرع في فوديكس (UUID) — فارغ = الفرع غير مربوط */
+  foodicsBranchId: text("foodics_branch_id").notNull().default(""),
+  /** نافذة المطابقة بالدقائق بين حدث الكاميرا وفاتورة فوديكس */
+  foodicsMatchMinutes: integer("foodics_match_minutes").notNull().default(3),
+  /** فرق المبيعات المسموح بين تقفيل الكاشير وفوديكس (ريال) قبل التنبيه */
+  salesGapTolerance: doublePrecision("sales_gap_tolerance").notNull().default(5),
+  foodicsLastSyncAt: timestamp("foodics_last_sync_at", { withTimezone: true }),
+  foodicsLastError: text("foodics_last_error").notNull().default(""),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * surveillance_daily_reports — لقطة محفوظة من التقرير اليومي لكل فرع، حتى
+ * يبقى تقرير الأمس كما صدر ولو تغيّرت البيانات لاحقاً.
+ */
+export const surveillanceDailyReports = pgTable(
+  "surveillance_daily_reports",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    businessDate: date("business_date").notNull(),
+    reportJson: text("report_json").notNull(),
+    generatedByEmployeeId: integer("generated_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("surveillance_daily_reports_branch_date_idx").on(
+      table.branchId,
+      table.businessDate,
+    ),
+  ],
+);
+
+/**
+ * surveillance_frames — سجل كل لقطة حُلِّلت آلياً ونتيجة تحليلها.
+ * الصورة نفسها تُحفظ في Netlify Blobs فقط عند وجود ملاحظة أو خلل في
+ * الكاميرا (دليلاً للمراجعة)، واللقطات السليمة يُحفظ تحليلها بلا صورة.
+ */
+export const surveillanceFrames = pgTable(
+  "surveillance_frames",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    cameraId: integer("camera_id")
+      .notNull()
+      .references(() => surveillanceCameras.id, { onDelete: "cascade" }),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull().defaultNow(),
+    /** agent | pull | test */
+    source: text().notNull().default("agent"),
+    /** مفتاح الصورة في Blobs — فارغ إن لم تُحفظ */
+    imageKey: text("image_key").notNull().default(""),
+    /** ok | covered | dark | blurry | moved | unreachable | error */
+    cameraState: text("camera_state").notNull().default("ok"),
+    peopleCount: integer("people_count").notNull().default(0),
+    /** عملاء ينتظرون بلا خدمة في هذه اللقطة — لحساب مدة الانتظار عبر اللقطات */
+    waiting: boolean().notNull().default(false),
+    findingsCount: integer("findings_count").notNull().default(0),
+    analysisJson: text("analysis_json").notNull().default(""),
+    alertIds: integer("alert_ids").array().notNull().default(sql`'{}'::integer[]`),
+    error: text().notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("surveillance_frames_camera_time_idx").on(table.cameraId, table.capturedAt),
+    index("surveillance_frames_branch_time_idx").on(table.branchId, table.capturedAt),
+  ],
+);
+
+/* ══ الربط مع فوديكس (Foodics) ══════════════════════════════════════ */
+
+/**
+ * foodics_connection — صف واحد (id = 1) يحمل مفتاح API فوديكس مشفّراً
+ * AES-256-GCM. المتغيّر FOODICS_API_TOKEN في Netlify يتقدّم عليه إن وُجد.
+ */
+export const foodicsConnection = pgTable("foodics_connection", {
+  id: integer().primaryKey(),
+  tokenEnc: text("token_enc").notNull().default(""),
+  apiBase: text("api_base").notNull().default(""),
+  updatedByEmployeeId: integer("updated_by_employee_id").references(() => employees.id, {
+    onDelete: "set null",
+  }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * foodics_orders — نسخة مختصرة من فواتير فوديكس لكل فرع: تكفي للمطابقة
+ * مع الكاميرات وتقفيل الكاشير دون الرجوع لفوديكس في كل تقرير.
+ */
+export const foodicsOrders = pgTable(
+  "foodics_orders",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    foodicsId: text("foodics_id").notNull(),
+    reference: text().notNull().default(""),
+    businessDate: date("business_date"),
+    /** dine_in | takeaway | delivery | drive_thru */
+    channel: text().notNull().default("dine_in"),
+    /** الحالة الخام في فوديكس (رقم) */
+    status: integer().notNull().default(0),
+    /** closed | void | returned | open | other */
+    state: text().notNull().default("other"),
+    openedAt: timestamp("opened_at", { withTimezone: true }),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    /** انتهاء التجهيز في المطبخ إن أرسلته فوديكس */
+    kitchenDoneAt: timestamp("kitchen_done_at", { withTimezone: true }),
+    total: money("total"),
+    discount: money("discount"),
+    /** [{ name, type, amount }] */
+    paymentsJson: text("payments_json").notNull().default("[]"),
+    /** [{ name, sku, quantity, status }] */
+    itemsJson: text("items_json").notNull().default("[]"),
+    creatorName: text("creator_name").notNull().default(""),
+    cashierEmployeeId: integer("cashier_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("foodics_orders_branch_fid_idx").on(table.branchId, table.foodicsId),
+    index("foodics_orders_branch_closed_idx").on(table.branchId, table.closedAt),
+    index("foodics_orders_branch_date_idx").on(table.branchId, table.businessDate),
+  ],
+);
+
+/**
+ * foodics_inventory_events — الهدر وتعديلات الكميات والجرد المسجّلة في
+ * فوديكس، سطراً لكل صنف.
+ */
+export const foodicsInventoryEvents = pgTable(
+  "foodics_inventory_events",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** معرّف المستند في فوديكس + رمز الصنف — مفتاح منع التكرار */
+    foodicsKey: text("foodics_key").notNull(),
+    /** waste | adjustment | count */
+    kind: text().notNull().default("waste"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    businessDate: date("business_date"),
+    itemName: text("item_name").notNull().default(""),
+    sku: text().notNull().default(""),
+    quantity: doublePrecision().notNull().default(0),
+    unit: text().notNull().default(""),
+    cost: money("cost"),
+    reason: text().notNull().default(""),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("foodics_inventory_events_key_idx").on(table.branchId, table.foodicsKey),
+    index("foodics_inventory_events_branch_time_idx").on(table.branchId, table.occurredAt),
+  ],
+);
+
+/**
+ * foodics_stock_docs — مستندات المخزون الواردة من فوديكس لكل فرع: أوامر
+ * الشراء والتحويلات بين الفروع. من هنا «الاستلام اليومي»: الموظف المستلِم
+ * يؤكّد في التطبيق أن ما وصل فعلاً يطابق فوديكس (أو يسجّل الفرق)، فتكتمل
+ * الرقابة: فوديكس ↔ الاستلام الفعلي ↔ الجرد.
+ */
+export const foodicsStockDocs = pgTable(
+  "foodics_stock_docs",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** purchase | transfer_in | transfer_out */
+    kind: text().notNull().default("purchase"),
+    foodicsId: text("foodics_id").notNull(),
+    reference: text().notNull().default(""),
+    /** المورد (للشراء) أو الفرع المرسل/المستقبل (للتحويل) */
+    party: text().notNull().default(""),
+    /** الحالة الخام في فوديكس */
+    foodicsStatus: text("foodics_status").notNull().default(""),
+    /** open = لم يُستلم بعد في فوديكس، received = مستلم في فوديكس، cancelled */
+    state: text().notNull().default("open"),
+    businessDate: date("business_date"),
+    expectedAt: timestamp("expected_at", { withTimezone: true }),
+    receivedAt: timestamp("received_at", { withTimezone: true }),
+    total: money("total"),
+    /** [{ name, sku, unit, ordered, received, cost }] */
+    itemsJson: text("items_json").notNull().default("[]"),
+    /** awaiting = بانتظار تأكيد الموظف، confirmed = مطابق، disputed = فيه فرق */
+    confirmStatus: text("confirm_status").notNull().default("awaiting"),
+    confirmedByEmployeeId: integer("confirmed_by_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    confirmNote: text("confirm_note").notNull().default(""),
+    /** الفروق التي سجّلها الموظف: [{ sku, name, expected, actual }] */
+    diffJson: text("diff_json").notNull().default("[]"),
+    /** وقت إرسال تنبيه عدم التأكيد (لمنع التكرار) */
+    remindedAt: timestamp("reminded_at", { withTimezone: true }),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("foodics_stock_docs_key_idx").on(table.branchId, table.kind, table.foodicsId),
+    index("foodics_stock_docs_branch_date_idx").on(table.branchId, table.businessDate),
+  ],
+);
+
+/** foodics_item_stock — رصيد كل صنف في الفرع كما يعيده فوديكس (آخر مزامنة). */
+export const foodicsItemStock = pgTable(
+  "foodics_item_stock",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    itemId: integer("item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "cascade" }),
+    quantity: doublePrecision().notNull().default(0),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("foodics_item_stock_key_idx").on(table.branchId, table.itemId)],
+);
+
+/**
+ * purchase_receipts — استلام المشتريات: الحلقة اليدوية من الرقابة الثلاثية.
+ *
+ * الموظف المستلِم يؤكد ما وصل فعلاً (الكمية وسعر الوحدة لكل صنف) وإجمالي
+ * الفاتورة والمدفوع وصورتها. من هذا الاستلام تُنشأ حركات الإدخال في المخزون،
+ * ويُسجَّل المدفوع نقداً في السجل الموحّد للخزينة، فيبقى المصدر واحداً:
+ * الفاتورة ↔ الكمية المستلمة ↔ المبلغ المدفوع. وما لا يتطابق يُعلَّم للمراجعة.
+ */
+export const purchaseReceipts = pgTable(
+  "purchase_receipts",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    businessDate: date("business_date").notNull(),
+    supplier: text().notNull().default(""),
+    /** رقم فاتورة المورد — فريد داخل الفرع متى وُجد */
+    invoiceNumber: text("invoice_number").notNull().default(""),
+    /** cash = من الصندوق، transfer = تحويل/شبكة، credit = آجل على المورد */
+    paymentMethod: text("payment_method").notNull().default("cash"),
+    /** الإجمالي المكتوب على الفاتورة كما قرأه الموظف */
+    invoiceTotal: money("invoice_total"),
+    /** المدفوع فعلاً عند الاستلام */
+    paidAmount: money("paid_amount"),
+    /** مجموع (الكمية × سعر الوحدة) للأصناف المستلمة — يحسبه الخادم */
+    linesTotal: money("lines_total"),
+    /** إجمالي الفاتورة − مجموع الأصناف */
+    difference: money("difference"),
+    /** ok = بلا ملاحظات، needs_review = عليه ملاحظات، approved | disputed بعد المراجعة */
+    status: text().notNull().default("ok"),
+    /** رموز الملاحظات الآلية بصيغة JSON (مصفوفة نصوص) */
+    flags: text().notNull().default("[]"),
+    /** مفتاح صورة الفاتورة في مخزن الملفات — فارغ إن لم تُرفق */
+    photoKey: text("photo_key").notNull().default(""),
+    /** قيد الخزينة الناتج عن الدفع النقدي */
+    cashExpenseId: integer("cash_expense_id").references(() => cashExpenses.id, {
+      onDelete: "set null",
+    }),
+    /** مرجع الفاتورة المقابلة في فوديكس — يُملأ عند المطابقة الآلية لاحقاً */
+    foodicsReference: text("foodics_reference").notNull().default(""),
+    notes: text().notNull().default(""),
+    receivedByEmployeeId: integer("received_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    reviewedByEmployeeId: integer("reviewed_by_employee_id").references(
+      () => employees.id,
+      { onDelete: "set null" },
+    ),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    reviewNote: text("review_note").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("purchase_receipts_invoice_unique_idx")
+      .on(table.branchId, table.invoiceNumber)
+      .where(sql.raw("invoice_number <> ''")),
+    index("purchase_receipts_branch_date_idx").on(table.branchId, table.businessDate),
+  ],
+);
+
+/** purchase_receipt_lines — أصناف الاستلام، وكل سطر مرتبط بحركة إدخاله. */
+export const purchaseReceiptLines = pgTable(
+  "purchase_receipt_lines",
+  {
+    id: serial().primaryKey(),
+    receiptId: integer("receipt_id")
+      .notNull()
+      .references(() => purchaseReceipts.id, { onDelete: "cascade" }),
+    itemId: integer("item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "cascade" }),
+    quantity: doublePrecision().notNull().default(0),
+    unitCost: money("unit_cost"),
+    totalCost: money("total_cost"),
+    /** سعر وحدة الصنف قبل هذا الاستلام — لكشف قفزات السعر */
+    previousUnitCost: money("previous_unit_cost"),
+    /** حركة الإدخال الناتجة في `inventory_movements` (عمود عادي بلا مفتاح أجنبي) */
+    movementId: integer("movement_id"),
+  },
+  (table) => [index("purchase_receipt_lines_receipt_idx").on(table.receiptId)],
+);
+
+/* ══ مركز الضبط: التوجيه والتصعيد وواتساب وتقييمات قوقل وشكاوى الطاولات ══
+ *
+ * جداول جديدة كلها (`control_*`) فوق وحدة الرقابة: لا تعدّل جدولاً قائماً.
+ * كل تنبيه رقابي يُنشأ له «مسار إبلاغ» واحد يبدأ بمستوى (موظف/مدير/مالك)
+ * ويُصعَّد للمستوى الأعلى إن لم يؤكَّد استلامه خلال المهلة المعتمدة.
+ * ══════════════════════════════════════════════════════════════════ */
+
+/** control_settings — مهل التصعيد وحدود الخدمة وربط قوقل لكل فرع. */
+export const controlSettings = pgTable("control_settings", {
+  branchId: integer("branch_id")
+    .primaryKey()
+    .references(() => branches.id, { onDelete: "cascade" }),
+  /** تشغيل الإبلاغ عبر واتساب لهذا الفرع */
+  enabled: boolean().notNull().default(true),
+  /** مهلة استلام الموظف قبل التصعيد للمدير (دقائق) — التنبيهات العامة */
+  staffAckMinutes: doublePrecision("staff_ack_minutes").notNull().default(1),
+  /** مهلة استلام الموظف لتنبيهات تأخر الطلبات (دقائق) */
+  orderStaffAckMinutes: doublePrecision("order_staff_ack_minutes").notNull().default(2),
+  /** مهلة استلام المدير قبل التصعيد للمالك (دقائق) */
+  managerAckMinutes: doublePrecision("manager_ack_minutes").notNull().default(3),
+  /** عدد الواقفين في طابور الكاشير الذي يُعدّ بعده الطابور طويلاً */
+  queueMax: integer("queue_max").notNull().default(4),
+  /* ── التحليل المباشر (جهاز التحليل داخل المطعم) ── */
+  /** دقائق جلوس العميل على الطاولة بلا وصول موظف قبل التنبيه */
+  tableWaitMinutes: doublePrecision("table_wait_minutes").notNull().default(5),
+  /** دقائق مسموحة لتنظيف الطاولة بعد مغادرة العميل */
+  tableClearMinutes: doublePrecision("table_clear_minutes").notNull().default(1),
+  /** ثواني استمرار الطابور فوق الحد قبل التنبيه */
+  queueSeconds: integer("queue_seconds").notNull().default(60),
+  /** آخر اتصال من جهاز التحليل، وحالته كما أرسلها */
+  edgeLastSeenAt: timestamp("edge_last_seen_at", { withTimezone: true }),
+  edgeStatusJson: text("edge_status_json").notNull().default(""),
+  /** هل نُبّه المالك عن انقطاع الجهاز الحالي؟ (تنبيه واحد لكل انقطاع) */
+  edgeOfflineNotified: boolean("edge_offline_notified").notNull().default(false),
+  /** إرسال الملاحظات البسيطة (جوال، تجمع…) للمدير فور وقوعها بدل الاكتفاء بالتقرير */
+  notifyMinor: boolean("notify_minor").notNull().default(false),
+  /** مسار موقع النشاط في قوقل: accounts/{id}/locations/{id} */
+  googleLocation: text("google_location").notNull().default(""),
+  /** يُنبَّه المدير عند تقييم بهذا العدد من النجوم أو أقل */
+  reviewMaxStars: integer("review_max_stars").notNull().default(3),
+  reviewsLastSyncAt: timestamp("reviews_last_sync_at", { withTimezone: true }),
+  reviewsLastError: text("reviews_last_error").notNull().default(""),
+  /** استقبال شكاوى الطاولات عبر رمز QR */
+  feedbackEnabled: boolean("feedback_enabled").notNull().default(true),
+  /** عدد طاولات الصالة (لطباعة رموز QR) */
+  tableCount: integer("table_count").notNull().default(20),
+  /** وقت إرسال التقرير الليلي للمالك (HH:MM بتوقيت الفرع) — فارغ = لا يُرسل */
+  briefTime: text("brief_time").notNull().default("23:45"),
+  /** تاريخ آخر تقرير ليلي أُرسل (YYYY-MM-DD) */
+  briefLastDate: text("brief_last_date").notNull().default(""),
+  /** آخر اتصال لمرسل واتساب في جهاز المطعم، وحالته: connected | need_qr | disconnected */
+  waEdgeSeenAt: timestamp("wa_edge_seen_at", { withTimezone: true }),
+  waEdgeState: text("wa_edge_state").notNull().default(""),
+  /** شاشة المراقبة المباشرة مفتوحة حتى هذا الوقت — يطلب من جهاز المطعم تحديثاً سريعاً */
+  liveUntil: timestamp("live_until", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * control_outbox — رسائل واتساب تنتظر أن يرسلها جهاز المطعم من رقم المطعم نفسه
+ * (المزوّد «edge»: بلا اشتراك ولا مزوّد خارجي).
+ */
+export const controlOutbox = pgTable(
+  "control_outbox",
+  {
+    id: serial().primaryKey(),
+    phone: text().notNull(),
+    body: text().notNull(),
+    /** queued | sending | sent | failed */
+    status: text().notNull().default("queued"),
+    attempts: integer().notNull().default(0),
+    error: text().notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("control_outbox_status_idx").on(table.status, table.id)],
+);
+
+/** control_recipients — من يستلم التنبيهات في كل مستوى وأرقام واتساب. */
+export const controlRecipients = pgTable(
+  "control_recipients",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** staff | manager | owner */
+    tier: text().notNull(),
+    name: text().notNull(),
+    /** رقم واتساب بالصيغة الدولية أرقاماً فقط (9665xxxxxxxx) */
+    phone: text().notNull(),
+    employeeId: integer("employee_id").references(() => employees.id, { onDelete: "set null" }),
+    /** مناطق الموظف (dining, kitchen, cashier…) — فارغة = كل المناطق */
+    zones: text().array().notNull().default(sql`'{}'::text[]`),
+    /** للموظفين: يُبلَّغ فقط وهو على رأس العمل حسب سجل الحضور */
+    onShiftOnly: boolean("on_shift_only").notNull().default(true),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("control_recipients_branch_tier_idx").on(table.branchId, table.tier)],
+);
+
+/** control_dispatches — مسار إبلاغ واحد لكل تنبيه: المستوى الحالي والاستلام. */
+export const controlDispatches = pgTable(
+  "control_dispatches",
+  {
+    id: serial().primaryKey(),
+    alertId: integer("alert_id")
+      .notNull()
+      .references(() => surveillanceAlerts.id, { onDelete: "cascade" }),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** staff | manager | owner — المستوى الذي أُبلغ آخراً */
+    currentTier: text("current_tier").notNull(),
+    /** هل يُصعَّد عند عدم الاستلام؟ */
+    escalates: boolean().notNull().default(true),
+    /** موعد التصعيد التالي — null = لا تصعيد قادم */
+    nextEscalateAt: timestamp("next_escalate_at", { withTimezone: true }),
+    /** open | acked | exhausted | closed */
+    status: text().notNull().default("open"),
+    ackAt: timestamp("ack_at", { withTimezone: true }),
+    ackByRecipientId: integer("ack_by_recipient_id").references(() => controlRecipients.id, {
+      onDelete: "set null",
+    }),
+    ackByName: text("ack_by_name").notNull().default(""),
+    ackTier: text("ack_tier").notNull().default(""),
+    ackNote: text("ack_note").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("control_dispatches_alert_idx").on(table.alertId),
+    index("control_dispatches_due_idx").on(table.status, table.nextEscalateAt),
+    index("control_dispatches_branch_time_idx").on(table.branchId, table.createdAt),
+  ],
+);
+
+/** control_messages — سجل كل رسالة خرجت (أو فشلت) لكل مستلم. */
+export const controlMessages = pgTable(
+  "control_messages",
+  {
+    id: serial().primaryKey(),
+    dispatchId: integer("dispatch_id").references(() => controlDispatches.id, {
+      onDelete: "cascade",
+    }),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    recipientId: integer("recipient_id").references(() => controlRecipients.id, {
+      onDelete: "set null",
+    }),
+    tier: text().notNull().default(""),
+    /** alert | escalation | brief | test */
+    kind: text().notNull().default("alert"),
+    phone: text().notNull().default(""),
+    /** sent | failed | skipped */
+    status: text().notNull().default("sent"),
+    error: text().notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("control_messages_dispatch_idx").on(table.dispatchId)],
+);
+
+/** google_reviews — تقييمات قوقل المسحوبة، لمنع تكرار التنبيه عن التقييم نفسه. */
+export const googleReviews = pgTable(
+  "google_reviews",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    reviewId: text("review_id").notNull(),
+    rating: integer().notNull().default(0),
+    author: text().notNull().default(""),
+    comment: text().notNull().default(""),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }).notNull(),
+    hasReply: boolean("has_reply").notNull().default(false),
+    alertId: integer("alert_id").references(() => surveillanceAlerts.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("google_reviews_branch_review_idx").on(table.branchId, table.reviewId),
+    index("google_reviews_branch_time_idx").on(table.branchId, table.reviewedAt),
+  ],
+);
+
+/** customer_feedback — شكاوى وطلبات العملاء من رمز QR على الطاولة. */
+export const customerFeedback = pgTable(
+  "customer_feedback",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    tableNo: text("table_no").notNull().default(""),
+    /** call_staff | late | cleanliness | food | service | other */
+    category: text().notNull().default("other"),
+    message: text().notNull().default(""),
+    phone: text().notNull().default(""),
+    alertId: integer("alert_id").references(() => surveillanceAlerts.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("customer_feedback_branch_time_idx").on(table.branchId, table.createdAt)],
+);
+
+/** control_briefs — التقرير الليلي للمالك كما صدر (النص وأرقامه). */
+export const controlBriefs = pgTable(
+  "control_briefs",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    businessDate: date("business_date").notNull(),
+    /** تقييم اليوم من 10 كما قدّره التحليل — null إن تعذّر */
+    score: doublePrecision(),
+    briefText: text("brief_text").notNull().default(""),
+    factsJson: text("facts_json").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("control_briefs_branch_date_idx").on(table.branchId, table.businessDate)],
+);
+
+/**
+ * control_zones — المناطق المرسومة على صورة الكاميرا للتحليل المباشر:
+ * طاولة (مضلّع فوق سطحها)، طابور الكاشير، خط الباب لعدّ الداخلين، أو منطقة
+ * ممنوعة خارج الدوام. النقاط نسب من عرض وارتفاع الصورة (0–1).
+ */
+export const controlZones = pgTable(
+  "control_zones",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    cameraId: integer("camera_id")
+      .notNull()
+      .references(() => surveillanceCameras.id, { onDelete: "cascade" }),
+    /** table | queue | door | restricted */
+    kind: text().notNull().default("table"),
+    /** رقم الطاولة أو اسم المنطقة */
+    label: text().notNull().default(""),
+    /** [[x,y],…] نسب 0–1 — للباب نقطتان فقط (خط العبور) */
+    pointsJson: text("points_json").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("control_zones_branch_camera_idx").on(table.branchId, table.cameraId)],
+);
+
+/** control_table_sessions — كل جلسة طاولة: متى جلسوا، متى وصلهم الموظف، متى نُظّفت. */
+export const controlTableSessions = pgTable(
+  "control_table_sessions",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    zoneId: integer("zone_id").references(() => controlZones.id, { onDelete: "set null" }),
+    tableLabel: text("table_label").notNull().default(""),
+    seatedAt: timestamp("seated_at", { withTimezone: true }).notNull(),
+    leftAt: timestamp("left_at", { withTimezone: true }),
+    /** ثواني حتى أول وصول موظف — null إن لم يصل أحد */
+    firstVisitSeconds: integer("first_visit_seconds"),
+    /** ثواني من المغادرة حتى تنظيف الطاولة — null إن لم تُرصد */
+    clearedSeconds: integer("cleared_seconds"),
+    maxPeople: integer("max_people").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("control_table_sessions_zone_seated_idx").on(table.zoneId, table.seatedAt),
+    index("control_table_sessions_branch_time_idx").on(table.branchId, table.seatedAt),
+  ],
+);
+
+/** control_footfall — عدد الداخلين والخارجين من الباب لكل ساعة (لحساب نسبة الشراء). */
+export const controlFootfall = pgTable(
+  "control_footfall",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    hourStart: timestamp("hour_start", { withTimezone: true }).notNull(),
+    entries: integer().notNull().default(0),
+    exits: integer().notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("control_footfall_branch_hour_idx").on(table.branchId, table.hourStart)],
+);
