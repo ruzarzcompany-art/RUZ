@@ -90,9 +90,9 @@ export class FoodicsError extends Error {
   }
 }
 
-type Json = Record<string, any>;
+export type Json = Record<string, any>;
 
-async function foodicsGet(path: string, params: Record<string, string> = {}): Promise<Json> {
+export async function foodicsGet(path: string, params: Record<string, string> = {}): Promise<Json> {
   const creds = await foodicsCredentials();
   if (!creds) throw new FoodicsError("مفتاح فوديكس غير مضبوط");
   const url = new URL(`${creds.base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`);
@@ -118,7 +118,7 @@ async function foodicsGet(path: string, params: Record<string, string> = {}): Pr
 }
 
 /** يقرأ كل صفحات قائمة (حتى `maxPages`). */
-async function foodicsList(path: string, params: Record<string, string>, maxPages = 30): Promise<Json[]> {
+export async function foodicsList(path: string, params: Record<string, string>, maxPages = 30): Promise<Json[]> {
   const out: Json[] = [];
   for (let page = 1; page <= maxPages; page++) {
     const body = await foodicsGet(path, { ...params, page: String(page) });
@@ -133,7 +133,7 @@ async function foodicsList(path: string, params: Record<string, string>, maxPage
 
 /* ══ قراءة حقول فوديكس بمرونة ════════════════════════════════════ */
 
-function pick(obj: Json | null | undefined, ...keys: string[]): any {
+export function pick(obj: Json | null | undefined, ...keys: string[]): any {
   if (!obj) return undefined;
   for (const key of keys) {
     const value = key.split(".").reduce<any>((acc, part) => (acc == null ? undefined : acc[part]), obj);
@@ -142,7 +142,7 @@ function pick(obj: Json | null | undefined, ...keys: string[]): any {
   return undefined;
 }
 
-function num(value: unknown): number {
+export function num(value: unknown): number {
   const n = typeof value === "string" ? Number(value) : (value as number);
   return Number.isFinite(n) ? Number(n) : 0;
 }
@@ -152,7 +152,7 @@ function round2(n: number): number {
 }
 
 /** فوديكس يعيد التواريخ بصيغة "YYYY-MM-DD HH:mm:ss" بتوقيت UTC. */
-function when(value: unknown): Date | null {
+export function when(value: unknown): Date | null {
   if (!value || typeof value !== "string") return null;
   const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(" ", "T")}Z`;
   const d = new Date(iso);
@@ -273,6 +273,48 @@ async function posEventExists(branchId: number, key: string): Promise<boolean> {
   return Boolean(row);
 }
 
+/** يحوّل فاتورة فوديكس الخام إلى صف `foodics_orders` (يُستخدم في المزامنة والسحب التاريخي). */
+async function orderValues(o: Json, branch: BranchRow, nameCache: Map<string, number | null>) {
+  const foodicsId = String(o.id ?? "");
+  if (!foodicsId) return null;
+  const status = num(o.status);
+  const state = stateOf(status);
+  const items = parseItems(o);
+  const payments = parsePayments(o);
+  const openedAt = when(pick(o, "opened_at", "created_at"));
+  const closedAt = when(pick(o, "closed_at"));
+  const itemDone = items.map((i) => i.kitchenDoneAt).filter((d): d is Date => Boolean(d));
+  const kitchenDoneAt =
+    when(pick(o, "kitchen_done_at", "kitchen_ready_at", "ready_at", "prepared_at")) ??
+    (itemDone.length ? new Date(Math.max(...itemDone.map((d) => d.getTime()))) : null);
+  const creatorName = String(pick(o, "creator.name", "closer.name", "cashier.name") ?? "");
+  const cashierId = await employeeByName(creatorName, nameCache);
+  const reference = String(pick(o, "reference", "number", "check_number") ?? foodicsId);
+  const total = round2(num(pick(o, "total_price", "total", "subtotal_price")));
+  const discount = round2(num(pick(o, "discount_amount", "total_discount", "discount")));
+  const channel = CHANNEL_OF[num(o.type)] ?? "dine_in";
+  const values = {
+    branchId: branch.id,
+    foodicsId,
+    reference,
+    businessDate: (pick(o, "business_date") as string | undefined)?.slice(0, 10) ?? null,
+    channel,
+    status,
+    state,
+    openedAt,
+    closedAt,
+    kitchenDoneAt,
+    total,
+    discount,
+    paymentsJson: JSON.stringify(payments),
+    itemsJson: JSON.stringify(items.map(({ kitchenDoneAt: _k, ...rest }) => rest)),
+    creatorName,
+    cashierEmployeeId: cashierId,
+    syncedAt: new Date(),
+  };
+  return { values, items, foodicsId, state, openedAt, closedAt, kitchenDoneAt, creatorName, cashierId, reference, total, discount, channel };
+}
+
 async function syncOrders(branch: BranchRow, foodicsBranchId: string, since: Date, stats: SyncStats, deadline: number) {
   const db = getDb();
   const updatedAfter = since.toISOString().slice(0, 19).replace("T", " ");
@@ -292,46 +334,11 @@ async function syncOrders(branch: BranchRow, foodicsBranchId: string, since: Dat
       stats.partial = true;
       break;
     }
-    const foodicsId = String(o.id ?? "");
-    if (!foodicsId) continue;
+    const parsed = await orderValues(o, branch, nameCache);
+    if (!parsed) continue;
+    const { values, items, foodicsId, state, openedAt, closedAt, kitchenDoneAt, creatorName, cashierId, reference, total, discount, channel } = parsed;
     const updatedAt = when(o.updated_at);
     if (updatedAt) stats.resumeFrom = updatedAt;
-    const status = num(o.status);
-    const state = stateOf(status);
-    const items = parseItems(o);
-    const payments = parsePayments(o);
-    const openedAt = when(pick(o, "opened_at", "created_at"));
-    const closedAt = when(pick(o, "closed_at"));
-    const itemDone = items.map((i) => i.kitchenDoneAt).filter((d): d is Date => Boolean(d));
-    const kitchenDoneAt =
-      when(pick(o, "kitchen_done_at", "kitchen_ready_at", "ready_at", "prepared_at")) ??
-      (itemDone.length ? new Date(Math.max(...itemDone.map((d) => d.getTime()))) : null);
-    const creatorName = String(pick(o, "creator.name", "closer.name", "cashier.name") ?? "");
-    const cashierId = await employeeByName(creatorName, nameCache);
-    const reference = String(pick(o, "reference", "number", "check_number") ?? foodicsId);
-    const total = round2(num(pick(o, "total_price", "total", "subtotal_price")));
-    const discount = round2(num(pick(o, "discount_amount", "total_discount", "discount")));
-    const channel = CHANNEL_OF[num(o.type)] ?? "dine_in";
-
-    const values = {
-      branchId: branch.id,
-      foodicsId,
-      reference,
-      businessDate: (pick(o, "business_date") as string | undefined)?.slice(0, 10) ?? null,
-      channel,
-      status,
-      state,
-      openedAt,
-      closedAt,
-      kitchenDoneAt,
-      total,
-      discount,
-      paymentsJson: JSON.stringify(payments),
-      itemsJson: JSON.stringify(items.map(({ kitchenDoneAt: _k, ...rest }) => rest)),
-      creatorName,
-      cashierEmployeeId: cashierId,
-      syncedAt: new Date(),
-    };
     await db
       .insert(foodicsOrders)
       .values(values)
@@ -989,3 +996,227 @@ export async function foodicsStatus(branchId: number) {
   };
 }
 
+
+/* ══ سحب كل الفواتير السابقة (أرشيف تاريخي) ══════════════════════
+ * يسحب الفواتير صفحةً صفحة ويحفظها في `foodics_orders` فقط — بلا تنبيهات
+ * ولا أحداث كاشير للفواتير القديمة حتى لا تمتلئ الرقابة بتنبيهات قديمة.
+ * الواجهة تستدعيه مراراً (صفحة بعد صفحة) حتى يعيد done=true؛ لذلك لا يحتاج
+ * حفظ حالة في القاعدة ويمكن إيقافه واستئنافه من نفس الصفحة.
+ */
+export async function backfillOrders(
+  branch: BranchRow,
+  options: { from: string; page: number; budgetMs?: number },
+) {
+  const db = getDb();
+  const [row] = await db.select().from(surveillanceSettings).where(eq(surveillanceSettings.branchId, branch.id));
+  const foodicsBranchId = row?.foodicsBranchId ?? "";
+  if (!foodicsBranchId) throw new FoodicsError("الفرع غير مربوط بفرع في فوديكس");
+
+  const deadline = Date.now() + (options.budgetMs ?? 18_000);
+  const nameCache = new Map<string, number | null>();
+  let page = Math.max(1, Math.floor(options.page) || 1);
+  let lastPage = 0;
+  let total = 0;
+  let stored = 0;
+  let done = false;
+  let oldest: string | null = null;
+  let newest: string | null = null;
+
+  while (Date.now() < deadline) {
+    const body = await foodicsGet("orders", {
+      "filter[branch_id]": foodicsBranchId,
+      "filter[updated_after]": `${options.from} 00:00:00`,
+      include: "products.product,payments.payment_method,creator",
+      sort: "created_at",
+      per_page: "100",
+      page: String(page),
+    });
+    const data = (Array.isArray(body.data) ? body.data : []) as Json[];
+    lastPage = Number(body.meta?.last_page ?? body.meta?.lastPage ?? 0);
+    total = Number(body.meta?.total ?? total);
+
+    const rows = [];
+    for (const o of data) {
+      const parsed = await orderValues(o, branch, nameCache);
+      if (!parsed) continue;
+      rows.push(parsed.values);
+      const d = parsed.values.businessDate;
+      if (d) {
+        if (!oldest || d < oldest) oldest = d;
+        if (!newest || d > newest) newest = d;
+      }
+    }
+    if (rows.length) {
+      await db
+        .insert(foodicsOrders)
+        .values(rows)
+        .onConflictDoUpdate({
+          target: [foodicsOrders.branchId, foodicsOrders.foodicsId],
+          set: {
+            reference: sql`excluded.reference`,
+            businessDate: sql`excluded.business_date`,
+            channel: sql`excluded.channel`,
+            status: sql`excluded.status`,
+            state: sql`excluded.state`,
+            openedAt: sql`excluded.opened_at`,
+            closedAt: sql`excluded.closed_at`,
+            kitchenDoneAt: sql`excluded.kitchen_done_at`,
+            total: sql`excluded.total`,
+            discount: sql`excluded.discount`,
+            paymentsJson: sql`excluded.payments_json`,
+            itemsJson: sql`excluded.items_json`,
+            creatorName: sql`excluded.creator_name`,
+            cashierEmployeeId: sql`excluded.cashier_employee_id`,
+            syncedAt: sql`excluded.synced_at`,
+          },
+        });
+      stored += rows.length;
+    }
+
+    const hasNext = lastPage ? page < lastPage : Boolean(body.links?.next) && data.length > 0;
+    if (!hasNext) {
+      done = true;
+      break;
+    }
+    page++;
+  }
+
+  return { done, nextPage: done ? null : page, lastPage, total, stored, oldest, newest };
+}
+
+/* ══ أرشيف الفواتير: قائمة وملخّص ════════════════════════════════ */
+
+export interface OrdersFilter {
+  from: string;
+  to: string;
+  state?: string;
+  channel?: string;
+  q?: string;
+}
+
+function ordersWhere(branchId: number, f: OrdersFilter) {
+  const conds = [
+    eq(foodicsOrders.branchId, branchId),
+    gte(foodicsOrders.businessDate, f.from),
+    lte(foodicsOrders.businessDate, f.to),
+  ];
+  if (f.state) conds.push(eq(foodicsOrders.state, f.state));
+  if (f.channel) conds.push(eq(foodicsOrders.channel, f.channel));
+  if (f.q) {
+    const term = `%${f.q.replace(/[%_\\]/g, (m) => `\\${m}`)}%`;
+    conds.push(sql`(${foodicsOrders.reference} ilike ${term} or ${foodicsOrders.creatorName} ilike ${term} or ${foodicsOrders.itemsJson} ilike ${term})`);
+  }
+  return and(...conds);
+}
+
+export async function listFoodicsOrders(branchId: number, f: OrdersFilter, page: number, pageSize: number) {
+  const db = getDb();
+  const where = ordersWhere(branchId, f);
+  const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(foodicsOrders).where(where);
+  const rows = await db
+    .select()
+    .from(foodicsOrders)
+    .where(where)
+    .orderBy(sql`${foodicsOrders.businessDate} desc`, sql`${foodicsOrders.openedAt} desc nulls last`)
+    .limit(pageSize)
+    .offset((page - 1) * pageSize);
+  return {
+    total: Number(count),
+    orders: rows.map((r) => ({
+      id: r.id,
+      reference: r.reference,
+      businessDate: r.businessDate,
+      channel: r.channel,
+      state: r.state,
+      openedAt: r.openedAt,
+      closedAt: r.closedAt,
+      prepMinutes:
+        r.openedAt && r.kitchenDoneAt ? Math.round((r.kitchenDoneAt.getTime() - r.openedAt.getTime()) / 60_000) : null,
+      total: r.total,
+      discount: r.discount,
+      creatorName: r.creatorName,
+      payments: JSON.parse(r.paymentsJson || "[]") as Payment[],
+      items: JSON.parse(r.itemsJson || "[]") as Array<{ name: string; quantity: number; voided: boolean; amount: number }>,
+    })),
+  };
+}
+
+/** ملخّص الفترة: الإجمالي، حسب الشهر، حسب القناة، حسب طريقة الدفع، وأكثر الأصناف مبيعاً. */
+export async function foodicsOrdersSummary(branchId: number, f: OrdersFilter) {
+  const db = getDb();
+  const where = ordersWhere(branchId, { ...f, state: undefined });
+  const closed = sql`${foodicsOrders.state} = 'closed'`;
+
+  const [totals] = await db
+    .select({
+      invoices: sql<number>`count(*) filter (where ${closed})::int`,
+      sales: sql<number>`coalesce(sum(${foodicsOrders.total}) filter (where ${closed}), 0)`,
+      discounts: sql<number>`coalesce(sum(${foodicsOrders.discount}) filter (where ${closed}), 0)`,
+      voids: sql<number>`count(*) filter (where ${foodicsOrders.state} = 'void')::int`,
+      voidAmount: sql<number>`coalesce(sum(${foodicsOrders.total}) filter (where ${foodicsOrders.state} = 'void'), 0)`,
+      returns: sql<number>`count(*) filter (where ${foodicsOrders.state} = 'returned')::int`,
+      returnAmount: sql<number>`coalesce(sum(${foodicsOrders.total}) filter (where ${foodicsOrders.state} = 'returned'), 0)`,
+      firstDate: sql<string | null>`min(${foodicsOrders.businessDate})::text`,
+      lastDate: sql<string | null>`max(${foodicsOrders.businessDate})::text`,
+    })
+    .from(foodicsOrders)
+    .where(where);
+
+  const monthly = await db
+    .select({
+      month: sql<string>`to_char(${foodicsOrders.businessDate}, 'YYYY-MM')`,
+      invoices: sql<number>`count(*) filter (where ${closed})::int`,
+      sales: sql<number>`coalesce(sum(${foodicsOrders.total}) filter (where ${closed}), 0)`,
+      discounts: sql<number>`coalesce(sum(${foodicsOrders.discount}) filter (where ${closed}), 0)`,
+      voids: sql<number>`count(*) filter (where ${foodicsOrders.state} = 'void')::int`,
+      returns: sql<number>`count(*) filter (where ${foodicsOrders.state} = 'returned')::int`,
+    })
+    .from(foodicsOrders)
+    .where(where)
+    .groupBy(sql`1`)
+    .orderBy(sql`1 desc`);
+
+  const byChannel = await db
+    .select({
+      channel: foodicsOrders.channel,
+      invoices: sql<number>`count(*)::int`,
+      sales: sql<number>`coalesce(sum(${foodicsOrders.total}), 0)`,
+    })
+    .from(foodicsOrders)
+    .where(and(where, closed))
+    .groupBy(foodicsOrders.channel);
+
+  // طرق الدفع والأصناف من حقول JSON مباشرة في القاعدة
+  const payRes = await db.execute(sql`
+    select p->>'name' as name, p->>'kind' as kind, count(*)::int as count, coalesce(sum((p->>'amount')::float8), 0) as amount
+    from ${foodicsOrders}, jsonb_array_elements(${foodicsOrders.paymentsJson}::jsonb) as p
+    where ${where} and ${closed}
+    group by 1, 2 order by 4 desc limit 20`);
+  const itemRes = await db.execute(sql`
+    select i->>'name' as name, coalesce(sum((i->>'quantity')::float8), 0) as quantity, coalesce(sum((i->>'amount')::float8), 0) as amount
+    from ${foodicsOrders}, jsonb_array_elements(${foodicsOrders.itemsJson}::jsonb) as i
+    where ${where} and ${closed} and coalesce((i->>'voided')::boolean, false) = false
+    group by 1 order by 2 desc limit 20`);
+  const rowsOf = (r: any): any[] => (Array.isArray(r) ? r : (r?.rows ?? []));
+
+  const invoices = Number(totals?.invoices ?? 0);
+  const sales = round2(Number(totals?.sales ?? 0));
+  return {
+    totals: {
+      invoices,
+      sales,
+      avgTicket: invoices ? round2(sales / invoices) : 0,
+      discounts: round2(Number(totals?.discounts ?? 0)),
+      voids: Number(totals?.voids ?? 0),
+      voidAmount: round2(Number(totals?.voidAmount ?? 0)),
+      returns: Number(totals?.returns ?? 0),
+      returnAmount: round2(Number(totals?.returnAmount ?? 0)),
+      firstDate: totals?.firstDate ?? null,
+      lastDate: totals?.lastDate ?? null,
+    },
+    monthly: monthly.map((m) => ({ ...m, sales: round2(Number(m.sales)), discounts: round2(Number(m.discounts)) })),
+    byChannel: byChannel.map((c) => ({ ...c, sales: round2(Number(c.sales)) })),
+    payments: rowsOf(payRes).map((p) => ({ name: String(p.name ?? ""), kind: String(p.kind ?? ""), count: Number(p.count), amount: round2(Number(p.amount)) })),
+    topItems: rowsOf(itemRes).map((i) => ({ name: String(i.name ?? ""), quantity: round2(Number(i.quantity)), amount: round2(Number(i.amount)) })),
+  };
+}

@@ -8,6 +8,9 @@
  *   POST /api/foodics/sync                    مزامنة فورية للفرع
  *   GET  /api/foodics/triple?branchId=&date=  تقرير الرقابة الثلاثية ليوم
  *   GET  /api/foodics/cashier-prefill?date=   أرقام فوديكس لتعبئة تقفيل الكاشير آلياً
+ *   POST /api/foodics/backfill                سحب كل الفواتير السابقة صفحةً صفحة (أرشيف)
+ *   GET  /api/foodics/orders?branchId=&from=&to=&state=&channel=&q=&page=   أرشيف الفواتير
+ *   GET  /api/foodics/orders/summary?branchId=&from=&to=                    ملخّص الفترة
  */
 
 import { Router, type Response } from "express";
@@ -21,7 +24,10 @@ import { asDateOnly, asId, asNumber, asString } from "../validate.js";
 import {
   DEFAULT_FOODICS_BASE,
   FoodicsError,
+  backfillOrders,
   foodicsDaySales,
+  foodicsOrdersSummary,
+  listFoodicsOrders,
   foodicsStatus,
   saveFoodicsToken,
   syncBranch,
@@ -182,3 +188,69 @@ foodicsRouter.get(
     res.json({ ok: true, available: sales.orders > 0, scope, date, lastSyncAt: status.lastSyncAt, sales });
   },
 );
+
+foodicsRouter.post("/foodics/backfill", ...canManage, async (req: AuthedRequest, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const branch = await loadBranch(branchIdOf(req, body.branchId));
+  if (!branch) {
+    res.status(400).json({ ok: false, error: "اختر الفرع" });
+    return;
+  }
+  const from = asDateOnly(body.from) ?? "2015-01-01";
+  const page = Math.max(1, Math.floor(asNumber(body.page) ?? 1));
+  try {
+    const result = await backfillOrders(branch, { from, page });
+    if (page === 1) {
+      await recordAudit({
+        actorEmployeeId: req.employee!.id,
+        action: "foodics.backfill_start",
+        entityType: "branch",
+        entityId: branch.id,
+        after: { from },
+        ipAddress: clientIp(req),
+      });
+    }
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    fail(res, error);
+  }
+});
+
+function ordersFilter(req: AuthedRequest, timeZone: string) {
+  const today = isoDateInZone(new Date(), safeTimeZone(timeZone));
+  const from = asDateOnly(req.query.from) ?? `${today.slice(0, 8)}01`;
+  const to = asDateOnly(req.query.to) ?? today;
+  const state = asString(req.query.state, 20) ?? "";
+  const channel = asString(req.query.channel, 20) ?? "";
+  const q = (asString(req.query.q, 100) ?? "").trim();
+  return {
+    from: from <= to ? from : to,
+    to: from <= to ? to : from,
+    state: ["closed", "void", "returned", "open", "other"].includes(state) ? state : undefined,
+    channel: ["dine_in", "takeaway", "delivery", "drive_thru"].includes(channel) ? channel : undefined,
+    q: q || undefined,
+  };
+}
+
+foodicsRouter.get("/foodics/orders/summary", ...canRead, async (req: AuthedRequest, res: Response) => {
+  const branch = await loadBranch(branchIdOf(req, req.query.branchId));
+  if (!branch) {
+    res.status(400).json({ ok: false, error: "اختر الفرع" });
+    return;
+  }
+  const filter = ordersFilter(req, branch.timezone);
+  res.json({ ok: true, filter, summary: await foodicsOrdersSummary(branch.id, filter) });
+});
+
+foodicsRouter.get("/foodics/orders", ...canRead, async (req: AuthedRequest, res: Response) => {
+  const branch = await loadBranch(branchIdOf(req, req.query.branchId));
+  if (!branch) {
+    res.status(400).json({ ok: false, error: "اختر الفرع" });
+    return;
+  }
+  const filter = ordersFilter(req, branch.timezone);
+  const page = Math.max(1, Math.floor(asNumber(req.query.page) ?? 1));
+  const pageSize = 50;
+  const result = await listFoodicsOrders(branch.id, filter, page, pageSize);
+  res.json({ ok: true, filter, page, pageSize, ...result });
+});

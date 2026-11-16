@@ -72,7 +72,7 @@ function render(data) {
   const today = data.todayFigures;
 
   el("fh-today").replaceChildren(
-    tile("مبيعات اليوم", today.closings ? formatMoney(today.sales) : "لم يُرفع تقفيل بعد", today.closings ? "" : "warn"),
+    tile("مبيعات اليوم", today.closings ? formatMoney(today.sales) : "لا أرقام بعد", today.closings ? "" : "warn"),
     tile(
       "فرق الصندوق اليوم",
       today.closings ? formatMoney(today.difference) : "—",
@@ -97,19 +97,22 @@ function render(data) {
   const attn = el("fh-attention");
   attn.replaceChildren();
   if (t.closings === 0) {
-    attn.append(attention("لم يُرفع أي تقفيل كاشير في هذا الشهر — الأرقام تبدأ بالظهور مع أول تقفيل", "warn", { label: "تقفيل الكاشير", panel: "cashier" }));
+    attn.append(attention("لا تقفيلات في هذا الشهر بعد — تُنشأ آلياً من فوديكس بعد ربطه", "warn", { label: "تقفيل اليوم", panel: "fin:close" }));
   } else if (data.missingDays.length) {
     const list = data.missingDays.slice(0, 10).map(shortDate).join("، ");
     attn.append(
       attention(
-        `${data.missingDays.length} يوم بلا تقفيل كاشير: ${list}${data.missingDays.length > 10 ? " …" : ""}`,
+        `${data.missingDays.length} يوم بلا تقفيل: ${list}${data.missingDays.length > 10 ? " …" : ""}`,
         "bad",
-        { label: "تقفيل الكاشير", panel: "cashier" },
+        { label: "تقفيل اليوم", panel: "fin:close" },
       ),
     );
   }
+  if (t.awaitingCash) {
+    attn.append(attention(`${t.awaitingCash} يوم لم يؤكّد الكاشير نقده بعد`, "bad", { label: "تقفيل اليوم", panel: "fin:close" }));
+  }
   if (t.pendingReview) {
-    attn.append(attention(`${t.pendingReview} تقفيلة تنتظر مراجعتك`, "warn", { label: "راجِع", panel: "cashier" }));
+    attn.append(attention(`${t.pendingReview} تقفيلة تنتظر مراجعتك`, "warn", { label: "راجِع", panel: "fin:close" }));
   }
   if (t.shortage > 0) attn.append(attention(`عجز الصندوق هذا الشهر ${formatMoney(t.shortage)} — التفصيل حسب الكاشير بالأسفل`, "bad"));
   if (data.receivablesTotal.outstanding > 0) {
@@ -117,7 +120,7 @@ function render(data) {
       attention(
         `${formatMoney(data.receivablesTotal.outstanding)} لم تُحوَّل بعد من الشبكات وتطبيقات التوصيل`,
         "warn",
-        { label: "التسويات", panel: "cashbox" },
+        { label: "التسويات", panel: "fin:settle" },
       ),
     );
   }

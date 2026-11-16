@@ -271,3 +271,276 @@ export async function refreshFoodicsTab(branchId, date) {
   if (status?.foodicsBranchId) await loadReport();
   else el("fx-report").replaceChildren(para("اربط الفرع بفوديكس لعرض تقرير الرقابة الثلاثية."));
 }
+
+/* ══ أرشيف فواتير فوديكس ══════════════════════════════════════════ */
+
+const fo = { wired: false, branchId: null, page: 1, running: false, stop: false };
+
+const STATE_TEXT = {
+  closed: ["مدفوعة", "badge--ok"],
+  void: ["ملغاة", "badge--disputed"],
+  returned: ["مرتجعة", "badge--warn"],
+  open: ["مفتوحة", ""],
+  other: ["أخرى", ""],
+};
+const CHANNEL_TEXT = { dine_in: "محلي", takeaway: "سفري", delivery: "توصيل", drive_thru: "سيارات" };
+const PAY_KIND_TEXT = { cash: "نقد", card: "شبكة", foodics: "فوديكس باي", delivery_app: "تطبيق توصيل", other: "أخرى" };
+
+function isoToday() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function setRange(kind) {
+  const today = isoToday();
+  el("fo-to").value = today;
+  if (kind === "month") el("fo-from").value = `${today.slice(0, 8)}01`;
+  else if (kind === "year") el("fo-from").value = `${today.slice(0, 5)}01-01`;
+  else el("fo-from").value = "2015-01-01";
+}
+
+function foQuery(extra = {}) {
+  const params = new URLSearchParams({
+    branchId: String(fo.branchId),
+    from: el("fo-from").value,
+    to: el("fo-to").value,
+    ...extra,
+  });
+  for (const [key, id] of [["state", "fo-state"], ["channel", "fo-channel"], ["q", "fo-q"]]) {
+    const v = el(id).value.trim();
+    if (v) params.set(key, v);
+  }
+  return params.toString();
+}
+
+function statBox(title, value, sub) {
+  const box = document.createElement("div");
+  box.className = "stat";
+  const t = document.createElement("div");
+  t.className = "hint";
+  t.textContent = title;
+  const v = document.createElement("strong");
+  v.textContent = value;
+  box.append(t, v);
+  if (sub) {
+    const s = document.createElement("div");
+    s.className = "hint";
+    s.textContent = sub;
+    box.append(s);
+  }
+  return box;
+}
+
+async function loadFoStatus() {
+  const res = await api(`/foodics/status?branchId=${fo.branchId}`);
+  const box = el("fo-status");
+  box.replaceChildren();
+  if (!res.ok) return;
+  const s = res.status;
+  box.append(
+    s.connected ? chip("فوديكس مربوط", "badge--ok") : chip("مفتاح فوديكس غير مضبوط — اضبطه من «المزيد ← فوديكس والرقابة الثلاثية»", "badge--warn"),
+    s.foodicsBranchId ? chip("الفرع مربوط", "badge--ok") : chip("الفرع غير مربوط بفوديكس", "badge--warn"),
+    chip(`فواتير محفوظة: ${Number(s.ordersStored).toLocaleString("ar-SA")}`, ""),
+    chip(s.lastSyncAt ? `آخر مزامنة: ${formatDateTime(s.lastSyncAt)}` : "لم تتم مزامنة بعد", ""),
+  );
+  el("fo-backfill-start").disabled = !(s.connected && s.foodicsBranchId);
+}
+
+async function loadFoSummary() {
+  const box = el("fo-summary");
+  box.replaceChildren(para("جارٍ حساب الملخّص…"));
+  const res = await api(`/foodics/orders/summary?${foQuery()}`);
+  if (!res.ok) {
+    box.replaceChildren(para(res.error ?? "تعذّر تحميل الملخّص"));
+    return;
+  }
+  const { totals: t, monthly, byChannel, payments, topItems } = res.summary;
+  const stats = document.createElement("div");
+  stats.className = "row row--wrap";
+  stats.append(
+    statBox("المبيعات (مدفوعة)", money(t.sales), `${t.invoices.toLocaleString("ar-SA")} فاتورة`),
+    statBox("متوسط الفاتورة", money(t.avgTicket)),
+    statBox("الخصومات", money(t.discounts)),
+    statBox("الملغاة", String(t.voids), money(t.voidAmount)),
+    statBox("المرتجعة", String(t.returns), money(t.returnAmount)),
+  );
+  box.replaceChildren(
+    stats,
+    t.firstDate ? para(`البيانات المحفوظة في هذه الفترة من ${t.firstDate} إلى ${t.lastDate}.`) : para("لا فواتير محفوظة في هذه الفترة — اسحب الفواتير السابقة أولاً."),
+    heading("حسب الشهر"),
+    table(
+      ["الشهر", "الفواتير", "المبيعات", "متوسط الفاتورة", "الخصومات", "ملغاة", "مرتجعة"],
+      monthly.map((m) => [m.month, String(m.invoices), money(m.sales), money(m.invoices ? m.sales / m.invoices : 0), money(m.discounts), String(m.voids), String(m.returns)]),
+      "لا بيانات.",
+    ),
+    heading("حسب نوع الطلب"),
+    table(
+      ["النوع", "الفواتير", "المبيعات", "النسبة"],
+      byChannel.map((c) => [CHANNEL_TEXT[c.channel] ?? c.channel, String(c.invoices), money(c.sales), t.sales ? `${Math.round((c.sales / t.sales) * 100)}%` : "—"]),
+      "لا بيانات.",
+    ),
+    heading("طرق الدفع"),
+    table(
+      ["طريقة الدفع", "التصنيف", "العدد", "المبلغ"],
+      payments.map((p) => [p.name, PAY_KIND_TEXT[p.kind] ?? p.kind, String(p.count), money(p.amount)]),
+      "لا بيانات.",
+    ),
+    heading("أكثر 20 صنفاً مبيعاً"),
+    table(
+      ["الصنف", "الكمية", "المبلغ"],
+      topItems.map((i) => [i.name || "—", String(i.quantity), money(i.amount)]),
+      "لا بيانات.",
+    ),
+  );
+}
+
+function orderDetails(o) {
+  const d = document.createElement("details");
+  const s = document.createElement("summary");
+  s.textContent = `${o.items.length} صنف`;
+  const ul = document.createElement("ul");
+  for (const i of o.items) {
+    const li = document.createElement("li");
+    li.textContent = `${i.name} × ${i.quantity} — ${formatMoney(i.amount)}${i.voided ? " (ملغى)" : ""}`;
+    ul.append(li);
+  }
+  d.append(s, ul);
+  return d;
+}
+
+async function loadFoList() {
+  const box = el("fo-list");
+  box.replaceChildren(para("جارٍ تحميل الفواتير…"));
+  const res = await api(`/foodics/orders?${foQuery({ page: String(fo.page) })}`);
+  if (!res.ok) {
+    box.replaceChildren(para(res.error ?? "تعذّر تحميل الفواتير"));
+    return;
+  }
+  box.replaceChildren(
+    heading(`الفواتير (${res.total.toLocaleString("ar-SA")})`),
+    table(
+      ["التاريخ", "رقم الفاتورة", "الوقت", "النوع", "الحالة", "الإجمالي", "الخصم", "الدفع", "الكاشير", "التجهيز", "الأصناف"],
+      res.orders.map((o) => {
+        const [text, kind] = STATE_TEXT[o.state] ?? STATE_TEXT.other;
+        return [
+          o.businessDate ?? "—",
+          o.reference,
+          o.openedAt ? new Date(o.openedAt).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" }) : "—",
+          CHANNEL_TEXT[o.channel] ?? o.channel,
+          chip(text, kind),
+          money(o.total),
+          o.discount ? money(o.discount) : "—",
+          o.payments.map((p) => p.name).join("، ") || "—",
+          o.creatorName || "—",
+          o.prepMinutes === null ? "—" : `${o.prepMinutes} د`,
+          orderDetails(o),
+        ];
+      }),
+      "لا فواتير مطابقة.",
+    ),
+  );
+  const pages = Math.max(1, Math.ceil(res.total / res.pageSize));
+  const pager = el("fo-pager");
+  pager.replaceChildren();
+  if (pages > 1) {
+    const prev = document.createElement("button");
+    prev.type = "button";
+    prev.className = "btn btn--ghost btn--xs";
+    prev.textContent = "السابق";
+    prev.disabled = fo.page <= 1;
+    prev.onclick = () => { fo.page--; loadFoList(); };
+    const next = document.createElement("button");
+    next.type = "button";
+    next.className = "btn btn--ghost btn--xs";
+    next.textContent = "التالي";
+    next.disabled = fo.page >= pages;
+    next.onclick = () => { fo.page++; loadFoList(); };
+    const info = document.createElement("span");
+    info.className = "hint";
+    info.textContent = `صفحة ${fo.page} من ${pages}`;
+    pager.append(prev, info, next);
+  }
+}
+
+async function loadFoAll() {
+  fo.page = 1;
+  await Promise.all([loadFoSummary(), loadFoList()]);
+}
+
+async function runBackfill(event) {
+  event.preventDefault();
+  if (fo.running) return;
+  const from = el("fo-backfill-from").value || "2015-01-01";
+  fo.running = true;
+  fo.stop = false;
+  el("fo-backfill-start").disabled = true;
+  el("fo-backfill-stop").hidden = false;
+  const bar = el("fo-backfill-bar");
+  bar.hidden = false;
+  bar.removeAttribute("value");
+  const msg = el("fo-backfill-msg");
+  let page = 1;
+  let stored = 0;
+  let failures = 0;
+  msg.textContent = "جارٍ الاتصال بفوديكس…";
+  while (!fo.stop) {
+    const res = await api("/foodics/backfill", { method: "POST", body: { branchId: fo.branchId, from, page } });
+    if (!res.ok) {
+      failures++;
+      if (failures >= 3) {
+        msg.textContent = `توقّف السحب عند الصفحة ${page}: ${res.error ?? "خطأ"}. اضغط «ابدأ السحب» للمحاولة مجدداً (لن تتكرر الفواتير).`;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+      continue;
+    }
+    failures = 0;
+    stored += res.stored;
+    if (res.lastPage) {
+      bar.max = res.lastPage;
+      bar.value = res.done ? res.lastPage : Math.max(0, (res.nextPage ?? page) - 1);
+    }
+    const range = res.oldest ? ` — آخر دفعة من ${res.oldest} إلى ${res.newest}` : "";
+    msg.textContent = `سُحبت ${stored.toLocaleString("ar-SA")} فاتورة${res.total ? ` من أصل ${Number(res.total).toLocaleString("ar-SA")}` : ""}${range}`;
+    if (res.done) {
+      msg.textContent = `اكتمل السحب: ${stored.toLocaleString("ar-SA")} فاتورة محفوظة. المزامنة الآلية كل 10 دقائق تكمل الفواتير الجديدة.`;
+      break;
+    }
+    page = res.nextPage;
+  }
+  if (fo.stop) msg.textContent += " — أُوقف السحب. اضغط «ابدأ السحب» للاستئناف.";
+  fo.running = false;
+  el("fo-backfill-start").disabled = false;
+  el("fo-backfill-stop").hidden = true;
+  if (!bar.value) bar.hidden = true;
+  await loadFoStatus();
+  setRange("all");
+  await loadFoAll();
+}
+
+function wireFo() {
+  if (fo.wired) return;
+  fo.wired = true;
+  setRange("month");
+  el("fo-filter").addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadFoAll();
+  });
+  el("fo-filter").addEventListener("click", (event) => {
+    const range = event.target.closest("[data-fo-range]")?.dataset.foRange;
+    if (!range) return;
+    setRange(range);
+    loadFoAll();
+  });
+  el("fo-backfill-form").addEventListener("submit", runBackfill);
+  el("fo-backfill-stop").addEventListener("click", () => {
+    fo.stop = true;
+  });
+}
+
+export async function refreshFoodicsOrders(branchId) {
+  wireFo();
+  fo.branchId = branchId;
+  await loadFoStatus();
+  await loadFoAll();
+}

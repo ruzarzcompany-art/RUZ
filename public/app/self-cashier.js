@@ -1,387 +1,213 @@
 /**
- * تقفيل الكاشير اليومي من تطبيق الموظف.
+ * تقفيل اليوم من تطبيق الموظف (الكاشير).
  *
- * نسخة مختصرة من شاشة اللوحة: الكاشير يرفع تقفيل نفسه فقط، بلا اختيار موظف
- * أو فرع. التحقّق والحساب النهائي في الخادم
- * (`POST /api/cashier/closings` بدرجة 1 في بند «تقفيل ورديتي»)، وما هنا
- * معاينة فورية للنقد المتوقّع والفرق فقط.
+ * كل أرقام المبيعات تأتي من فوديكس آلياً. الكاشير يرى الأيام التي تنتظر
+ * تأكيده (اليوم الجاري، وأي يوم أُقفل آلياً الساعة 4 فجراً ولم يؤكّده)،
+ * فيكتب النقد المعدود في الدرج ومصاريف الدرج فقط ثم يؤكّد. الحساب النهائي
+ * لفرق الصندوق في الخادم.
  */
 
-import { api, button, el, formatMoney, row, setAlert, setBusy } from "./api.js";
+import { api, el, formatMoney, setAlert, setBusy } from "./api.js";
 
-/** الحقول المالية بالترتيب نفسه المعروض في الشاشة. */
-const MONEY_FIELDS = [
-  "openingFloat",
-  "totalSales",
-  "cashSales",
-  "cardSales",
-  "foodicsSales",
-  "transferSales",
-  "deliverySales",
-  "otherSales",
-  "discounts",
-  "refunds",
-  "expenses",
-  "countedCash",
-];
+const state = { ready: false, data: null };
 
-/** حقول يشتقّها الخادم من البنود والأسطر، فلا تُدخل يدوياً. */
-const DERIVED_FIELDS = new Set(["cardSales", "deliverySales", "expenses"]);
+const money = (v) => (v === null || v === undefined ? "—" : formatMoney(v));
 
-const LINE_TABLES = {
-  network: {
-    table: "self-cash-network",
-    empty: "self-cash-network-empty",
-    namePlaceholder: "اسم الشبكة أو الجهاز",
-  },
-  delivery_app: {
-    table: "self-cash-delivery",
-    empty: "self-cash-delivery-empty",
-    namePlaceholder: "اسم التطبيق",
-  },
-  expense: {
-    table: "self-cash-expense",
-    empty: "self-cash-expense-empty",
-    namePlaceholder: "البيان (غاز، دجاج، لبن ...)",
-  },
-};
-
-const STATUS_TEXT = {
-  submitted: "مرفوع بانتظار المراجعة",
-  reviewed: "تمّت مراجعته",
-  disputed: "معترض عليه",
-};
-
-const state = {
-  ready: false,
-  businessDate: "",
-  lines: [],
-  defaultNetworkLines: [],
-  defaultDeliveryApps: [],
-  /**
-   * مصاريف السجل الموحّد: مصاريف اليوم كاملة، ومصاريف الوردية المعروضة.
-   * يحسبها الخادم من `cash_expenses` ويعيدها مع تقفيل اليوم، ومنها يظهر
-   * «المتبقي النقدي» في الشاشة (المبيعات النقدية − هذه المصاريف).
-   */
-  dayExpenses: 0,
-  registerExpenses: 0,
-  /** ما بقي من السجل المنفصل القديم لليوم */
-  legacyExpenses: 0,
-  /** بند «المتبقي النقدي» المستقل كما يعيده الخادم */
-  caps: { viewRemaining: false },
-  /** تقفيلات اليوم المحمّلة من الخادم، مفتاحها الوردية. */
-  byShift: new Map(),
-  /** أرقام فوديكس لليوم — تُعبّأ بها الشاشة آلياً قبل أول رفع */
-  foodics: null,
-};
-
-/** يعبّئ التقفيل الجديد من فوديكس: المبيعات وطرق الدفع والخصومات والمرتجعات والفواتير. */
-function applyFoodics() {
-  const prefill = state.foodics;
-  if (!prefill?.available) return false;
-  const s = prefill.sales;
-  const set = (field, value) => {
-    el(`self-cash-${field}`).value = Math.round(Number(value || 0) * 100) / 100;
-  };
-  set("totalSales", s.total);
-  set("cashSales", s.cash);
-  set("foodicsSales", s.foodicsPay);
-  set("discounts", s.discounts);
-  set("refunds", s.refunds);
-  set("otherSales", s.other);
-  el("self-cash-invoices").value = s.invoices;
-  const methodLines = (s.methods ?? [])
-    .filter((m) => m.kind === "card" || m.kind === "delivery_app")
-    .map((m) => ({
-      category: m.kind === "card" ? "network" : "delivery_app",
-      label: m.name,
-      amount: m.amount,
-      reference: "فوديكس",
-    }));
-  const covered = new Set(methodLines.map((l) => `${l.category}:${l.label}`));
-  state.lines = [
-    ...methodLines,
-    ...defaultLines().filter((l) => !covered.has(`${l.category}:${l.label}`)),
-  ];
-  return true;
-}
-
-/* ── البنود ────────────────────────────────────────────────── */
-
-function defaultLines() {
-  return [
-    ...state.defaultNetworkLines.map((label) => ({
-      category: "network",
-      label,
-      amount: 0,
-      reference: "",
-    })),
-    ...state.defaultDeliveryApps.map((label) => ({
-      category: "delivery_app",
-      label,
-      amount: 0,
-      reference: "",
-    })),
-  ];
-}
-
-function lineField(value, { type = "text", placeholder = "", onInput }) {
-  const input = document.createElement("input");
-  input.type = type;
-  input.className = "input--cell";
-  input.placeholder = placeholder;
-  if (type === "number") {
-    input.step = "any";
-    input.min = "0";
+function node(tag, attrs = {}, ...children) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "className") n.className = v;
+    else if (k === "text") n.textContent = v;
+    else if (v !== undefined && v !== null) n.setAttribute(k, v);
   }
-  input.value = value;
-  input.addEventListener("input", () => onInput(input.value));
-  return input;
+  for (const c of children) if (c !== null && c !== undefined) n.append(c);
+  return n;
 }
 
-function renderLines(category) {
-  const meta = LINE_TABLES[category];
-  const body = el(meta.table).querySelector("tbody");
-  const own = state.lines.filter((line) => line.category === category);
-  // سطر المصروف بحقلين فقط: البيان والمبلغ
-  const isExpense = category === "expense";
+function figureRow(label, value, strong) {
+  return node("div", { className: `dc-row${strong ? " dc-row--strong" : ""}` }, node("span", { text: label }), node("span", { text: value }));
+}
 
-  body.replaceChildren(
-    ...own.map((line) => {
-      const cells = [
-        lineField(line.label, {
-          placeholder: meta.namePlaceholder,
-          onInput: (value) => {
-            line.label = value;
-          },
-        }),
-      ];
+function expenseRow(list, item = { label: "", amount: "" }) {
+  const label = node("input", { type: "text", placeholder: "البيان (غاز، دجاج، لبن ...)", maxlength: "120" });
+  label.value = item.label;
+  const amount = node("input", { type: "number", min: "0", step: "0.01", inputmode: "decimal", placeholder: "المبلغ" });
+  amount.value = item.amount;
+  const remove = node("button", { type: "button", className: "btn btn--ghost btn--xs", text: "حذف" });
+  const row = node("div", { className: "dc-expense" }, label, amount, remove);
+  remove.addEventListener("click", () => {
+    row.remove();
+    list.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  list.append(row);
+  return row;
+}
 
-      if (!isExpense) {
-        cells.push(
-          lineField(line.reference ?? "", {
-            placeholder: "اختياري",
-            onInput: (value) => {
-              line.reference = value;
-            },
-          }),
-        );
-      }
+function readExpenses(list) {
+  return [...list.querySelectorAll(".dc-expense")].map((row) => {
+    const [label, amount] = row.querySelectorAll("input");
+    return { label: label.value.trim(), amount: Number(amount.value || 0) };
+  });
+}
 
-      cells.push(
-        lineField(line.amount ?? 0, {
-          type: "number",
-          onInput: (value) => {
-            line.amount = Number(value || 0);
-            recomputeDerived();
-          },
-        }),
-        button("حذف", {
-          className: "btn btn--danger btn--xs",
-          onClick: () => {
-            state.lines = state.lines.filter((item) => item !== line);
-            renderLines(category);
-            recomputeDerived();
-          },
-        }),
-      );
+/** بطاقة يوم ينتظر التأكيد. */
+function closingCard(c) {
+  const card = node("article", { className: "dc-card" });
+  const overdue = c.status === "auto_closed";
+  card.append(
+    node(
+      "div",
+      { className: "card__head" },
+      node("h3", { className: "card__title card__title--xs", text: `يوم ${c.businessDate}` }),
+      node("span", { className: `badge ${overdue ? "badge--disputed" : "badge--warn"}`, text: c.statusLabel }),
+    ),
+  );
+  if (overdue) {
+    card.append(node("p", { className: "hint", text: "هذا اليوم أُقفل آلياً الساعة 4 فجراً لأنه لم يُؤكَّد. أكّد النقد المعدود الآن — وصل تنبيه لمدير الفرع." }));
+  }
 
-      return row(cells);
+  const figures = node(
+    "div",
+    { className: "dc-figures" },
+    figureRow("إجمالي المبيعات (فوديكس)", money(c.totalSales)),
+    figureRow("عدد الفواتير", String(c.invoiceCount)),
+    figureRow("مبيعات النقد", money(c.cashSales)),
+    figureRow("الشبكة", money(c.networkSales)),
+    figureRow("تطبيقات التوصيل", money(c.deliverySales)),
+    c.refunds ? figureRow("المرتجعات", money(c.refunds)) : null,
+    figureRow("عهدة بداية الدرج", money(c.openingFloat)),
+  );
+  card.append(figures);
+
+  const list = node("div", { className: "dc-expenses" });
+  for (const e of c.expenseLines ?? []) expenseRow(list, e);
+  const add = node("button", { type: "button", className: "btn btn--ghost btn--xs", text: "+ مصروف من الدرج" });
+  add.addEventListener("click", () => expenseRow(list).querySelector("input").focus());
+
+  const counted = node("input", { type: "number", min: "0", step: "0.01", inputmode: "decimal", required: "required", placeholder: "اكتب النقد الموجود في الدرج" });
+  const notes = node("textarea", { rows: "2", maxlength: "1000", placeholder: "ملاحظة (اختياري)" });
+  notes.value = c.notes ?? "";
+
+  const expected = node("strong");
+  const diff = node("strong");
+  const refundsCash = Math.max(0, Math.round((c.openingFloat + c.cashSales - c.expectedCash - (c.expenses ?? 0)) * 100) / 100);
+  function preview() {
+    const expenses = readExpenses(list).reduce((s, e) => s + (e.amount > 0 ? e.amount : 0), 0);
+    const exp = Math.round((c.openingFloat + c.cashSales - expenses - refundsCash) * 100) / 100;
+    expected.textContent = formatMoney(exp);
+    if (counted.value === "") {
+      diff.textContent = "—";
+      diff.className = "";
+      return;
+    }
+    const d = Math.round((Number(counted.value) - exp) * 100) / 100;
+    diff.textContent = d === 0 ? "مطابق" : `${d < 0 ? "عجز" : "زيادة"} ${formatMoney(Math.abs(d))}`;
+    diff.className = d === 0 ? "dc-ok" : "dc-bad";
+  }
+  card.addEventListener("input", preview);
+
+  const submit = node("button", { type: "submit", className: "btn btn--primary", text: "تأكيد التقفيل" });
+  const form = node(
+    "form",
+    { className: "form-grid", novalidate: "novalidate" },
+    node("h4", { className: "card__title card__title--xs", text: "مصاريف دفعتها من الدرج" }),
+    list,
+    add,
+    figureRow("النقد المتوقّع في الدرج", "", true),
+    node("label", { className: "field" }, node("span", { className: "field__label", text: "النقد المعدود في الدرج" }), counted),
+    node("div", { className: "dc-row dc-row--strong" }, node("span", { text: "فرق الصندوق" }), diff),
+    node("label", { className: "field" }, node("span", { className: "field__label", text: "ملاحظة" }), notes),
+    submit,
+  );
+  form.querySelectorAll(".dc-row--strong")[0].lastChild.replaceWith(expected);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (counted.value === "") {
+      setAlert(el("dc-alert"), "اكتب النقد المعدود في الدرج أولاً.", "error");
+      counted.focus();
+      return;
+    }
+    const expenses = readExpenses(list).filter((e) => e.label || e.amount);
+    if (expenses.some((e) => !e.label || !(e.amount > 0))) {
+      setAlert(el("dc-alert"), "كل مصروف يحتاج بياناً ومبلغاً أكبر من صفر.", "error");
+      return;
+    }
+    if (!window.confirm(`تأكيد تقفيل يوم ${c.businessDate} بنقد معدود ${formatMoney(Number(counted.value))}؟ لا يمكن التعديل بعد التأكيد إلا عن طريق المدير.`)) return;
+    setBusy(submit, true);
+    const res = await api(`/dayclose/${c.id}/confirm`, {
+      method: "POST",
+      body: { countedCash: Number(counted.value), expenses, notes: notes.value.trim() },
+    });
+    setBusy(submit, false);
+    if (!res.ok) {
+      setAlert(el("dc-alert"), res.error ?? "تعذّر التأكيد", "error");
+      return;
+    }
+    const d = res.closing?.difference ?? 0;
+    setAlert(
+      el("dc-alert"),
+      d === 0 ? "تم تأكيد التقفيل — الصندوق مطابق." : `تم تأكيد التقفيل — ${d < 0 ? "عجز" : "زيادة"} ${formatMoney(Math.abs(d))}، وأُبلغ المدير.`,
+      d === 0 ? "ok" : "warn",
+    );
+    await refreshSelfCashier();
+  });
+  card.append(form);
+  preview();
+  return card;
+}
+
+function renderLive(data) {
+  const box = el("dc-live");
+  box.replaceChildren();
+  if (!data.live) return;
+  const t = data.todayClosing;
+  box.append(
+    node("h3", { className: "card__title card__title--xs", text: `اليوم الجاري ${data.today} — من فوديكس الآن` }),
+    node(
+      "div",
+      { className: "dc-figures" },
+      figureRow("المبيعات", money(data.live.total)),
+      figureRow("النقد", money(data.live.cash)),
+      figureRow("الشبكة", money(data.live.card)),
+      figureRow("التطبيقات", money(data.live.delivery)),
+      figureRow("الفواتير", String(data.live.invoices)),
+    ),
+    node("p", { className: "hint", text: `اليوم يُقفل الساعة ${data.closeHour} فجراً. ${t && !t.awaitingCash ? "أكّدت تقفيل اليوم." : "أكّد التقفيل في نهاية ورديتك."}` }),
+  );
+}
+
+export async function refreshSelfCashier() {
+  const res = await api("/dayclose/mine");
+  const badge = el("dc-badge");
+  if (!res.ok || !res.available) {
+    badge.textContent = "غير متاح";
+    el("dc-pending").replaceChildren();
+    el("dc-empty").hidden = false;
+    el("dc-empty").textContent = res.reason ?? res.error ?? "تقفيل اليوم غير متاح لحسابك.";
+    return;
+  }
+  state.data = res;
+  renderLive(res);
+  const pending = res.pending ?? [];
+  badge.textContent = pending.length ? `${pending.length} بانتظار تأكيدك` : "لا شيء معلّق";
+  badge.className = `badge ${pending.length ? "badge--warn" : "badge--ok"}`;
+  // أقدم يوم معلّق مفتوح للتأكيد، والبقية مطويّة حتى لا تطول الشاشة
+  el("dc-pending").replaceChildren(
+    ...pending.map((c, i) => {
+      const card = closingCard(c);
+      if (i === 0) return card;
+      const wrap = document.createElement("details");
+      wrap.className = "dc-fold";
+      const summary = document.createElement("summary");
+      summary.textContent = `يوم ${c.businessDate} — ${c.statusLabel} — مبيعات ${formatMoney(c.totalSales)}`;
+      wrap.append(summary, card);
+      return wrap;
     }),
   );
-
-  el(meta.empty).hidden = own.length > 0;
+  el("dc-empty").hidden = pending.length > 0;
 }
 
-function renderAllLines() {
-  renderLines("network");
-  renderLines("delivery_app");
-  renderLines("expense");
-  recomputeDerived();
-}
-
-function addLine(category) {
-  state.lines.push({ category, label: "", amount: 0, reference: "" });
-  renderLines(category);
-}
-
-/** الشبكة = مجموع بنودها + شبكة foodics، والتوصيل = مجموع بنود التطبيقات. */
-function recomputeDerived() {
-  const sum = (category) =>
-    state.lines
-      .filter((line) => line.category === category)
-      .reduce((total, line) => total + Number(line.amount || 0), 0);
-
-  const foodics = Number(el("self-cash-foodicsSales").value || 0);
-  el("self-cash-cardSales").value = (Math.round((sum("network") + foodics) * 100) / 100).toFixed(2);
-  el("self-cash-deliverySales").value = (Math.round(sum("delivery_app") * 100) / 100).toFixed(2);
-  // كل مصروف مكتوب في الصفحة يُخصم تلقائياً من نقدي التقفيلة
-  el("self-cash-expenses").value = (Math.round(sum("expense") * 100) / 100).toFixed(2);
-  updatePreview();
-}
-
-/* ── المعاينة ──────────────────────────────────────────────── */
-
-function updatePreview() {
-  const value = (key) => Number(el(`self-cash-${key}`).value || 0);
-  const expected =
-    value("openingFloat") + value("cashSales") - value("expenses") - value("refunds");
-  const difference = value("countedCash") - expected;
-
-  el("self-cash-expected").textContent = formatMoney(expected);
-  const diffNode = el("self-cash-difference");
-  diffNode.textContent = formatMoney(difference);
-  diffNode.classList.toggle("is-negative", difference < -0.009);
-  diffNode.classList.toggle("is-positive", difference > 0.009);
-
-  el("self-cash-diff-hint").textContent =
-    difference < -0.009 ? "عجز في الدرج" : difference > 0.009 ? "زيادة في الدرج" : "مطابق";
-
-  // مصاريف التقفيلة = أسطر المصروف المكتوبة هنا + ما بقي من السجل القديم
-  const expensesTotal =
-    Math.round((value("expenses") + state.legacyExpenses) * 100) / 100;
-  const remaining = Math.round((value("cashSales") - expensesTotal) * 100) / 100;
-  el("self-cash-register-expenses").textContent = formatMoney(expensesTotal);
-  const remainingNode = el("self-cash-remaining");
-  remainingNode.textContent = formatMoney(remaining);
-  remainingNode.classList.toggle("is-negative", remaining < -0.009);
-}
-
-/* ── تعبئة الشاشة من تقفيل محفوظ ───────────────────────────── */
-
-/** يعرض تقفيل الوردية المختارة إن كان مرفوعاً، أو نموذجاً فارغاً. */
-function applyShift() {
-  const shift = el("self-cash-shift").value;
-  const closing = state.byShift.get(shift) ?? null;
-  const badge = el("self-cash-status");
-
-  for (const field of MONEY_FIELDS) {
-    el(`self-cash-${field}`).value = closing ? Number(closing[field] ?? 0) : 0;
-  }
-  el("self-cash-invoices").value = closing ? Number(closing.invoiceCount ?? 0) : 0;
-  el("self-cash-notes").value = closing?.notes ?? "";
-
-  // ما بقي من السجل المنفصل القديم = مصاريف اليوم/الوردية − أسطر التقفيلة
-  const savedExpenseLines = (closing?.lines ?? [])
-    .filter((line) => line.category === "expense")
-    .reduce((total, line) => total + Number(line.amount || 0), 0);
-  const dayTotal = closing
-    ? Number(closing.registerExpenses ?? 0)
-    : state.dayExpenses;
-  state.legacyExpenses = Math.max(
-    0,
-    Math.round((dayTotal - savedExpenseLines) * 100) / 100,
-  );
-
-  state.lines = closing?.lines?.length
-    ? closing.lines.map((line) => ({ ...line }))
-    : defaultLines();
-  const fromFoodics = !closing && applyFoodics();
-
-  badge.textContent = closing ? (STATUS_TEXT[closing.status] ?? closing.status) : "لم يُرفع بعد";
-  badge.classList.toggle("badge--ok", closing?.status === "reviewed");
-  badge.classList.toggle("badge--warn", closing?.status === "disputed");
-
-  // التقفيل المُراجَع لا يعدّله الكاشير — الخادم يرفض التعديل بـ 409
-  const locked = closing?.status === "reviewed";
-  el("self-cash-submit").disabled = locked;
-  el("self-cash-submit").textContent = closing ? "تحديث التقفيل" : "رفع التقفيل";
-  if (locked) {
-    setAlert(
-      el("self-cash-result"),
-      "تقفيل هذه الوردية تمّت مراجعته. راجع مدير فرعك لأي تعديل.",
-      "warn",
-    );
-  } else if (fromFoodics) {
-    setAlert(
-      el("self-cash-result"),
-      `عُبّئت المبيعات وطرق الدفع والخصومات والمرتجعات وعدد الفواتير من فوديكس آلياً${
-        state.foodics.scope === "branch" ? " (فواتير الفرع كاملة لهذا اليوم)" : ""
-      }. أدخل عهدة البداية والنقد المعدود والمصاريف فقط.`,
-      "ok",
-    );
-  } else {
-    setAlert(el("self-cash-result"), "");
-  }
-
-  renderAllLines();
-}
-
-/* ── التحميل والحفظ ────────────────────────────────────────── */
-
-/** يقرأ تقفيلات اليوم للموظف نفسه ويعبّئ الشاشة. */
-export async function refreshSelfCashier() {
-  const result = await api("/cashier/closings/today");
-  if (!result.ok) {
-    setAlert(el("self-cash-result"), result.error ?? "تعذّر تحميل تقفيل اليوم", "error");
-    return;
-  }
-
-  state.businessDate = result.businessDate;
-  state.defaultNetworkLines = result.defaultNetworkLines ?? [];
-  state.defaultDeliveryApps = result.defaultDeliveryApps ?? [];
-  state.dayExpenses = Number(result.cashPosition?.expenses ?? 0);
-  // «المتبقي النقدي» بند مستقل في الصلاحيات — الخادم هو من يقرّره
-  state.caps.viewRemaining = result.can?.viewRemaining === true;
-  el("self-cash-remaining-chip").hidden = !state.caps.viewRemaining;
-  state.byShift = new Map((result.closings ?? []).map((closing) => [closing.shift, closing]));
-
-  el("self-cash-date").value = result.businessDate;
-  const prefill = await api(`/foodics/cashier-prefill?date=${result.businessDate}`).catch(() => null);
-  state.foodics = prefill?.ok ? prefill : null;
-  applyShift();
-}
-
-async function submitClosing(event) {
-  event.preventDefault();
-  const submit = el("self-cash-submit");
-  setBusy(submit, true);
-
-  const body = {
-    businessDate: state.businessDate || undefined,
-    shift: el("self-cash-shift").value,
-    invoiceCount: Number(el("self-cash-invoices").value || 0),
-    notes: el("self-cash-notes").value.trim(),
-    lines: state.lines
-      .filter((line) => line.label.trim() !== "")
-      .map((line) => ({
-        category: line.category,
-        label: line.label.trim(),
-        amount: Number(line.amount || 0),
-        reference: (line.reference ?? "").trim(),
-      })),
-  };
-
-  for (const field of MONEY_FIELDS) {
-    if (DERIVED_FIELDS.has(field)) continue;
-    body[field] = Number(el(`self-cash-${field}`).value || 0);
-  }
-
-  const result = await api("/cashier/closings", { method: "POST", body });
-  setBusy(submit, false);
-
-  if (!result.ok) {
-    setAlert(el("self-cash-result"), result.error ?? "تعذّر رفع التقفيل", "error");
-    return;
-  }
-
-  await refreshSelfCashier();
-  setAlert(el("self-cash-result"), result.message ?? "تم رفع التقفيل", "ok");
-}
-
-/** يربط أحداث الشاشة مرة واحدة عند أول فتح. */
 export function initSelfCashier() {
   if (state.ready) return;
   state.ready = true;
-
-  el("self-cash-form").addEventListener("submit", submitClosing);
-  el("self-cash-shift").addEventListener("change", applyShift);
-  el("self-cash-add-network").addEventListener("click", () => addLine("network"));
-  el("self-cash-add-delivery").addEventListener("click", () => addLine("delivery_app"));
-  el("self-cash-add-expense").addEventListener("click", () => addLine("expense"));
-
-  for (const field of MONEY_FIELDS) {
-    if (DERIVED_FIELDS.has(field)) continue;
-    el(`self-cash-${field}`).addEventListener("input", recomputeDerived);
-  }
 }

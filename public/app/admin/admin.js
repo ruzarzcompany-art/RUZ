@@ -48,9 +48,9 @@ import {
 import { initReportsModule } from "./reports.js";
 import { initSettingsModule, refreshSettingsPanel } from "./settings.js";
 import { mountPurge } from "./purge.js";
-import { initCashierModule, refreshCashierPanel } from "./cashier.js";
 import { initFinanceHome, refreshFinanceHome } from "./finance-home.js";
-import { initCashboxModule, refreshCashboxPanel } from "./cashbox.js";
+import { initCashboxModule } from "./cashbox.js";
+import { initFinancePanel, openFinanceTab, refreshFinancePanel } from "./finance-close.js";
 import { initInventoryModule, refreshInventoryPanel } from "./inventory.js";
 import { initSurveillanceModule, refreshSurveillancePanel } from "./surveillance.js";
 import { initDocumentsModule, refreshDocumentsPanel } from "./documents.js";
@@ -1001,11 +1001,8 @@ function fillNewPanelSelects() {
   fillEmployees(el("doc-issues-employee"), { includeAll: true });
   fillEmployees(el("disc-employee"), { placeholder: "اختر الموظف" });
   fillEmployees(el("disc-filter-employee"), { includeAll: true });
-  fillEmployees(el("cashier-employee"), { placeholder: "أنا" });
 
-  fillBranches(el("cashier-branch"), { placeholder: "فرعي" });
   fillBranches(el("fh-branch"), { placeholder: "فرعي" });
-  fillBranches(el("cashier-filter-branch"), { placeholder: "الكل" });
   fillBranches(el("inventory-branch"), { placeholder: "فرعي" });
   fillBranches(el("doc-branch"), { placeholder: "فرعي" });
 }
@@ -1079,9 +1076,7 @@ const PANEL_LOADERS = {
   },
   branches: refreshBranchesPanel,
   documents: refreshDocumentsPanel,
-  finance: refreshFinanceHome,
-  cashier: refreshCashierPanel,
-  cashbox: refreshCashboxPanel,
+  finance: refreshFinancePanel,
   inventory: refreshInventoryPanel,
   surveillance: refreshSurveillancePanel,
   reports: async () => {
@@ -1331,9 +1326,9 @@ const TAB_PERMISSIONS = {
   people: ["employees.read"],
   branches: ["branches.read"],
   documents: ["documents.print", "documents.read_all", "disciplinary.manage", "forms.read_all"],
-  finance: ["cashier.read_all", "cash_expenses.read", "settlements.read"],
-  cashier: ["cashier.submit", "cashier.review", "cashier.read_all", "sections.cashier"],
-  cashbox: [
+  finance: [
+    "cashier.read_all",
+    "cashier.review",
     "cash_expenses.read",
     "settlements.read",
     "monthly.summary_view",
@@ -1424,11 +1419,19 @@ async function boot() {
   initPeopleModule({ state, can, levelOf, canDeleteIn, refreshPeople });
   initReportsModule();
   initSettingsModule({ can, employees: state.employees });
-  initCashierModule({ can, levelOf, canDeleteIn });
   initFinanceHome({
-    openPanel: (panel) => el("admin-tabs").querySelector(`[data-panel="${panel}"]:not([hidden])`)?.click(),
+    openPanel: async (panel) => {
+      // «fin:close» = تبويب داخلي في المالية
+      const [main, sub] = String(panel).split(":");
+      if (main === "fin") {
+        await openFinanceTab(sub);
+        return;
+      }
+      el("admin-tabs").querySelector(`[data-panel="${panel}"]:not([hidden])`)?.click();
+    },
   });
   initCashboxModule({ can, levelOf, canDeleteIn });
+  initFinancePanel({ can, openMain: () => el("admin-tabs").querySelector('[data-panel="finance"]')?.click() });
   initInventoryModule({ can, levelOf, canDeleteIn });
   initSurveillanceModule();
   initDocumentsModule({ can, levelOf, canDeleteIn });

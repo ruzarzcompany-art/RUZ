@@ -12,7 +12,7 @@
 
 import { api, el, formatDate, row, setAlert, setBusy, todayIso } from "./api.js";
 import { fillActionPicker, parseAction } from "./inventory-actions.js";
-import { mountPurchaseReceipts } from "./purchase-receipts.js";
+import { refreshSelfReceive } from "./self-receive.js";
 import { conversionFactor, fillWeightUnitPicker, setUnitTable } from "./units.js";
 
 const MOVEMENT_LABELS = {
@@ -281,6 +281,8 @@ function applyType() {
 
 /** يقرأ أصناف فرع الموظف وآخر حركاته. */
 export async function refreshSelfInventory() {
+  // الاستلام من فوديكس أولاً — هو ما يحتاجه المستلِم كل يوم
+  void refreshSelfReceive();
   const [items, movements] = await Promise.all([
     api("/inventory/items"),
     api("/inventory/movements"),
@@ -383,11 +385,6 @@ export function initSelfInventory() {
   el("self-inv-form").addEventListener("submit", submitMovement);
   el("self-inv-refresh").addEventListener("click", () => void refreshSelfInventory());
 
-  // استلام المشتريات بفاتورة: يُحمَّل عند أول فتح للقسم فقط
-  const purchases = mountPurchaseReceipts(el("self-purchase-receipts"));
-  el("self-purchase-details").addEventListener("toggle", (event) => {
-    if (event.currentTarget.open) void purchases.refresh();
-  });
 
   // الحركة وسببها خيار واحد: السبب يُستنتج منه فلا حقل ثانٍ يُختار
   fillActionPicker(el("self-inv-action"));

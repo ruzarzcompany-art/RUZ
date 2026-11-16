@@ -468,6 +468,39 @@ function paintPanels() {
   }
 }
 
+/**
+ * إشعار الكاشير بتقفيل ينتظر تأكيده: شارة على تبويب «تقفيل اليوم»، ورسالة
+ * تفتحه مباشرة إن كان هناك يوم أُقفل آلياً الساعة 4 فجراً ولم يُؤكَّد.
+ */
+async function notifyPendingClose() {
+  if (!state.allowedPanels.has("cashier")) return;
+  const res = await api("/dayclose/mine");
+  const tab = el("extras-nav").querySelector('[data-panel="cashier"]');
+  if (!res.ok || !tab) return;
+  const pending = res.pending ?? [];
+  tab.textContent = pending.length ? `تقفيل اليوم (${pending.length})` : "تقفيل اليوم";
+  tab.classList.toggle("tab--attention", pending.length > 0);
+  const overdue = pending.filter((c) => c.status === "auto_closed");
+  if (overdue.length && state.panel === "punch") {
+    const days = overdue.map((c) => c.businessDate).join("، ");
+    if (window.confirm(`لديك تقفيل غير مؤكَّد ليوم ${days}. افتح «تقفيل اليوم» وأكّد النقد المعدود الآن؟`)) {
+      await showPanel("cashier");
+    }
+  }
+}
+
+/** شارة على تبويب المخزون بعدد الاستلامات التي تنتظر تأكيد الموظف. */
+async function notifyPendingReceive() {
+  if (!state.allowedPanels.has("inventory")) return;
+  const res = await api("/stock/mine");
+  const tab = el("extras-nav").querySelector('[data-panel="inventory"]');
+  if (!res.ok || !tab) return;
+  const waiting = (res.docs ?? []).filter((d) => d.state === "received").length;
+  if (!tab.dataset.label) tab.dataset.label = tab.textContent;
+  tab.textContent = waiting ? `${tab.dataset.label} (${waiting})` : tab.dataset.label;
+  tab.classList.toggle("tab--attention", waiting > 0);
+}
+
 /** ينتقل إلى صفحة ويحمّل بياناتها عند الحاجة. */
 async function showPanel(key) {
   if (!state.allowedPanels.has(key)) return;
@@ -587,6 +620,8 @@ async function loadProfile() {
   }
   if (!state.allowedPanels.has(state.panel)) state.panel = "punch";
   paintPanels();
+  notifyPendingClose();
+  notifyPendingReceive();
 
   el("punch-btn").disabled = false;
   el("punch-sub").textContent = "اضغط للسماح بالموقع وتسجيل الحركة";

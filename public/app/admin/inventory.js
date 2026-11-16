@@ -18,7 +18,7 @@ import {
   todayIso,
 } from "../api.js";
 import { createPager } from "../pagination.js";
-import { mountPurchaseReceipts } from "../purchase-receipts.js";
+import { initInventoryTabs, refreshInventoryTabs } from "./inventory-stock.js";
 import { fillActionPicker, parseAction } from "../inventory-actions.js";
 import {
   conversionFactor,
@@ -819,9 +819,16 @@ export function initInventoryModule({ can }) {
   state.can = can;
 
   el("inventory-form").addEventListener("submit", submitMovement);
-  el("inventory-branch").addEventListener("change", async () => {
-    void purchaseReceipts?.refresh();
-    await Promise.all([loadItems(), loadMovements(), loadDaily()]);
+  // تغيير الفرع يعيد تحميل التبويب المفتوح (من inventory-stock.js)
+  initInventoryTabs({
+    can,
+    onCount: async () => {
+      if (currentBranch()) await loadDaily();
+      else setAlert(el("inventory-daily-result"), "اختر الفرع لعرض ورقة الجرد.", "warn");
+    },
+    onLog: async () => {
+      if (state.access.canRead) await Promise.all([loadItems(), loadMovements()]);
+    },
   });
   el("inventory-filter-run").addEventListener("click", loadMovements);
   el("inventory-daily-run").addEventListener("click", loadDaily);
@@ -868,24 +875,15 @@ export function initInventoryModule({ can }) {
 }
 
 /** شاشة استلام المشتريات — تُركَّب عند أول فتح للتبويب وتتبع الفرع المختار. */
-let purchaseReceipts = null;
 
 export async function refreshInventoryPanel() {
   const access = await api("/inventory/access");
   if (access.ok) state.access = access;
 
-  purchaseReceipts ??= mountPurchaseReceipts(el("purchase-receipts"), {
-    getBranchId: currentBranch,
-  });
-  void purchaseReceipts.refresh();
-
-  el("inventory-form").hidden = !state.access.canWrite;
-
+  // الاستلام اليدوي وتسجيل الحركة اليدوي أُلغيا بعد ربط فوديكس؛ الاستلام صار من «الاستلام اليومي»
   if (!state.access.canRead) {
-    setAlert(el("inventory-result"), "لا تملك صلاحية عرض المخزون.", "error");
+    setAlert(el("stk-alert"), "لا تملك صلاحية عرض المخزون.", "error");
     return;
   }
-
-  await Promise.all([loadItems(), loadMovements()]);
-  if (currentBranch()) await loadDaily();
+  await refreshInventoryTabs();
 }
