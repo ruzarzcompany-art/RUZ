@@ -1099,9 +1099,17 @@ select option {
 
 .pager__select {
   width: auto;
-  padding: 0.25rem 0.5rem;
-  font-size: 0.8rem;
+  min-width: 4.2rem;
+  padding: 0.3rem 0.6rem 0.3rem 1.9rem;
+  font-size: 0.85rem;
   border-radius: 8px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  /* سهم واضح لاختيار عدد الصفوف (5 · 10 · 25) */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%23d9a13b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: left 0.55rem center;
 }
 
 /* المطبوعات تُظهر كل الصفوف، فشريط التنقّل لا معنى له على الورق */
@@ -2318,4 +2326,82 @@ select option {
   text-align: center;
   font-size: 0.65rem;
   opacity: 0.7;
+}
+
+/* بطاقات أرقام أرشيف فوديكس */
+.stat {
+  flex: 1 1 140px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 10px;
+  display: grid;
+  gap: 2px;
+}
+.stat strong {
+  font-size: 1.15rem;
+}
+
+
+/* ── تقفيل اليوم (تطبيق الكاشير والمالية) ───────────────────── */
+.dc-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.9rem;
+  margin-block: 0.8rem;
+}
+.dc-figures {
+  display: grid;
+  gap: 0.25rem;
+  margin-block: 0.5rem;
+}
+.dc-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px dashed var(--line);
+}
+.dc-row--strong {
+  font-weight: 700;
+  font-size: 1.05rem;
+  border-bottom: 0;
+}
+.dc-expenses {
+  display: grid;
+  gap: 0.4rem;
+}
+.dc-expense {
+  display: grid;
+  grid-template-columns: 1fr 7rem auto;
+  gap: 0.4rem;
+  align-items: center;
+}
+.dc-ok {
+  color: #6fcf8a;
+}
+.dc-bad {
+  color: #ef6b6b;
+}
+.dc-live {
+  margin-block: 0.6rem;
+}
+.tab--attention {
+  border-color: #ef6b6b !important;
+  color: #ef6b6b;
+}
+.row--attention td {
+  background: rgba(239, 107, 107, 0.08);
+}
+#fin-tabs {
+  margin-bottom: 0.8rem;
+}
+.dc-fold {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.6rem 0.9rem;
+  margin-block: 0.6rem;
+}
+.dc-fold > summary {
+  cursor: pointer;
+  font-weight: 600;
 }
