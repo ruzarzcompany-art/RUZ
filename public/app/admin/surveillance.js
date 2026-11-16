@@ -20,7 +20,7 @@ import {
   todayIso,
   toLocalInputValue,
 } from "../api.js";
-import { refreshFoodicsTab } from "./foodics.js";
+import { refreshFoodicsOrders, refreshFoodicsTab } from "./foodics.js";
 import { refreshControlTab } from "./control.js";
 import { refreshLiveTab, stopLive } from "./live.js";
 
@@ -1197,6 +1197,7 @@ const TAB_LOADERS = {
   limits: async () => renderTargets(),
   connect: async () => renderConnect(),
   foodics: () => refreshFoodicsTab(branchId(), day()),
+  fxorders: () => refreshFoodicsOrders(branchId()),
   control: () => refreshControlTab(branchId(), day(), { employees: state.meta?.employees ?? [], canManage: state.access.canManage }),
 };
 

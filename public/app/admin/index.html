@@ -46,9 +46,7 @@
       </div>
       <div class="tabgroup">
         <span class="tabgroup__label">المالية</span>
-        <button class="tab" type="button" data-panel="finance">ملخّص المالية</button>
-        <button class="tab" type="button" data-panel="cashier">تقفيل الكاشير</button>
-        <button class="tab" type="button" data-panel="cashbox">النقدية والإقفال</button>
+        <button class="tab" type="button" data-panel="finance">المالية</button>
       </div>
       <div class="tabgroup">
         <span class="tabgroup__label">المخزون والرقابة</span>
@@ -1039,6 +1037,15 @@
     <!-- ── ملخّص المالية ──────────────────────────────────────── -->
     <main id="panel-finance" class="panel" hidden>
       <p id="fh-alert" class="alert" role="status" hidden></p>
+      <div class="tabs" id="fin-tabs" role="tablist">
+        <button class="tab is-active" type="button" data-fin="summary">الملخّص</button>
+        <button class="tab" type="button" data-fin="close">تقفيل اليوم</button>
+        <button class="tab" type="button" data-fin="settle">الشبكات والتطبيقات</button>
+        <button class="tab" type="button" data-fin="month">إقفال الشهر</button>
+      </div>
+      <p id="cashbox-alert" class="alert" role="status" hidden></p>
+
+      <div data-fin-tab="summary">
       <section class="card">
         <div class="card__head">
           <h2 class="card__title card__title--sm">ملخّص المالية</h2>
@@ -1078,373 +1085,73 @@
         <h3 class="card__title card__title--sm">مستحقات الشبكات وتطبيقات التوصيل</h3>
         <div id="fh-receivables"></div>
       </section>
-    </main>
+      </div>
 
-    <main id="panel-cashier" class="panel" hidden>
-      <section class="card">
-        <div class="card__head">
-          <h2 class="card__title card__title--sm">رفع تقفيل اليوم</h2>
-          <button id="cashier-reset" class="btn btn--ghost btn--xs" type="button">
-            تفريغ النموذج
-          </button>
-        </div>
-
-        <form id="cashier-form" class="form-grid">
-          <label class="field field--sm">
-            <span class="field__label">تاريخ العمل</span>
-            <input id="cashier-date" type="date" required />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">الوردية</span>
-            <select id="cashier-shift">
-              <option value="full">يوم كامل</option>
-              <option value="morning">صباحية</option>
-              <option value="evening">مسائية</option>
-            </select>
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">عدد الفواتير</span>
-            <input id="cashier-invoices" type="number" min="0" step="1" value="0" />
-          </label>
-
-          <label class="field field--sm">
-            <span class="field__label">عهدة بداية الوردية</span>
-            <input id="cashier-openingFloat" type="number" step="any" min="0" value="0" />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">إجمالي المبيعات</span>
-            <input id="cashier-totalSales" type="number" step="any" min="0" value="0" />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">مبيعات نقدية</span>
-            <input id="cashier-cashSales" type="number" step="any" min="0" value="0" />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">مبيعات شبكة (محسوبة)</span>
-            <input id="cashier-cardSales" type="number" step="any" min="0" value="0" readonly />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">شبكة foodics</span>
-            <input id="cashier-foodicsSales" type="number" step="any" min="0" value="0" />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">تحويلات</span>
-            <input id="cashier-transferSales" type="number" step="any" min="0" value="0" />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">مبيعات التوصيل (محسوبة)</span>
-            <input id="cashier-deliverySales" type="number" step="any" min="0" value="0" readonly />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">مبيعات أخرى</span>
-            <input id="cashier-otherSales" type="number" step="any" min="0" value="0" />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">الخصومات</span>
-            <input id="cashier-discounts" type="number" step="any" min="0" value="0" />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">المرتجعات</span>
-            <input id="cashier-refunds" type="number" step="any" min="0" value="0" />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">مصروفات نقدية (محسوبة من الأسطر)</span>
-            <input
-              id="cashier-expenses"
-              type="number"
-              step="any"
-              min="0"
-              value="0"
-              readonly
-            />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">النقد المعدود في الدرج</span>
-            <input id="cashier-countedCash" type="number" step="any" min="0" value="0" />
-          </label>
-
-          <div class="field--wide" id="cashier-lines-network-wrap">
-            <div class="card__head">
-              <h3 class="card__title card__title--xs">بنود مبيعات الشبكة</h3>
-              <button
-                id="cashier-add-network"
-                class="btn btn--ghost btn--xs"
-                type="button"
-              >
-                إضافة بند شبكة
-              </button>
+      <div data-fin-tab="close" hidden>
+        <section class="card">
+          <div class="card__head">
+            <h2 class="card__title card__title--sm">تقفيل اليوم — من فوديكس</h2>
+            <div class="row row--wrap">
+              <label class="field field--sm"><span class="field__label">من</span><input id="dc-from" type="date" /></label>
+              <label class="field field--sm"><span class="field__label">إلى</span><input id="dc-to" type="date" /></label>
+              <button id="dc-load" class="btn btn--ghost btn--xs" type="button">عرض</button>
             </div>
-            <div class="table-wrap">
-              <table class="table" id="cashier-lines-network">
-                <thead>
-                  <tr>
-                    <th>البند</th>
-                    <th>رقم الجهاز / المرجع</th>
-                    <th>المبلغ</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody></tbody>
-              </table>
-            </div>
-            <p id="cashier-lines-network-empty" class="empty" hidden>
-              لا توجد بنود شبكة — أضف بنداً لكل جهاز أو نوع شبكة.
-            </p>
           </div>
-
-          <div class="field--wide" id="cashier-lines-delivery-wrap">
-            <div class="card__head">
-              <h3 class="card__title card__title--xs">تطبيقات التواصل والتوصيل</h3>
-              <button
-                id="cashier-add-delivery"
-                class="btn btn--ghost btn--xs"
-                type="button"
-              >
-                إضافة تطبيق
-              </button>
-            </div>
-            <div class="table-wrap">
-              <table class="table" id="cashier-lines-delivery">
-                <thead>
-                  <tr>
-                    <th>التطبيق</th>
-                    <th>رقم الدفعة / المرجع</th>
-                    <th>المبلغ</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody></tbody>
-              </table>
-            </div>
-            <p id="cashier-lines-delivery-empty" class="empty" hidden>
-              لا توجد تطبيقات — أضف تطبيقاً لتسجيل مبيعاته.
-            </p>
+          <div id="dc-totals" class="fin-tiles"></div>
+          <div class="table-wrap">
+            <table class="table" id="dc-table">
+              <thead>
+                <tr>
+                  <th>اليوم</th>
+                  <th>الكاشير</th>
+                  <th>المبيعات</th>
+                  <th>النقد</th>
+                  <th>الشبكة</th>
+                  <th>التطبيقات</th>
+                  <th>مصاريف الدرج</th>
+                  <th>النقد المتوقّع</th>
+                  <th>المعدود</th>
+                  <th>فرق الصندوق</th>
+                  <th>الحالة</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
           </div>
-
-          <div class="field--wide" id="cashier-lines-expense-wrap">
-            <div class="card__head">
-              <h3 class="card__title card__title--xs">
-                المصاريف والمشتريات النقدية
-              </h3>
-              <button
-                id="cashier-add-expense"
-                class="btn btn--ghost btn--xs"
-                type="button"
-              >
-                إضافة سطر مصروف
-              </button>
-            </div>
-            <div class="table-wrap">
-              <table class="table" id="cashier-lines-expense">
-                <thead>
-                  <tr>
-                    <th>البيان</th>
-                    <th>المبلغ</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody></tbody>
-              </table>
-            </div>
-            <p id="cashier-lines-expense-empty" class="empty" hidden>
-              لا توجد مصاريف — أضف سطراً بالبيان والمبلغ فقط.
-            </p>
-            <p class="hint">
-              كل سطر مصروف أو شراء نقدي يُكتب هنا داخل التقفيلة نفسها بحقلين
-              فقط: البيان والمبلغ — ويُخصم تلقائياً من نقدي التقفيلة، فلا صفحة
-              منفصلة ولا رقم فاتورة ولا كمية ولا سعر وحدة.
-            </p>
-          </div>
-
-          <div class="row row--wrap" id="cashier-onbehalf" hidden>
-            <label class="field field--sm">
-              <span class="field__label">الفرع (بالنيابة)</span>
-              <select id="cashier-branch"><option value="">فرعي</option></select>
-            </label>
-            <label class="field field--sm">
-              <span class="field__label">الكاشير (بالنيابة)</span>
-              <select id="cashier-employee"><option value="">أنا</option></select>
-            </label>
-          </div>
-
-          <label class="field field--sm field--wide">
-            <span class="field__label">ملاحظات</span>
-            <textarea id="cashier-notes" rows="2"></textarea>
-          </label>
-
-          <p class="row row--wrap">
-            <span class="chip">النقد المتوقّع: <strong id="cashier-expected">0.00</strong></span>
-            <span class="chip">الفرق: <strong id="cashier-difference">0.00</strong></span>
-            <span class="chip"
-              >مصاريف التقفيلة: <strong id="cashier-register-expenses">0.00</strong></span
-            >
-            <span class="chip" id="cashier-remaining-chip" hidden
-              >المتبقي النقدي في درج الكاشير:
-              <strong id="cashier-remaining">0.00</strong></span
-            >
-        <span class="chip" id="cashier-diff-hint">مطابق</span>
+          <p id="dc-table-empty" class="empty" hidden>لا تقفيلات في هذه الفترة.</p>
+          <p class="hint">
+            الأرقام تُسحب من فوديكس كل 10 دقائق. الكاشير يؤكّد النقد المعدود من تطبيقه، واليوم الذي
+            لا يؤكّده حتى الساعة 4 فجراً يُقفل آلياً «معلّقاً» ويصل تنبيه لمدير الفرع.
           </p>
+        </section>
 
-          <div class="row row--wrap">
-            <button id="cashier-submit" class="btn btn--primary btn--sm" type="submit">
-              رفع التقفيل
-            </button>
-            <button id="cashier-print" class="btn btn--ghost btn--sm" type="button" disabled>
-              طباعة تقفيل اليوم
-            </button>
+        <section class="card" id="dc-detail" hidden>
+          <div class="card__head">
+            <h3 class="card__title card__title--sm" id="dc-detail-title">تفاصيل اليوم</h3>
+            <button id="dc-detail-close" class="btn btn--ghost btn--xs" type="button">إغلاق</button>
           </div>
-        </form>
+          <div id="dc-detail-body"></div>
+        </section>
 
-        <p id="cashier-today-note" class="hint"></p>
-        <p id="cashier-print-hint" class="hint">
-          الطباعة تتاح بعد رفع تقفيل اليوم فقط.
-        </p>
-        <p id="cashier-result" class="alert" role="status" hidden></p>
-        <p class="hint">
-          النقد المتوقّع = عهدة البداية + المبيعات النقدية − المصروفات − المرتجعات، والفرق
-          يُحسب في الخادم. رفع التقفيل مرة أخرى لنفس اليوم والوردية يُحدّث السجل السابق.
-          «مبيعات شبكة» = مجموع بنود الشبكة + شبكة foodics، و«مبيعات التوصيل» = مجموع
-          بنود تطبيقات التواصل، فتُحسب تلقائياً ولا تُدخل يدوياً.
-        </p>
-      </section>
+        <section class="card" data-dc-manage hidden>
+          <details>
+            <summary class="hint">أدوات: إعادة بناء التقفيلات من فوديكس</summary>
+            <form id="dc-rebuild-form" class="form-grid">
+              <label class="field field--sm"><span class="field__label">من</span><input id="dc-rebuild-from" type="date" /></label>
+              <label class="field field--sm"><span class="field__label">إلى</span><input id="dc-rebuild-to" type="date" /></label>
+              <button class="btn btn--primary btn--sm" type="submit">إعادة البناء</button>
+            </form>
+            <p class="hint">
+              تنشئ تقفيلاً لكل يوم فيه فواتير فوديكس محفوظة (بعد تصفية السجلات القديمة مثلاً). لا تمسّ
+              يوماً أكّده الكاشير أو راجعه المدير إلا بتحديث أرقام فوديكس فيه.
+            </p>
+          </details>
+        </section>
+      </div>
 
-      <section class="card" id="cashier-balance-card" hidden>
-        <div class="card__head">
-          <h2 class="card__title card__title--sm">
-            الرصيد النقدي الشهري (متراكم)
-          </h2>
-          <label class="field field--sm">
-            <span class="field__label">الشهر</span>
-            <input id="cashier-balance-month" type="month" />
-          </label>
-          <button
-            id="cashier-balance-run"
-            class="btn btn--ghost btn--sm"
-            type="button"
-          >
-            عرض
-          </button>
-        </div>
-
-        <p id="cashier-balance-chips" class="row row--wrap"></p>
-        <div class="table-wrap">
-          <table class="table" id="cashier-balance-table">
-            <thead>
-              <tr>
-                <th>اليوم</th>
-                <th>النقدي من التقفيلات</th>
-                <th>المصاريف والمشتريات</th>
-                <th>المتبقي</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <p id="cashier-balance-empty" class="empty" hidden>
-          لا توجد حركة نقدية في هذا الشهر.
-        </p>
-        <p id="cashier-balance-result" class="alert" role="status" hidden></p>
-        <p class="hint">
-          الرصيد المتراكم للشهر يظهر أسفل أرقام اليوم في الصفحة نفسها:
-          المرحّل من الشهر السابق + النقدي المتراكم من التقفيلات − المصاريف
-          والمشتريات النقدية. بندٌ مستقل في إدارة الصلاحيات، ومن لا يملكه لا
-          يرى هذا القسم أصلاً.
-        </p>
-      </section>
-
-      <section class="card">
-        <div class="card__head">
-          <h2 class="card__title card__title--sm">سجل التقفيلات</h2>
-        </div>
-
-        <div class="filters">
-          <label class="field field--sm">
-            <span class="field__label">المدى</span>
-            <select id="cashier-filter-period">
-              <option value="day">يوم واحد</option>
-              <option value="month">شهر</option>
-              <option value="range" selected>من — إلى</option>
-            </select>
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">من</span>
-            <input id="cashier-filter-from" type="date" />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">إلى</span>
-            <input id="cashier-filter-to" type="date" />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">الفرع</span>
-            <select id="cashier-filter-branch"><option value="">الكل</option></select>
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">الحالة</span>
-            <select id="cashier-filter-status">
-              <option value="">الكل</option>
-              <option value="submitted">مرفوع</option>
-              <option value="reviewed">مُراجَع</option>
-              <option value="disputed">معترض عليه</option>
-            </select>
-          </label>
-          <button id="cashier-filter-run" class="btn btn--ghost btn--sm" type="button">عرض</button>
-          <button id="cashier-print-range" class="btn btn--ghost btn--sm" type="button">
-            طباعة الكشف
-          </button>
-        </div>
-
-        <p id="cashier-summary" class="row row--wrap"></p>
-
-        <div class="table-wrap">
-          <table class="table" id="cashier-table">
-            <thead>
-              <tr>
-                <th>التاريخ</th>
-                <th>الفرع</th>
-                <th>الكاشير</th>
-                <th>الوردية</th>
-                <th>المبيعات</th>
-                <th>نقد</th>
-                <th>شبكة</th>
-                <th>المتوقّع</th>
-                <th>المعدود</th>
-                <th>الفرق</th>
-                <th>مصاريف التقفيلة</th>
-                <th id="cashier-th-remaining">المتبقي النقدي</th>
-                <th>الحالة</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <p id="cashier-empty" class="empty" hidden>لا توجد تقفيلات مطابقة.</p>
-        <p id="cashier-list-result" class="alert" role="status" hidden></p>
-      </section>
-    </main>
-
-
-    <!-- ── النقدية والإقفال الشهري ────────────────────────────── -->
-    <main id="panel-cashbox" class="panel" hidden>
-      <p id="cashbox-alert" class="alert" role="status" hidden></p>
-
-      <section class="card">
-        <div class="card__head">
-          <h2 class="card__title card__title--sm">نطاق العرض وإشعارات الإقفال</h2>
-          <label class="field field--sm">
-            <span class="field__label">الفرع</span>
-            <select id="cashbox-branch"><option value="">فرعي</option></select>
-          </label>
-        </div>
-        <div id="cashbox-notices"></div>
-        <p id="cashbox-notices-empty" class="empty">لا توجد إشعارات إقفال جديدة.</p>
-        <p class="hint">
-          الفاتورة تُسجَّل مرة واحدة في السجل الموحّد وتُخصم مرة واحدة: التقفيل
-          اليومي والتقرير الشهري يقرآن من المصدر نفسه بلا ازدواج خصم.
-        </p>
-      </section>
-
-      <section class="card" id="cashbox-network-card">
+      <div data-fin-tab="settle" hidden>
+<section class="card" id="cashbox-network-card">
         <div class="card__head">
           <h2 class="card__title card__title--sm">الشبكات — التجميع الشهري والتسوية</h2>
           <label class="field field--sm">
@@ -1543,7 +1250,7 @@
         </p>
       </section>
 
-      <section class="card" id="cashbox-delivery-card">
+<section class="card" id="cashbox-delivery-card">
         <div class="card__head">
           <h2 class="card__title card__title--sm">تطبيقات التوصيل — التجميع الشهري والتسوية</h2>
           <label class="field field--sm">
@@ -1642,7 +1349,7 @@
         </p>
       </section>
 
-      <section class="card" id="cashbox-report-card">
+<section class="card" id="cashbox-report-card">
         <div class="card__head">
           <h2 class="card__title card__title--sm">
             تقرير نهاية الشهر — الشبكات وتطبيقات التوصيل
@@ -1698,7 +1405,7 @@
         </p>
       </section>
 
-      <section class="card" id="cashbox-settlements-card">
+<section class="card" id="cashbox-settlements-card">
         <div class="card__head">
           <h2 class="card__title card__title--sm">سجل التسويات الشهرية</h2>
         </div>
@@ -1761,8 +1468,26 @@
           يحسبها الخادم عند التأكيد ويثبّت تاريخه واسم المحاسب.
         </p>
       </section>
+      </div>
 
-      <section class="card" id="cashbox-months-card">
+      <div data-fin-tab="month" hidden>
+<section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">إشعارات الإقفال</h2>
+          <label class="field field--sm" hidden>
+            <span class="field__label">الفرع</span>
+            <select id="cashbox-branch"><option value="">فرعي</option></select>
+          </label>
+        </div>
+        <div id="cashbox-notices"></div>
+        <p id="cashbox-notices-empty" class="empty">لا توجد إشعارات إقفال جديدة.</p>
+        <p class="hint">
+          الفاتورة تُسجَّل مرة واحدة في السجل الموحّد وتُخصم مرة واحدة: التقفيل
+          اليومي والتقرير الشهري يقرآن من المصدر نفسه بلا ازدواج خصم.
+        </p>
+      </section>
+
+<section class="card" id="cashbox-months-card">
         <div class="card__head">
           <h2 class="card__title card__title--sm">إقفال الشهر والترحيل</h2>
           <label class="field field--sm">
@@ -1813,17 +1538,129 @@
           الجديد من صفر. وكل قرار يُسجَّل في سجل المراجعة باسم صاحبه ووقته.
         </p>
       </section>
+      </div>
     </main>
+
+
+
+    <!-- ── النقدية والإقفال الشهري ────────────────────────────── -->
 
     <!-- ── المخزون اليومي ─────────────────────────────────────── -->
     <main id="panel-inventory" class="panel" hidden>
+      <div class="card__head inv-head">
+        <div class="tabs" id="inv-tabs" role="tablist">
+          <button class="tab is-active" type="button" data-inv="stock">الأرصدة من فوديكس</button>
+          <button class="tab" type="button" data-inv="receive">الاستلام اليومي</button>
+          <button class="tab" type="button" data-inv="count">الجرد اليومي</button>
+          <button class="tab" type="button" data-inv="log">السجل</button>
+        </div>
+        <label class="field field--sm">
+          <span class="field__label">الفرع</span>
+          <select id="inventory-branch"><option value="">فرعي</option></select>
+        </label>
+      </div>
+      <p id="stk-alert" class="alert" role="status" hidden></p>
+
+      <div data-inv-tab="stock">
       <section class="card">
         <div class="card__head">
-          <h2 class="card__title card__title--sm">أرصدة الأصناف</h2>
-          <label class="field field--sm">
-            <span class="field__label">الفرع</span>
-            <select id="inventory-branch"><option value="">فرعي</option></select>
+          <h2 class="card__title card__title--sm">أرصدة الأصناف — من مخزون فوديكس</h2>
+          <div class="row row--wrap" data-stk-manage hidden>
+            <button id="stk-sync" class="btn btn--primary btn--xs" type="button">سحب كل بيانات المخزون الآن</button>
+            <button id="stk-test" class="btn btn--ghost btn--xs" type="button">اختبار الحقول</button>
+          </div>
+        </div>
+        <div id="stk-totals" class="fin-tiles"></div>
+        <div class="filters">
+          <label class="field field--sm"><span class="field__label">بحث</span><input id="stk-q" type="search" placeholder="اسم الصنف أو الرمز" /></label>
+          <label class="field field--sm"><span class="field__label">عرض</span>
+            <select id="stk-filter"><option value="">كل الأصناف</option><option value="low">تحت حد إعادة الطلب</option><option value="nostock">بلا رصيد من فوديكس</option></select>
           </label>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="stk-table">
+            <thead><tr><th>الرمز</th><th>الصنف</th><th>التصنيف</th><th>الرصيد</th><th>الوحدة</th><th>حد إعادة الطلب</th><th>تكلفة الوحدة</th><th>القيمة</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="stk-empty" class="empty" hidden>لا أصناف بعد — اضغط «سحب كل بيانات المخزون الآن».</p>
+        <p id="stk-fields" class="hint" hidden></p>
+        <p class="hint">تُحدَّث الأرصدة من فوديكس كل ساعة، وأوامر الشراء والتحويلات كل 10 دقائق.</p>
+      </section>
+      </div>
+
+      <div data-inv-tab="receive" hidden>
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">الاستلام اليومي — الشراء والتحويلات من فوديكس</h2>
+          <div class="row row--wrap">
+            <label class="field field--sm"><span class="field__label">من</span><input id="rcv-from" type="date" /></label>
+            <label class="field field--sm"><span class="field__label">إلى</span><input id="rcv-to" type="date" /></label>
+            <label class="field field--sm"><span class="field__label">الحالة</span>
+              <select id="rcv-status"><option value="">الكل</option><option value="awaiting">بانتظار التأكيد</option><option value="disputed">يوجد فرق</option><option value="confirmed">مطابق</option></select>
+            </label>
+            <button id="rcv-load" class="btn btn--ghost btn--xs" type="button">عرض</button>
+            <button id="rcv-print" class="btn btn--ghost btn--xs" type="button">طباعة نموذج الاستلام اليومي</button>
+          </div>
+        </div>
+        <div id="rcv-totals" class="fin-tiles"></div>
+        <div class="table-wrap">
+          <table class="table" id="rcv-table">
+            <thead><tr><th>التاريخ</th><th>النوع</th><th>الرقم</th><th>المورد / الفرع</th><th>الأصناف</th><th>القيمة</th><th>في فوديكس</th><th>التأكيد</th><th>المستلِم</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="rcv-empty" class="empty" hidden>لا مستندات شراء أو تحويل في هذه الفترة.</p>
+        <div id="rcv-detail" hidden></div>
+        <p class="hint">
+          الموظف المستلِم يؤكّد من تطبيقه: «مطابق» أو «يوجد فرق» مع الكمية الفعلية. أي فرق يصل تنبيهه
+          للمالك، والاستلام الذي لا يُؤكَّد حتى الساعة 4 فجراً يصل تنبيهه لمدير الفرع.
+        </p>
+      </section>
+      </div>
+
+      <div data-inv-tab="count" hidden>
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">ورقة الجرد اليومي</h2>
+          <div class="row row--wrap">
+            <input id="inventory-daily-date" type="date" />
+            <button id="inventory-daily-run" class="btn btn--ghost btn--xs" type="button">
+              عرض
+            </button>
+            <button id="inventory-daily-print" class="btn btn--ghost btn--xs" type="button">
+              طباعة ورقة الجرد
+            </button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="table" id="inventory-daily-table">
+            <thead>
+              <tr>
+                <th>الرمز</th>
+                <th>الصنف</th>
+                <th>الوحدة</th>
+                <th>الرصيد الدفتري</th>
+                <th>وارد اليوم</th>
+                <th>صادر اليوم</th>
+                <th>المعدود</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="inventory-daily-empty" class="empty" hidden>لا توجد أصناف نشطة.</p>
+        <p id="inventory-daily-result" class="alert" role="status" hidden></p>
+      </section>
+
+      </div>
+
+      <div data-inv-tab="log" hidden>
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">أرصدة «سِجل» الداخلية (حسب الحركات والجرد)</h2>
         </div>
 
         <p id="inventory-summary" class="row row--wrap"></p>
@@ -1853,6 +1690,69 @@
         <p id="inventory-result" class="alert" role="status" hidden></p>
       </section>
 
+
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">حركات المخزون</h2>
+        </div>
+
+        <div class="filters">
+          <label class="field field--sm">
+            <span class="field__label">الصنف</span>
+            <select id="inventory-filter-item"><option value="">كل الأصناف</option></select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">النوع</span>
+            <select id="inventory-filter-type">
+              <option value="">الكل</option>
+              <option value="in">إدخال</option>
+              <option value="out">إخراج</option>
+              <option value="count">جرد</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">من</span>
+            <input id="inventory-filter-from" type="date" />
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">إلى</span>
+            <input id="inventory-filter-to" type="date" />
+          </label>
+          <button id="inventory-filter-run" class="btn btn--ghost btn--sm" type="button">
+            عرض
+          </button>
+          <button id="inventory-movements-print" class="btn btn--ghost btn--sm" type="button">
+            طباعة الكشف
+          </button>
+        </div>
+
+        <div class="table-wrap">
+          <table class="table" id="inventory-movements-table">
+            <thead>
+              <tr>
+                <th>التاريخ</th>
+                <th>الفرع</th>
+                <th>الصنف</th>
+                <th>النوع</th>
+                <th>الكمية</th>
+                <th>تكلفة الوحدة</th>
+                <th>الإجمالي</th>
+                <th>السبب</th>
+                <th>فرق الجرد</th>
+                <th>سجّلها</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="inventory-movements-empty" class="empty" hidden>لا توجد حركات مطابقة.</p>
+        <p id="inventory-movements-result" class="alert" role="status" hidden></p>
+      </section>
+      </div>
+
+      <!-- الإدخال اليدوي القديم: أُلغي بعد ربط فوديكس (يبقى مخفياً لأن شاشة الجرد تعتمد على عناصره) -->
+      <div data-inv-tab="manual" hidden>
       <section class="card">
         <div class="card__head">
           <h2 class="card__title card__title--sm">استلام المشتريات</h2>
@@ -1860,6 +1760,7 @@
         <!-- تُبنى من purchase-receipts.js: نموذج الاستلام وسجله ومراجعته -->
         <div id="purchase-receipts" class="form-grid"></div>
       </section>
+
 
       <section class="card">
         <div class="card__head">
@@ -1940,99 +1841,8 @@
         </p>
       </section>
 
-      <section class="card">
-        <div class="card__head">
-          <h2 class="card__title card__title--sm">ورقة الجرد اليومي</h2>
-          <div class="row row--wrap">
-            <input id="inventory-daily-date" type="date" />
-            <button id="inventory-daily-run" class="btn btn--ghost btn--xs" type="button">
-              عرض
-            </button>
-            <button id="inventory-daily-print" class="btn btn--ghost btn--xs" type="button">
-              طباعة ورقة الجرد
-            </button>
-          </div>
-        </div>
+      </div>
 
-        <div class="table-wrap">
-          <table class="table" id="inventory-daily-table">
-            <thead>
-              <tr>
-                <th>الرمز</th>
-                <th>الصنف</th>
-                <th>الوحدة</th>
-                <th>الرصيد الدفتري</th>
-                <th>وارد اليوم</th>
-                <th>صادر اليوم</th>
-                <th>المعدود</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <p id="inventory-daily-empty" class="empty" hidden>لا توجد أصناف نشطة.</p>
-        <p id="inventory-daily-result" class="alert" role="status" hidden></p>
-      </section>
-
-      <section class="card">
-        <div class="card__head">
-          <h2 class="card__title card__title--sm">حركات المخزون</h2>
-        </div>
-
-        <div class="filters">
-          <label class="field field--sm">
-            <span class="field__label">الصنف</span>
-            <select id="inventory-filter-item"><option value="">كل الأصناف</option></select>
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">النوع</span>
-            <select id="inventory-filter-type">
-              <option value="">الكل</option>
-              <option value="in">إدخال</option>
-              <option value="out">إخراج</option>
-              <option value="count">جرد</option>
-            </select>
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">من</span>
-            <input id="inventory-filter-from" type="date" />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">إلى</span>
-            <input id="inventory-filter-to" type="date" />
-          </label>
-          <button id="inventory-filter-run" class="btn btn--ghost btn--sm" type="button">
-            عرض
-          </button>
-          <button id="inventory-movements-print" class="btn btn--ghost btn--sm" type="button">
-            طباعة الكشف
-          </button>
-        </div>
-
-        <div class="table-wrap">
-          <table class="table" id="inventory-movements-table">
-            <thead>
-              <tr>
-                <th>التاريخ</th>
-                <th>الفرع</th>
-                <th>الصنف</th>
-                <th>النوع</th>
-                <th>الكمية</th>
-                <th>تكلفة الوحدة</th>
-                <th>الإجمالي</th>
-                <th>السبب</th>
-                <th>فرق الجرد</th>
-                <th>سجّلها</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <p id="inventory-movements-empty" class="empty" hidden>لا توجد حركات مطابقة.</p>
-        <p id="inventory-movements-result" class="alert" role="status" hidden></p>
-      </section>
     </main>
 
     <!-- ── لوحة الإعدادات ─────────────────────────────────────── -->
@@ -2381,6 +2191,7 @@
             <button class="tab" type="button" data-sv="cameras">الكاميرات والمناطق</button>
             <button class="tab" type="button" data-sv="people">المستلمون والتصعيد</button>
             <button class="tab" type="button" data-sv="report">التقرير والتقييمات</button>
+            <button class="tab" type="button" data-sv="fxorders">فواتير فوديكس</button>
             <button class="tab" type="button" id="sv-more" aria-expanded="false">المزيد ▾</button>
           </div>
           <div class="tabs tabs--more" id="sv-more-tabs" role="tablist" hidden>
@@ -3140,6 +2951,69 @@
           <summary class="hint">جدول التوجيه: من يستلم كل نوع تنبيه</summary>
           <div id="ct-routes"></div>
         </details>
+      </section>
+
+      <!-- أرشيف فواتير فوديكس -->
+      <section class="card" data-sv-section="fxorders" hidden>
+        <h3 class="card__title card__title--sm">فواتير فوديكس — كل الطلبات</h3>
+        <p id="fo-status" class="row row--wrap"></p>
+
+        <div data-sv-manage>
+          <details id="fo-backfill-box">
+            <summary class="hint">سحب كل الفواتير السابقة من فوديكس</summary>
+            <form id="fo-backfill-form" class="form-grid">
+              <label class="field field--sm">
+                <span class="field__label">اسحب الفواتير من تاريخ</span>
+                <input id="fo-backfill-from" type="date" value="2015-01-01" />
+              </label>
+              <div class="row row--wrap">
+                <button id="fo-backfill-start" class="btn btn--primary btn--sm" type="submit">ابدأ السحب</button>
+                <button id="fo-backfill-stop" class="btn btn--ghost btn--sm" type="button" hidden>إيقاف</button>
+              </div>
+            </form>
+            <progress id="fo-backfill-bar" max="100" value="0" style="width:100%" hidden></progress>
+            <p id="fo-backfill-msg" class="hint"></p>
+            <p class="hint">
+              يُحفظ الأرشيف للعرض والتحليل فقط — لا تُنشأ تنبيهات للفواتير القديمة. يمكن الإيقاف
+              والاستئناف، وتكرار السحب لا يكرر الفواتير. أبقِ الصفحة مفتوحة حتى ينتهي.
+            </p>
+          </details>
+        </div>
+
+        <form id="fo-filter" class="filters">
+          <label class="field field--sm"><span class="field__label">من</span><input id="fo-from" type="date" /></label>
+          <label class="field field--sm"><span class="field__label">إلى</span><input id="fo-to" type="date" /></label>
+          <label class="field field--sm">
+            <span class="field__label">الحالة</span>
+            <select id="fo-state">
+              <option value="">الكل</option>
+              <option value="closed">مدفوعة</option>
+              <option value="void">ملغاة</option>
+              <option value="returned">مرتجعة</option>
+              <option value="open">مفتوحة</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">نوع الطلب</span>
+            <select id="fo-channel">
+              <option value="">الكل</option>
+              <option value="dine_in">محلي</option>
+              <option value="takeaway">سفري</option>
+              <option value="delivery">توصيل</option>
+              <option value="drive_thru">سيارات</option>
+            </select>
+          </label>
+          <label class="field field--sm"><span class="field__label">بحث</span><input id="fo-q" type="search" placeholder="رقم الفاتورة، الكاشير، الصنف" /></label>
+          <div class="row row--wrap">
+            <button class="btn btn--primary btn--sm" type="submit">عرض</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-range="month">هذا الشهر</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-range="year">هذه السنة</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-range="all">الكل</button>
+          </div>
+        </form>
+        <div id="fo-summary"></div>
+        <div id="fo-list"></div>
+        <div id="fo-pager" class="row row--wrap"></div>
       </section>
 
       <!-- فوديكس والرقابة الثلاثية -->
