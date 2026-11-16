@@ -31,7 +31,7 @@ import {
 import { controlSettingsFor, footfallStats, patchControlSettings, tableStats } from "./control.js";
 import { createAlert, dayRange, settingsFor, type BranchRow } from "./routes/surveillance.js";
 import { safeTimeZone } from "./time.js";
-import { VISION_MODEL, isOffHours, latestImageKey, saveImage } from "./vision.js";
+import { VISION_MODEL, analysePreviewIfDue, isOffHours, latestImageKey, saveImage } from "./vision.js";
 
 export const ZONE_KINDS = ["table", "queue", "door", "restricted"] as const;
 export type ZoneKind = (typeof ZONE_KINDS)[number];
@@ -478,6 +478,10 @@ export async function savePreview(branch: BranchRow, cameraNumber: string, image
   if (!camera) return false;
   await saveImage(latestImageKey(camera.id), image, "image/jpeg");
   await db.update(surveillanceCameras).set({ lastFrameAt: new Date() }).where(eq(surveillanceCameras.id, camera.id));
+  // الكاميرات المفعّل عليها الكشف الآلي تُحلَّل بهذه اللقطة حين يحين موعدها.
+  await analysePreviewIfDue(camera, branch, image).catch((error) => {
+    console.error("[edge] تعذّر تحليل لقطة الكاميرا", camera.cameraNumber, error);
+  });
   return true;
 }
 

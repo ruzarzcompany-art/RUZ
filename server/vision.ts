@@ -17,7 +17,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { getStore } from "@netlify/blobs";
-import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import {
   attendanceLogs,
@@ -959,6 +959,33 @@ export async function agentJobs(branchCode: string | null) {
 }
 
 /**
+ * لقطة وصلت من جهاز التحليل في المطعم: إن كانت الكاميرا مفعّلة للكشف الآلي وحان
+ * موعد تحليلها (وضمن حدود التكلفة) تُحلَّل بها مباشرة، فلا حاجة لجهاز ربط آخر.
+ * الحجز الذرّي يمنع تحليل الكاميرا نفسها مرتين حين تتوالى اللقطات.
+ */
+export async function analysePreviewIfDue(camera: CameraRow, branch: BranchRow, image: Buffer): Promise<boolean> {
+  if (!camera.isActive || !camera.autoDetect || camera.connectionMode !== "agent") return false;
+  const now = new Date();
+  if (!isDue(camera, now)) return false;
+  const { allowed } = await applyCostControls([{ camera, branch }], now);
+  if (allowed.length === 0) return false;
+  const dueBefore = new Date(now.getTime() - camera.intervalMinutes * 60_000 + 20_000);
+  const claimed = await getDb()
+    .update(surveillanceCameras)
+    .set({ lastAnalysisAt: now })
+    .where(
+      and(
+        eq(surveillanceCameras.id, camera.id),
+        or(isNull(surveillanceCameras.lastAnalysisAt), lte(surveillanceCameras.lastAnalysisAt, dueBefore)),
+      ),
+    )
+    .returning({ id: surveillanceCameras.id });
+  if (claimed.length === 0) return false;
+  await processFrame({ camera, branch, image: { data: image, contentType: "image/jpeg" }, source: "agent" });
+  return true;
+}
+
+/**
  * تشغيل دوري: يجلب لقطات الكاميرات العامة (pull) المستحقة ويحلّلها، ويكشف
  * الكاميرات التي انقطعت لقطاتها (جهاز ربط متوقف أو كاميرا مفصولة).
  */
@@ -1002,7 +1029,9 @@ export async function runScheduledScan(budgetMs = 24_000): Promise<{ analysed: n
     if (policy.skipped.has(camera.id)) continue;
     const limit = Math.max(15, camera.intervalMinutes * 3) * 60_000;
     const resumed = await resumedAt(camera, branch, now);
-    const lastSeen = camera.lastAnalysisAt ?? camera.updatedAt;
+    // لقطات جهاز التحليل في المطعم دليل أن الكاميرا تعمل، حتى لو لم تُحلَّل بعد.
+    const analysed = camera.lastAnalysisAt ?? camera.updatedAt;
+    const lastSeen = camera.lastFrameAt && camera.lastFrameAt > analysed ? camera.lastFrameAt : analysed;
     const last = resumed && resumed > lastSeen ? resumed : lastSeen;
     if (now.getTime() - last.getTime() < limit) continue;
     stale += 1;
