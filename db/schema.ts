@@ -1942,6 +1942,71 @@ export const foodicsInventoryEvents = pgTable(
 );
 
 /**
+ * foodics_stock_docs — مستندات المخزون الواردة من فوديكس لكل فرع: أوامر
+ * الشراء والتحويلات بين الفروع. من هنا «الاستلام اليومي»: الموظف المستلِم
+ * يؤكّد في التطبيق أن ما وصل فعلاً يطابق فوديكس (أو يسجّل الفرق)، فتكتمل
+ * الرقابة: فوديكس ↔ الاستلام الفعلي ↔ الجرد.
+ */
+export const foodicsStockDocs = pgTable(
+  "foodics_stock_docs",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** purchase | transfer_in | transfer_out */
+    kind: text().notNull().default("purchase"),
+    foodicsId: text("foodics_id").notNull(),
+    reference: text().notNull().default(""),
+    /** المورد (للشراء) أو الفرع المرسل/المستقبل (للتحويل) */
+    party: text().notNull().default(""),
+    /** الحالة الخام في فوديكس */
+    foodicsStatus: text("foodics_status").notNull().default(""),
+    /** open = لم يُستلم بعد في فوديكس، received = مستلم في فوديكس، cancelled */
+    state: text().notNull().default("open"),
+    businessDate: date("business_date"),
+    expectedAt: timestamp("expected_at", { withTimezone: true }),
+    receivedAt: timestamp("received_at", { withTimezone: true }),
+    total: money("total"),
+    /** [{ name, sku, unit, ordered, received, cost }] */
+    itemsJson: text("items_json").notNull().default("[]"),
+    /** awaiting = بانتظار تأكيد الموظف، confirmed = مطابق، disputed = فيه فرق */
+    confirmStatus: text("confirm_status").notNull().default("awaiting"),
+    confirmedByEmployeeId: integer("confirmed_by_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    confirmNote: text("confirm_note").notNull().default(""),
+    /** الفروق التي سجّلها الموظف: [{ sku, name, expected, actual }] */
+    diffJson: text("diff_json").notNull().default("[]"),
+    /** وقت إرسال تنبيه عدم التأكيد (لمنع التكرار) */
+    remindedAt: timestamp("reminded_at", { withTimezone: true }),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("foodics_stock_docs_key_idx").on(table.branchId, table.kind, table.foodicsId),
+    index("foodics_stock_docs_branch_date_idx").on(table.branchId, table.businessDate),
+  ],
+);
+
+/** foodics_item_stock — رصيد كل صنف في الفرع كما يعيده فوديكس (آخر مزامنة). */
+export const foodicsItemStock = pgTable(
+  "foodics_item_stock",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    itemId: integer("item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "cascade" }),
+    quantity: doublePrecision().notNull().default(0),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("foodics_item_stock_key_idx").on(table.branchId, table.itemId)],
+);
+
+/**
  * purchase_receipts — استلام المشتريات: الحلقة اليدوية من الرقابة الثلاثية.
  *
  * الموظف المستلِم يؤكد ما وصل فعلاً (الكمية وسعر الوحدة لكل صنف) وإجمالي
