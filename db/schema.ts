@@ -2383,3 +2383,65 @@ export const controlFootfall = pgTable(
   },
   (table) => [uniqueIndex("control_footfall_branch_hour_idx").on(table.branchId, table.hourStart)],
 );
+
+/* ══ البنك والمطابقة ════════════════════════════════════════════════
+ * كشف البنك يُرفع من المالية، فتُوزَّع حركاته على الجهات بقواعد يثبّتها
+ * المالك مرة واحدة، ثم تُطابَق الإيداعات بمستحقات فوديكس والمسحوبات
+ * بمشتريات الموردين. جداول جديدة فقط ولا تعديل لجدول قائم.
+ * ══════════════════════════════════════════════════════════════════ */
+
+/** bank_transactions — حركة واحدة من كشف البنك. */
+export const bankTransactions = pgTable(
+  "bank_transactions",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    txDate: date("tx_date").notNull(),
+    description: text().notNull().default(""),
+    /** دائن (وارد) — موجب دائماً */
+    credit: money("credit"),
+    /** مدين (صادر) — موجب دائماً */
+    debit: money("debit"),
+    balance: doublePrecision(),
+    /** الجهة كما استُخرجت من وصف الحركة */
+    counterparty: text().notNull().default(""),
+    /** نوع الحركة (أول كلمات الوصف): حوالة فورية واردة، سداد بطاقة ... */
+    kind: text().notNull().default(""),
+    reference: text().notNull().default(""),
+    /** بصمة تمنع تكرار الحركة عند رفع كشف متداخل */
+    fingerprint: text().notNull(),
+    uploadedByEmployeeId: integer("uploaded_by_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("bank_transactions_fp_idx").on(table.branchId, table.fingerprint),
+    index("bank_transactions_branch_date_idx").on(table.branchId, table.txDate),
+  ],
+);
+
+/** bank_rules — تثبيت اسم الجهة: لأي بند تتبع وبأي اسم تُطابَق. */
+export const bankRules = pgTable(
+  "bank_rules",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    counterparty: text().notNull(),
+    /**
+     * sales_provider | supplier | salaries | government | utilities |
+     * bank_fees | credit_card | owner | other_income | other
+     */
+    category: text().notNull().default("other"),
+    /** اسم طريقة الدفع في فوديكس (للمبيعات) أو اسم المورد (للمشتريات) */
+    mappedName: text("mapped_name").notNull().default(""),
+    /** بعد كم يوم يصل مبلغ اليوم إلى البنك (0 = دفعات دورية) */
+    lagDays: integer("lag_days").notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("bank_rules_branch_cp_idx").on(table.branchId, table.counterparty)],
+);
