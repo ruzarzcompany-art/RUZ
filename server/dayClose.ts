@@ -220,6 +220,47 @@ export async function upsertDayClose(branch: BranchRow, date: string) {
   return closing;
 }
 
+/**
+ * عهدة الصندوق النقدية: مبلغ ثابت يبقى داخل الدرج كل يوم (فكة).
+ * تُطبَّق على كل تقفيلات الفرع من التاريخ المحدد فما بعد (عدا المراجَعة)،
+ * ويُعاد حساب النقد المتوقّع والفرق. الأيام الجديدة ترث آخر عهدة تلقائياً.
+ */
+export async function setOpeningFloat(branchId: number, from: string, amount: number) {
+  const db = getDb();
+  const value = round2(amount);
+  const rows = await db
+    .select()
+    .from(cashierClosings)
+    .where(and(eq(cashierClosings.branchId, branchId), gte(cashierClosings.businessDate, from), ne(cashierClosings.status, "reviewed")));
+  for (const row of rows) {
+    const refundsCash = await cashRefunds(branchId, row.businessDate);
+    const expectedCash = round2(value + row.cashSales - row.expenses - refundsCash);
+    const confirmed = !OPEN_STATUSES.includes(row.status);
+    await db
+      .update(cashierClosings)
+      .set({
+        openingFloat: value,
+        expectedCash,
+        difference: confirmed ? round2(row.countedCash - expectedCash) : 0,
+        updatedAt: new Date(),
+      })
+      .where(eq(cashierClosings.id, row.id));
+  }
+  return { updated: rows.length, amount: value };
+}
+
+/** العهدة الحالية للفرع = عهدة آخر تقفيل. */
+export async function currentFloat(branchId: number): Promise<number> {
+  const db = getDb();
+  const [row] = await db
+    .select({ f: cashierClosings.openingFloat })
+    .from(cashierClosings)
+    .where(eq(cashierClosings.branchId, branchId))
+    .orderBy(desc(cashierClosings.businessDate))
+    .limit(1);
+  return Number(row?.f ?? 0);
+}
+
 /** تأكيد الكاشير: النقد المعدود ومصاريف الدرج وملاحظة. */
 export async function confirmDayClose(input: {
   closingId: number;
