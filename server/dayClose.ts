@@ -31,6 +31,7 @@ import {
 import { foodicsCredentials, foodicsDaySales } from "./foodics.js";
 import { createAlert, dayRange, type BranchRow } from "./routes/surveillance.js";
 import { isoDateInZone, safeTimeZone, wallPartsInZone } from "./time.js";
+import { financeStartDate } from "./financeStart.js";
 
 /** ساعة إقفال اليوم بتوقيت الفرع: ما قبلها يُحسب من اليوم السابق. */
 export const DAY_CLOSE_HOUR = 4;
@@ -136,6 +137,8 @@ async function expenseTotal(closingId: number): Promise<number> {
  */
 export async function upsertDayClose(branch: BranchRow, date: string) {
   const db = getDb();
+  const start = await financeStartDate(branch.id);
+  if (start && date < start) return null;
   const sales = await foodicsDaySales(branch.id, date);
   const existing = await closingOf(branch.id, date);
   if (!sales.orders && !existing) return null;

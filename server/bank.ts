@@ -15,6 +15,7 @@ import { and, asc, eq, gte, lte, ne } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import { bankRules, bankTransactions, foodicsStockDocs, purchaseReceipts } from "../db/schema.js";
 import { foodicsDaySales } from "./foodics.js";
+import { clampFrom, financeStartDate } from "./financeStart.js";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -27,6 +28,8 @@ export const BANK_CATEGORIES: Record<string, string> = {
   bank_fees: "رسوم وضريبة بنكية",
   credit_card: "سداد بطاقة ائتمانية",
   owner: "سحب / إيداع المالك",
+  operating_expenses: "مصروفات عمل",
+  subscriptions: "اشتراكات وبرامج",
   other_income: "إيراد آخر",
   other: "أخرى",
 };
@@ -77,6 +80,7 @@ export function suggestRule(counterparty: string, description: string, isCredit:
   if (has("اللون الرقمي", "foodics")) return { category: "sales_provider", mappedName: "Card foodics pay", lagDays: 1 };
   if (has("ايداع وحفظ اموال", "geidea", "جيديا")) return { category: "sales_provider", mappedName: "Card", lagDays: 1 };
   if (has("تامينات", "وزاره", "تجديد اقامه", "moi", "مقيم", "قوي", "بلدي", "جوازات", "زكاه")) return { category: "government", mappedName: "", lagDays: 0 };
+  if (has("جوباي", "foodics subscription")) return { category: "subscriptions", mappedName: "", lagDays: 0 };
   if (has("كهرباء", "مياه", "stc", "موبايلي", "زين", "جوباي", "اتصالات")) return { category: "utilities", mappedName: "", lagDays: 0 };
   if (has("small medium enterprises", "منشات")) return { category: "other_income", mappedName: "", lagDays: 0 };
   return isCredit ? { category: "other_income", mappedName: "", lagDays: 0 } : { category: "supplier", mappedName: counterparty, lagDays: 0 };
@@ -134,8 +138,10 @@ export async function loadRules(branchId: number) {
   return new Map(rows.map((r) => [r.counterparty, r]));
 }
 
-export async function reconcile(branchId: number, from: string, to: string) {
+export async function reconcile(branchId: number, fromRaw: string, to: string) {
   const db = getDb();
+  const startDate = await financeStartDate(branchId);
+  const from = clampFrom(fromRaw, startDate);
   const txs = await db
     .select()
     .from(bankTransactions)
@@ -285,6 +291,7 @@ export async function reconcile(branchId: number, from: string, to: string) {
   return {
     from,
     to,
+    startDate,
     firstSalesDay,
     totals: {
       transactions: inPeriod.length,
