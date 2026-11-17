@@ -2445,3 +2445,12 @@ export const bankRules = pgTable(
   },
   (table) => [uniqueIndex("bank_rules_branch_cp_idx").on(table.branchId, table.counterparty)],
 );
+
+/** finance_settings — بداية الحسابات لكل فرع: ما قبلها لا يدخل التقفيل ولا المطابقة. */
+export const financeSettings = pgTable("finance_settings", {
+  branchId: integer("branch_id")
+    .primaryKey()
+    .references(() => branches.id, { onDelete: "cascade" }),
+  startDate: date("start_date"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
