@@ -229,7 +229,9 @@ export async function loadDayCloses() {
     return;
   }
   const t = res.totals;
+  if (document.activeElement !== el("dc-float-amount")) el("dc-float-amount").value = String(res.openingFloat ?? 0);
   el("dc-totals").replaceChildren(
+    tile("عهدة الصندوق", money(res.openingFloat ?? 0), "", "داخل الدرج يومياً"),
     tile("المبيعات", money(t.totalSales), "", `${t.days} يوم`),
     tile("النقد", money(t.cashSales)),
     tile("مستحقات الشبكة والتطبيقات", money(t.receivables), "", `شبكة ${formatMoney(t.networkSales)} · تطبيقات ${formatMoney(t.deliverySales)}`),
@@ -262,6 +264,19 @@ async function rebuild(event) {
   setBusy(button, false);
   setAlert(el("fh-alert"), res?.ok ? `بُنيت تقفيلات ${total} يوم من فوديكس.` : res?.error ?? "تعذّر إعادة البناء", res?.ok ? "ok" : "error");
   await loadDayCloses();
+}
+
+async function saveFloat(event) {
+  event.preventDefault();
+  const button = event.target.querySelector("button");
+  setBusy(button, true);
+  const res = await api("/dayclose/float", {
+    method: "POST",
+    body: { branchId: branchId(), amount: Number(el("dc-float-amount").value), from: el("dc-float-from").value },
+  });
+  setBusy(button, false);
+  setAlert(el("fh-alert"), res.ok ? res.message : res.error, res.ok ? "ok" : "error");
+  if (res.ok) await loadDayCloses();
 }
 
 const LOADERS = {
@@ -320,6 +335,8 @@ export function initFinancePanel({ can, openMain }) {
   });
   for (const node of document.querySelectorAll("[data-dc-manage]")) node.hidden = !can("cashier.review");
   el("dc-rebuild-form").addEventListener("submit", rebuild);
+  el("dc-float-form").addEventListener("submit", saveFloat);
+  el("dc-float-from").value = todayIso();
   el("dc-rebuild-from").value = `${todayIso().slice(0, 8)}01`;
   el("dc-rebuild-to").value = todayIso();
 }

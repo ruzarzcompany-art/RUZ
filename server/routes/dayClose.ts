@@ -5,6 +5,7 @@
  *   POST /api/dayclose/:id/confirm             تأكيد الكاشير للنقد المعدود ومصاريف الدرج
  *   GET  /api/dayclose?branchId=&from=&to=     للمالية: تقفيلات الأيام مع الفروقات والحالة
  *   POST /api/dayclose/refresh                 تحديث يوم من فوديكس الآن
+ *   POST /api/dayclose/float                   عهدة الصندوق النقدية من تاريخ محدد
  *   POST /api/dayclose/rebuild                 إعادة بناء تقفيلات فترة من فواتير فوديكس المحفوظة
  */
 
@@ -22,7 +23,9 @@ import {
   STATUS_LABELS,
   businessDateNow,
   confirmDayClose,
+  currentFloat,
   rebuildDayCloses,
+  setOpeningFloat,
   upsertDayClose,
 } from "../dayClose.js";
 import { foodicsDaySales } from "../foodics.js";
@@ -205,6 +208,7 @@ dayCloseRouter.get("/dayclose", ...canRead, async (req: AuthedRequest, res: Resp
     from,
     to,
     closeHour: DAY_CLOSE_HOUR,
+    openingFloat: await currentFloat(branch.id),
     totals: {
       days: list.length,
       totalSales: sum("totalSales"),
@@ -253,4 +257,29 @@ dayCloseRouter.post("/dayclose/rebuild", ...canManage, async (req: AuthedRequest
     ipAddress: clientIp(req),
   });
   res.json({ ok: true, ...result });
+});
+
+dayCloseRouter.post("/dayclose/float", ...canManage, async (req: AuthedRequest, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const branch = await loadBranch(asId(body.branchId) ?? req.employee?.branchId ?? null);
+  if (!branch) {
+    res.status(400).json({ ok: false, error: "اختر الفرع" });
+    return;
+  }
+  const amount = asNumber(body.amount);
+  if (amount === null || amount < 0 || amount > 1_000_000) {
+    res.status(400).json({ ok: false, error: "اكتب مبلغ العهدة (رقم صحيح)" });
+    return;
+  }
+  const from = asDateOnly(body.from) ?? businessDateNow(branch.timezone);
+  const result = await setOpeningFloat(branch.id, from, amount);
+  await recordAudit({
+    actorEmployeeId: req.employee!.id,
+    action: "dayclose.float",
+    entityType: "branch",
+    entityId: branch.id,
+    after: { from, ...result },
+    ipAddress: clientIp(req),
+  });
+  res.json({ ok: true, ...result, message: `حُفظت عهدة الصندوق ${result.amount} ريال من ${from} (${result.updated} يوم أُعيد حسابه).` });
 });
