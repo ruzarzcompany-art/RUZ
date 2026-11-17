@@ -10,6 +10,7 @@ import { api, el, formatDateTime, formatMoney, setAlert, setBusy, todayIso } fro
 import { createPager } from "../pagination.js";
 import { refreshCashboxPanel } from "./cashbox.js";
 import { refreshFinanceHome } from "./finance-home.js";
+import { initBankPanel, loadBank } from "./bank.js";
 
 const state = { tab: "summary", can: () => false, openMain: null, rows: [] };
 const pager = createPager("dc-table", { unit: "يوم" });
@@ -290,6 +291,7 @@ const LOADERS = {
     syncCashboxBranch();
     await refreshCashboxPanel();
   },
+  bank: loadBank,
 };
 
 /** فرع شاشة الشبكات وإقفال الشهر يتبع فرع المالية المختار. */
@@ -336,6 +338,7 @@ export function initFinancePanel({ can, openMain }) {
   for (const node of document.querySelectorAll("[data-dc-manage]")) node.hidden = !can("cashier.review");
   el("dc-rebuild-form").addEventListener("submit", rebuild);
   el("dc-float-form").addEventListener("submit", saveFloat);
+  initBankPanel({ can, branchId });
   el("dc-float-from").value = todayIso();
   el("dc-rebuild-from").value = `${todayIso().slice(0, 8)}01`;
   el("dc-rebuild-to").value = todayIso();
