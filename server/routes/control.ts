@@ -44,6 +44,8 @@ import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
 import {
   FEEDBACK_CATEGORIES,
+  GOOGLE_BUSINESS_PATH,
+  GOOGLE_PLACE_ID,
   TIERS,
   TIER_LABELS,
   acknowledge,
@@ -75,7 +77,7 @@ import {
 import { PERMISSIONS, requireModuleLevel, requirePermission } from "../rbac.js";
 import { isoDateInZone, safeTimeZone } from "../time.js";
 import { asBool, asDateOnly, asEnum, asId, asNumber, asString } from "../validate.js";
-import { ALERT_TYPES, LABELS, loadBranch, webhookAuthorized } from "./surveillance.js";
+import { ALERT_TYPES, LABELS, alertFramePayload, loadBranch, webhookAuthorized } from "./surveillance.js";
 
 export const controlRouter = Router();
 
@@ -168,8 +170,8 @@ controlRouter.put("/control/settings", ...canManage, async (req: AuthedRequest, 
   if (tableCount < 0 || tableCount > 300) return bad(res, "عدد الطاولات بين 0 و300");
 
   const googleLocation = (asString(body.googleLocation, 200) ?? current.googleLocation).trim();
-  if (googleLocation && !/^accounts\/[\w-]+\/locations\/[\w-]+$/.test(googleLocation)) {
-    return bad(res, "مسار موقع قوقل بالصيغة: accounts/123/locations/456");
+  if (googleLocation && !GOOGLE_BUSINESS_PATH.test(googleLocation) && !GOOGLE_PLACE_ID.test(googleLocation)) {
+    return bad(res, "ضع معرّف المكان في قوقل (يبدأ بـ ChIJ) أو المسار accounts/123/locations/456");
   }
   const briefTime = (asString(body.briefTime, 5) ?? current.briefTime).trim();
   if (briefTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(briefTime)) return bad(res, "وقت التقرير بصيغة HH:MM أو فارغ لإيقافه");
@@ -415,6 +417,11 @@ controlRouter.get("/control/ack-info", async (req: Request, res: Response) => {
     // تفاصيل الاشتباه لا تُعرض إلا لمستوى المالك
     details: alert.isSuspicion && context.recipient.tier !== "owner" ? "" : alert.details,
     action: ALERT_TYPES[alert.alertType]?.action ?? "",
+    // صورة الدليل: للمالك والمدير دائماً، وللموظف إن لم يكن التنبيه اشتباهاً
+    image:
+      alert.isSuspicion && context.recipient.tier === "staff"
+        ? null
+        : ((await alertFramePayload(alert.id).catch(() => null))?.image ?? null),
     acked: dispatch.status === "acked",
     ackByName: dispatch.ackByName,
     ackAt: dispatch.ackAt,

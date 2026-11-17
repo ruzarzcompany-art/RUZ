@@ -152,7 +152,7 @@ export const ALERT_TYPES: Record<string, AlertTypeSpec> = {
   camera_moved: {
     label: "كاميرا تم تحريكها عن زاويتها",
     role: "camera",
-    urgent: true,
+    urgent: false,
     suspicion: false,
     severity: 2,
     action: "إعادة الكاميرا لزاويتها المعتمدة، ومراجعة المقطع لمعرفة من حرّكها.",
@@ -2324,6 +2324,17 @@ surveillanceRouter.get("/surveillance/frames", ...canRead, async (req: AuthedReq
     .limit(Math.min(asNumber(req.query.limit) ?? 30, 200));
   res.json({ ok: true, frames: frames.map(frameView) });
 });
+
+export async function alertFramePayload(alertId: number) {
+  const db = getDb();
+  const [frame] = await db
+    .select()
+    .from(surveillanceFrames)
+    .where(sql`${alertId} = ANY(${surveillanceFrames.alertIds})`)
+    .orderBy(desc(surveillanceFrames.capturedAt))
+    .limit(1);
+  return frameImagePayload(frame);
+}
 
 async function frameImagePayload(frame: typeof surveillanceFrames.$inferSelect | undefined) {
   if (!frame) return null;
