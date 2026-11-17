@@ -72,7 +72,8 @@ async function cashRefunds(branchId: number, date: string): Promise<number> {
   let sum = 0;
   for (const r of rows) {
     const pays = JSON.parse(r.paymentsJson || "[]") as Array<{ kind: string; amount: number }>;
-    sum += pays.length ? pays.filter((p) => p.kind === "cash").reduce((s, p) => s + Number(p.amount || 0), 0) : 0;
+    // فوديكس يسجّل دفعة المرتجع بالسالب (‎-39‎)؛ المبلغ الخارج من الدرج هو قيمتها المطلقة
+    sum += pays.length ? pays.filter((p) => p.kind === "cash").reduce((s, p) => s + Math.abs(Number(p.amount || 0)), 0) : 0;
   }
   return round2(sum);
 }
