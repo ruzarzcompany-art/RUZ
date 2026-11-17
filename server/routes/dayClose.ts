@@ -31,6 +31,7 @@ import {
 import { foodicsDaySales } from "../foodics.js";
 import { isoDateInZone } from "../time.js";
 import { loadBranch } from "./surveillance.js";
+import { clampFrom, financeStartDate, setFinanceStartDate } from "../financeStart.js";
 
 export const dayCloseRouter = Router();
 
@@ -97,6 +98,7 @@ dayCloseRouter.get("/dayclose/mine", requireAuth, requirePermission(PERMISSIONS.
   }
   const db = getDb();
   const today = businessDateNow(branch.timezone);
+  const start = await financeStartDate(branch.id);
   const pending = await db
     .select()
     .from(cashierClosings)
@@ -104,6 +106,7 @@ dayCloseRouter.get("/dayclose/mine", requireAuth, requirePermission(PERMISSIONS.
       and(
         eq(cashierClosings.branchId, branch.id),
         inArray(cashierClosings.status, OPEN_STATUSES),
+        start ? gte(cashierClosings.businessDate, start) : undefined,
         // الكاشير يؤكّد آخر 3 أيام فقط؛ الأقدم يؤكّده المدير بالنيابة من «المالية»
         gte(cashierClosings.businessDate, isoDateInZone(new Date(new Date(`${today}T12:00:00Z`).getTime() - 2 * 86_400_000), "UTC")),
       ),
@@ -189,7 +192,8 @@ dayCloseRouter.get("/dayclose", ...canRead, async (req: AuthedRequest, res: Resp
     return;
   }
   const today = businessDateNow(branch.timezone);
-  const from = asDateOnly(req.query.from) ?? `${today.slice(0, 8)}01`;
+  const startDate = await financeStartDate(branch.id);
+  const from = clampFrom(asDateOnly(req.query.from) ?? `${today.slice(0, 8)}01`, startDate);
   const to = asDateOnly(req.query.to) ?? today;
   const db = getDb();
   const rows = await db
@@ -205,6 +209,7 @@ dayCloseRouter.get("/dayclose", ...canRead, async (req: AuthedRequest, res: Resp
     ok: true,
     branchId: branch.id,
     today,
+    startDate,
     from,
     to,
     closeHour: DAY_CLOSE_HOUR,
@@ -282,4 +287,28 @@ dayCloseRouter.post("/dayclose/float", ...canManage, async (req: AuthedRequest, 
     ipAddress: clientIp(req),
   });
   res.json({ ok: true, ...result, message: `حُفظت عهدة الصندوق ${result.amount} ريال من ${from} (${result.updated} يوم أُعيد حسابه).` });
+});
+
+dayCloseRouter.put("/dayclose/start-date", ...canManage, async (req: AuthedRequest, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const branch = await loadBranch(asId(body.branchId) ?? req.employee?.branchId ?? null);
+  if (!branch) {
+    res.status(400).json({ ok: false, error: "اختر الفرع" });
+    return;
+  }
+  const startDate = asDateOnly(body.startDate);
+  await setFinanceStartDate(branch.id, startDate);
+  await recordAudit({
+    actorEmployeeId: req.employee!.id,
+    action: "finance.start_date",
+    entityType: "branch",
+    entityId: branch.id,
+    after: { startDate },
+    ipAddress: clientIp(req),
+  });
+  res.json({
+    ok: true,
+    startDate,
+    message: startDate ? `بداية الحسابات من ${startDate}: ما قبله لا يدخل التقفيل ولا مطابقة البنك (ويبقى محفوظاً).` : "أُلغيت بداية الحسابات.",
+  });
 });
