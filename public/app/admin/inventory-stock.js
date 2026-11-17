@@ -116,7 +116,15 @@ async function testFields() {
   }
   const line = (label, r) =>
     `${label}: ${r.available ? `متاح (${r.path}) — ${r.total} سجل — الحقول: ${r.fields.join("، ") || "—"}${r.itemFields.length ? ` — حقول الأصناف داخله: ${r.itemFields.join("، ")}` : ""}` : "غير متاح في الحساب"}`;
-  box.textContent = [line("الأصناف", res.items), line("أوامر الشراء", res.purchaseOrders), line("التحويلات", res.transfers)].join("\n");
+  box.textContent = [
+    line("الأصناف", res.items),
+    line("أرصدة الكميات", res.levels),
+    res.branchPivot ? `رصيد الصنف داخل الفرع (عيّنة): ${res.branchPivot}` : "",
+    line("أوامر الشراء", res.purchaseOrders),
+    line("التحويلات", res.transfers),
+  ]
+    .filter(Boolean)
+    .join("\n");
   box.style.whiteSpace = "pre-line";
 }
 
@@ -159,12 +167,70 @@ function showDoc(d) {
   close.onclick = () => {
     box.hidden = true;
   };
-  box.replaceChildren(h, info, wrap, close);
+  const parts = [h, info, wrap];
+  if (state.can("inventory.items_manage") && d.state !== "cancelled" && d.confirmStatus !== "confirmed") {
+    parts.push(confirmForm(d));
+  }
+  box.replaceChildren(...parts, close);
   box.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+/** تأكيد الاستلام من لوحة الإدارة: الكمية الواصلة لكل صنف (افتراضياً = فوديكس). */
+function confirmForm(d) {
+  const form = document.createElement("div");
+  form.className = "card card--inset";
+  const title = document.createElement("p");
+  title.className = "hint";
+  title.textContent = "تأكيد الاستلام: عدّل الكمية الواصلة فعلاً لأي صنف مختلف، ثم اضغط «تأكيد».";
+  const inputs = [];
+  const grid = document.createElement("div");
+  grid.className = "form-grid__fields";
+  for (const l of d.items) {
+    const label = document.createElement("label");
+    label.className = "field field--sm";
+    const span = document.createElement("span");
+    span.className = "field__label";
+    span.textContent = `${l.name} (${l.unit || "—"})`;
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "any";
+    input.min = "0";
+    input.value = String(l.received || l.ordered);
+    inputs.push({ line: l, input });
+    label.append(span, input);
+    grid.append(label);
+  }
+  const noteInput = document.createElement("input");
+  noteInput.type = "text";
+  noteInput.placeholder = "ملاحظة (اختياري)";
+  noteInput.maxLength = 300;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn btn--primary btn--sm";
+  btn.textContent = "تأكيد الاستلام";
+  btn.onclick = async () => {
+    const diffs = inputs
+      .filter(({ line, input }) => Number(input.value) !== (line.received || line.ordered))
+      .map(({ line, input }) => ({ sku: line.sku, name: line.name, actual: Number(input.value) }));
+    setBusy(btn, true);
+    const res = await api(`/stock/docs/${d.id}/confirm`, { method: "POST", body: { diffs, note: noteInput.value.trim() } });
+    setBusy(btn, false);
+    setAlert(el("stk-alert"), res.ok ? res.message : res.error ?? "تعذّر التأكيد", res.ok ? "ok" : "error");
+    if (res.ok) {
+      el("rcv-detail").hidden = true;
+      await loadDocs();
+    }
+  };
+  form.append(title, grid, noteInput, btn);
+  return form;
+}
+
 async function loadDocs() {
-  if (!el("rcv-from").value) el("rcv-from").value = todayIso();
+  if (!el("rcv-from").value) {
+    const d = new Date(`${todayIso()}T12:00:00`);
+    d.setDate(d.getDate() - 7);
+    el("rcv-from").value = d.toISOString().slice(0, 10);
+  }
   if (!el("rcv-to").value) el("rcv-to").value = todayIso();
   const res = await api(`/stock/docs?${q({ from: el("rcv-from").value, to: el("rcv-to").value, confirm: el("rcv-status").value })}`);
   if (!res.ok) return setAlert(el("stk-alert"), res.error ?? "تعذّر تحميل الاستلامات", "error");
@@ -178,6 +244,9 @@ async function loadDocs() {
     tile("فيها فرق", String(t.disputed), t.disputed ? "bad" : "good"),
   );
   el("rcv-empty").hidden = res.docs.length > 0;
+  el("rcv-empty").textContent = res.docs.length
+    ? ""
+    : "لا مستندات شراء أو تحويل في هذه الفترة. تأكد أن أمر الشراء أُنشئ في فوديكس لنفس الفرع، ثم اضغط «سحب كل بيانات المخزون الآن» من تبويب الأرصدة.";
   rcvPager.render(res.docs, (d) => {
     const open = document.createElement("button");
     open.type = "button";
