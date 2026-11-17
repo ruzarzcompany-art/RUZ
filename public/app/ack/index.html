@@ -63,6 +63,13 @@
         $("meta").textContent = `${data.location || "—"} · ${time(data.occurredAt)}`;
         $("details").textContent = data.details;
         $("details").hidden = !data.details;
+        if (data.image) {
+          const img = document.createElement("img");
+          img.src = data.image;
+          img.alt = "صورة الحالة من الكاميرا";
+          img.style.cssText = "width:100%;border-radius:10px;margin:10px 0;display:block";
+          $("details").after(img);
+        }
         $("action").textContent = data.action;
         $("action").hidden = !data.action;
         $("alert-box").hidden = false;
