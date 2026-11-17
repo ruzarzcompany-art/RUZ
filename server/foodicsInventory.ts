@@ -55,6 +55,7 @@ const ITEM_PATHS = () => envPaths("FOODICS_ITEMS_PATH", ["inventory_items"]);
 const PO_PATHS = () => envPaths("FOODICS_PO_PATH", ["purchase_orders", "purchasing"]);
 const TRANSFER_PATHS = () => envPaths("FOODICS_TRANSFER_PATH", ["transfer_orders", "transfers"]);
 /** أرصدة الأصناف الحالية: فوديكس لا يضعها في قائمة الأصناف نفسها في كل الحسابات. */
+const PURCHASING_PATH = () => process.env.FOODICS_PURCHASING_PATH?.trim() || "inventory_transactions";
 const LEVEL_PATHS = () =>
   envPaths("FOODICS_LEVELS_PATH", ["inventory_levels", "inventory_item_levels", "inventory/levels", "reports/inventory/levels", "reports/inventory_levels", "stock_levels"]);
 
@@ -174,6 +175,7 @@ interface DocLine {
 }
 
 function docLines(o: Json): DocLine[] {
+  if (Array.isArray(o.lines) && o.lines.every((l: Json) => typeof l?.received === "number" && "ordered" in l)) return o.lines as DocLine[];
   const list = (pick(o, "items", "inventory_items", "lines", "products") ?? []) as Json[];
   if (!Array.isArray(list)) return [];
   return list.map((i) => {
@@ -193,7 +195,7 @@ function docLines(o: Json): DocLine[] {
 /** حالة المستند: مستلم/ملغى/مفتوح — من الطوابع الزمنية أو الكميات المستلمة. */
 function docState(o: Json, lines: DocLine[]): { state: string; receivedAt: Date | null } {
   if (pick(o, "deleted_at", "cancelled_at", "canceled_at", "rejected_at")) return { state: "cancelled", receivedAt: null };
-  const receivedAt = when(pick(o, "received_at", "closed_at", "delivered_at", "completed_at"));
+  const receivedAt = when(pick(o, "received_at", "closed_at", "delivered_at", "completed_at", "posted_at"));
   if (receivedAt || lines.some((l) => l.received > 0)) {
     return { state: "received", receivedAt: receivedAt ?? when(pick(o, "updated_at")) };
   }
@@ -209,7 +211,8 @@ async function upsertDoc(branch: BranchRow, kind: string, o: Json, party: string
   const tz = safeTimeZone(branch.timezone);
   const expectedAt = when(pick(o, "delivery_date", "expected_at", "business_date", "created_at"));
   const ref = receivedAt ?? expectedAt ?? new Date();
-  const businessDate = isoDateInZone(new Date(ref.getTime() - 4 * 3600_000), tz);
+  const bd = String(o.business_date ?? "");
+  const businessDate = /^\d{4}-\d{2}-\d{2}$/.test(bd) ? bd : isoDateInZone(new Date(ref.getTime() - 4 * 3600_000), tz);
   const total = round2(num(pick(o, "total_cost", "total", "total_price")) || lines.reduce((s, l) => s + (l.received || l.ordered) * l.cost, 0));
   const values = {
     reference: String(pick(o, "reference", "number", "code") ?? foodicsId),
@@ -293,6 +296,52 @@ export async function syncStockDocs(branch: BranchRow, options: { days?: number 
       }
     }
   } else stats.notes.push("التحويلات غير متاحة في الحساب");
+
+  // «الشراء المباشر» في فوديكس (حركة مخزون نوع 1 — مراجع PUR-…): هذا هو الاستلام
+  // الفعلي في المطعم، وأوامر الشراء قليلة الاستخدام. الأحدث أولاً ونتوقف عند الأقدم.
+  const sinceDate = isoDateInZone(since, safeTimeZone(branch.timezone));
+  const maxPages = options.days ? 8 : 2;
+  try {
+    for (let page = 1; page <= maxPages; page++) {
+      const body = await foodicsGet(PURCHASING_PATH(), {
+        "filter[type]": "1",
+        "filter[branch_id]": foodicsBranchId,
+        sort: "-business_date",
+        include: "items,supplier,creator",
+        per_page: "50",
+        page: String(page),
+      });
+      const rows = (Array.isArray(body.data) ? body.data : []) as Json[];
+      let older = false;
+      for (const o of rows) {
+        if (String(o.business_date ?? "") < sinceDate) {
+          older = true;
+          continue;
+        }
+        // سطور الشراء: pivot.quantity = الكمية المستلمة، pivot.cost = تكلفة السطر كاملة
+        const lines: DocLine[] = ((o.items ?? []) as Json[]).map((i) => {
+          const q = round3(num(pick(i, "pivot.quantity", "quantity")));
+          const lineCost = num(pick(i, "pivot.cost", "cost"));
+          return {
+            name: String(pick(i, "name_localized", "name") ?? ""),
+            sku: String(i.sku ?? ""),
+            unit: String(pick(i, "storage_unit", "ingredient_unit") ?? ""),
+            ordered: q,
+            received: q,
+            cost: q ? round2(lineCost / q) : 0,
+          };
+        });
+        const creator = String(pick(o, "creator.name") ?? "");
+        await upsertDoc(branch, "purchase", { ...o, items: undefined, lines, total_cost: round2(lines.reduce((s, l) => s + l.received * l.cost, 0)) }, `${String(pick(o, "supplier.name_localized", "supplier.name") ?? "")}${creator ? ` — أدخله ${creator}` : ""}`, stats);
+      }
+      const last = Number(body.meta?.last_page ?? 0);
+      if (older || !rows.length || (last && page >= last)) break;
+    }
+    stats.purchasePath = stats.purchasePath ? `${stats.purchasePath} + ${PURCHASING_PATH()}` : PURCHASING_PATH();
+  } catch (error) {
+    if (!(error instanceof FoodicsError && [400, 404, 422].includes(error.status))) throw error;
+    stats.notes.push("حركات الشراء غير متاحة في الحساب");
+  }
   return stats;
 }
 
