@@ -230,6 +230,8 @@ export async function loadDayCloses() {
     return;
   }
   const t = res.totals;
+  if (document.activeElement !== el("dc-start-date")) el("dc-start-date").value = res.startDate ?? "";
+  if (res.startDate && el("dc-from").value < res.startDate) el("dc-from").value = res.startDate;
   if (document.activeElement !== el("dc-float-amount")) el("dc-float-amount").value = String(res.openingFloat ?? 0);
   el("dc-totals").replaceChildren(
     tile("عهدة الصندوق", money(res.openingFloat ?? 0), "", "داخل الدرج يومياً"),
@@ -278,6 +280,19 @@ async function saveFloat(event) {
   setBusy(button, false);
   setAlert(el("fh-alert"), res.ok ? res.message : res.error, res.ok ? "ok" : "error");
   if (res.ok) await loadDayCloses();
+}
+
+async function saveStartDate(event) {
+  event.preventDefault();
+  const button = event.target.querySelector("button");
+  setBusy(button, true);
+  const res = await api("/dayclose/start-date", { method: "PUT", body: { branchId: branchId(), startDate: el("dc-start-date").value || null } });
+  setBusy(button, false);
+  setAlert(el("fh-alert"), res.ok ? res.message : res.error, res.ok ? "ok" : "error");
+  if (res.ok) {
+    if (res.startDate) el("dc-from").value = res.startDate;
+    await loadDayCloses();
+  }
 }
 
 const LOADERS = {
@@ -338,6 +353,7 @@ export function initFinancePanel({ can, openMain }) {
   for (const node of document.querySelectorAll("[data-dc-manage]")) node.hidden = !can("cashier.review");
   el("dc-rebuild-form").addEventListener("submit", rebuild);
   el("dc-float-form").addEventListener("submit", saveFloat);
+  el("dc-start-form").addEventListener("submit", saveStartDate);
   initBankPanel({ can, branchId });
   el("dc-float-from").value = todayIso();
   el("dc-rebuild-from").value = `${todayIso().slice(0, 8)}01`;

@@ -379,6 +379,7 @@ export async function loadBank() {
     return;
   }
   state.data = res;
+  if (res.startDate && el("bank-from").value < res.startDate) el("bank-from").value = res.startDate;
   const t = res.totals;
   if (!t.transactions) {
     box.replaceChildren(h("p", { className: "empty" }, "لا حركات بنك في هذه الفترة — ارفع كشف الحساب أعلاه."));
@@ -387,6 +388,7 @@ export async function loadBank() {
   const salesExpected = res.sales.reduce((s, x) => s + x.expected, 0);
   const salesReceived = res.sales.reduce((s, x) => s + x.received, 0);
   box.replaceChildren(
+    res.startDate ? h("p", { className: "hint" }, `بداية الحسابات: ${res.startDate} — الحركات قبلها محفوظة ولا تدخل المطابقة.`) : null,
     h(
       "div",
       { className: "fin-tiles" },
