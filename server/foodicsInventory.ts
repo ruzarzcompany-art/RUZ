@@ -28,25 +28,24 @@ function envPaths(name: string, fallback: string[]): string[] {
   return custom ? custom.split(",").map((p) => p.trim()).filter(Boolean) : fallback;
 }
 
-/** يجرّب المسارات بالترتيب ويعيد أول مسار يقبله فوديكس (404 = غير موجود في الحساب). */
-async function listFirst(paths: string[], params: Record<string, string>, maxPages = 30): Promise<{ path: string; rows: Json[] } | null> {
+/**
+ * يجرّب المسارات بالترتيب ويعيد أول مسار يقبله فوديكس (404 = غير موجود في الحساب).
+ * `include` قد يكون عدة بدائل مفصولة بـ «|» تُجرَّب بالترتيب، ثم بلا include.
+ */
+async function listFirst(paths: string[], params: Record<string, string>, maxPages = 30): Promise<{ path: string; rows: Json[]; include: string } | null> {
+  const { include = "", ...rest } = params;
+  const includes = [...include.split("|").filter(Boolean), ""];
   for (const path of paths) {
-    try {
-      return { path, rows: await foodicsList(path, params, maxPages) };
-    } catch (error) {
-      if (error instanceof FoodicsError && [400, 404, 422].includes(error.status)) {
-        // قد يرفض فوديكس «include» غير معروف — نعيد بلا include قبل تجربة المسار التالي
-        if (params.include) {
-          try {
-            const { include: _i, ...rest } = params;
-            return { path, rows: await foodicsList(path, rest, maxPages) };
-          } catch (retry) {
-            if (!(retry instanceof FoodicsError && [400, 404, 422].includes(retry.status))) throw retry;
-          }
+    for (const inc of includes) {
+      try {
+        return { path, include: inc, rows: await foodicsList(path, inc ? { ...rest, include: inc } : rest, maxPages) };
+      } catch (error) {
+        if (error instanceof FoodicsError && [400, 404, 422].includes(error.status)) {
+          if (error.status === 404) break; // المسار غير موجود — لا فائدة من تجربة include آخر
+          continue;
         }
-        continue;
+        throw error;
       }
-      throw error;
     }
   }
   return null;
@@ -55,6 +54,9 @@ async function listFirst(paths: string[], params: Record<string, string>, maxPag
 const ITEM_PATHS = () => envPaths("FOODICS_ITEMS_PATH", ["inventory_items"]);
 const PO_PATHS = () => envPaths("FOODICS_PO_PATH", ["purchase_orders", "purchasing"]);
 const TRANSFER_PATHS = () => envPaths("FOODICS_TRANSFER_PATH", ["transfer_orders", "transfers"]);
+/** أرصدة الأصناف الحالية: فوديكس لا يضعها في قائمة الأصناف نفسها في كل الحسابات. */
+const LEVEL_PATHS = () =>
+  envPaths("FOODICS_LEVELS_PATH", ["inventory_levels", "inventory_item_levels", "inventory/levels", "reports/inventory/levels", "reports/inventory_levels", "stock_levels"]);
 
 async function foodicsBranchOf(branchId: number): Promise<string> {
   const db = getDb();
@@ -87,10 +89,12 @@ function stockOf(o: Json, foodicsBranchId: string): number | null {
 export async function syncInventoryItems(branch: BranchRow) {
   const db = getDb();
   const foodicsBranchId = await foodicsBranchOf(branch.id);
-  const got = await listFirst(ITEM_PATHS(), { include: "category,branches", per_page: "100" }, 60);
+  const got = await listFirst(ITEM_PATHS(), { include: "category,branches|category", per_page: "100" }, 60);
   if (!got) throw new FoodicsError("حساب فوديكس لا يتيح أصناف المخزون (تحقّق من اشتراك المخزون وصلاحية المفتاح)", 404);
   let items = 0;
   let stocks = 0;
+  const byFoodicsId = new Map<string, number>();
+  const byCode = new Map<string, number>();
   for (const o of got.rows) {
     const code = itemCode(o);
     const name = String(pick(o, "name_localized", "name") ?? code);
@@ -109,16 +113,53 @@ export async function syncInventoryItems(branch: BranchRow) {
       .onConflictDoUpdate({ target: inventoryItems.code, set: values })
       .returning({ id: inventoryItems.id });
     items++;
+    if (saved) {
+      byFoodicsId.set(String(o.id ?? ""), saved.id);
+      byCode.set(code, saved.id);
+    }
     const q = stockOf(o, foodicsBranchId);
     if (saved && q !== null) {
-      await db
-        .insert(foodicsItemStock)
-        .values({ branchId: branch.id, itemId: saved.id, quantity: q, syncedAt: new Date() })
-        .onConflictDoUpdate({ target: [foodicsItemStock.branchId, foodicsItemStock.itemId], set: { quantity: q, syncedAt: new Date() } });
+      await saveStock(branch.id, saved.id, q);
       stocks++;
     }
   }
-  return { items, stocks, path: got.path };
+  let levelsPath = "";
+  if (stocks === 0) {
+    // الرصيد ليس داخل الصنف: نقرأه من مسار الأرصدة المخصص
+    const levels = await syncStockLevels(branch, foodicsBranchId, byFoodicsId, byCode);
+    stocks = levels.stocks;
+    levelsPath = levels.path;
+  }
+  return { items, stocks, path: got.path, levelsPath };
+}
+
+async function saveStock(branchId: number, itemId: number, quantity: number) {
+  const db = getDb();
+  await db
+    .insert(foodicsItemStock)
+    .values({ branchId, itemId, quantity, syncedAt: new Date() })
+    .onConflictDoUpdate({ target: [foodicsItemStock.branchId, foodicsItemStock.itemId], set: { quantity, syncedAt: new Date() } });
+}
+
+/** يقرأ أرصدة الفرع من أول مسار أرصدة يتيحه الحساب ويربطها بالأصناف (بمعرّف فوديكس أو الرمز). */
+async function syncStockLevels(branch: BranchRow, foodicsBranchId: string, byFoodicsId: Map<string, number>, byCode: Map<string, number>) {
+  const params: Record<string, string> = { per_page: "100", include: "inventory_item|item" };
+  if (foodicsBranchId) params["filter[branch_id]"] = foodicsBranchId;
+  const got = await listFirst(LEVEL_PATHS(), params, 60).catch(() => null);
+  if (!got) return { stocks: 0, path: "" };
+  const totals = new Map<number, number>();
+  for (const row of got.rows) {
+    const bid = String(pick(row, "branch.id", "branch_id", "warehouse.id", "warehouse_id") ?? foodicsBranchId);
+    if (foodicsBranchId && bid && bid !== foodicsBranchId) continue;
+    const fid = String(pick(row, "inventory_item.id", "inventory_item_id", "item.id", "item_id") ?? "");
+    const sku = String(pick(row, "inventory_item.sku", "item.sku", "sku") ?? "");
+    const itemId = byFoodicsId.get(fid) ?? (sku ? byCode.get(sku) : undefined);
+    const q = pick(row, "quantity", "on_hand", "stock", "available_quantity", "current_quantity", "level");
+    if (!itemId || q === undefined) continue;
+    totals.set(itemId, round3((totals.get(itemId) ?? 0) + num(q)));
+  }
+  for (const [itemId, q] of totals) await saveStock(branch.id, itemId, q);
+  return { stocks: totals.size, path: got.path };
 }
 
 /* ══ أوامر الشراء والتحويلات ══════════════════════════════════════ */
@@ -206,16 +247,27 @@ export async function syncStockDocs(branch: BranchRow, options: { days?: number 
       : new Date(Date.now() - 30 * 86_400_000);
   const after = since.toISOString().slice(0, 19).replace("T", " ");
   const stats = { docs: 0, received: 0, purchasePath: "", transferPath: "", notes: [] as string[] };
+  // فلتر «updated_after» لا يقبله فوديكس على كل المسارات (كان يعيد صفراً):
+  // في السحب الكامل نطلب بلا فلتر تاريخ ونفلتر نحن حسب آخر تحديث.
+  const recent = (o: Json) => {
+    const at = when(pick(o, "updated_at", "created_at", "business_date"));
+    return !at || at >= since;
+  };
+  const dateFilter: Record<string, string> = options.days ? {} : { "filter[updated_after]": after };
 
-  const pos = await listFirst(PO_PATHS(), {
+  let pos = await listFirst(PO_PATHS(), {
     "filter[branch_id]": foodicsBranchId,
-    "filter[updated_after]": after,
-    include: "items,supplier,branch",
+    ...dateFilter,
+    include: "items,supplier,branch|items,supplier|items",
     per_page: "50",
   });
+  if (pos && !pos.rows.length && !options.days) {
+    pos = await listFirst(PO_PATHS(), { "filter[branch_id]": foodicsBranchId, include: "items,supplier,branch|items,supplier|items", per_page: "50" }, 5);
+  }
   if (pos) {
     stats.purchasePath = pos.path;
     for (const o of pos.rows) {
+      if (!recent(o)) continue;
       // بعض الحسابات تتجاهل فلتر الفرع — نتأكد بأنفسنا
       const bid = String(pick(o, "branch.id", "branch_id", "warehouse.id") ?? foodicsBranchId);
       if (bid !== foodicsBranchId) continue;
@@ -224,13 +276,14 @@ export async function syncStockDocs(branch: BranchRow, options: { days?: number 
   } else stats.notes.push("أوامر الشراء غير متاحة في الحساب");
 
   const transfers = await listFirst(TRANSFER_PATHS(), {
-    "filter[updated_after]": after,
-    include: "items,branch,warehouse,destination,source",
+    ...dateFilter,
+    include: "items,branch,warehouse,destination,source|items,branch,warehouse|items",
     per_page: "50",
   });
   if (transfers) {
     stats.transferPath = transfers.path;
     for (const o of transfers.rows) {
+      if (!recent(o)) continue;
       const to = String(pick(o, "destination.id", "destination_branch_id", "to_branch.id", "warehouse.id") ?? "");
       const from = String(pick(o, "source.id", "branch.id", "branch_id", "from_branch.id") ?? "");
       if (to === foodicsBranchId) {
@@ -438,10 +491,34 @@ export async function testInventory(branch: BranchRow) {
     }
     return { path: paths.join(" | "), available: false, total: 0, fields: [], itemFields: [] };
   };
+  const levels = await sample(LEVEL_PATHS(), foodicsBranchId ? { "filter[branch_id]": foodicsBranchId } : {});
+  let branchPivot = "";
+  try {
+    const body = await foodicsGet(ITEM_PATHS()[0], { include: "branches", per_page: "1" });
+    const b = body.data?.[0]?.branches?.[0];
+    if (b) branchPivot = JSON.stringify(b).slice(0, 600);
+  } catch {
+    /* اختياري */
+  }
   return {
+    levels,
+    branchPivot,
     items: await sample(ITEM_PATHS(), { include: "category,branches" }),
     purchaseOrders: await sample(PO_PATHS(), { include: "items,supplier", ...(foodicsBranchId ? { "filter[branch_id]": foodicsBranchId } : {}) }),
     transfers: await sample(TRANSFER_PATHS(), { include: "items" }),
   };
 }
 
+
+/**
+ * فحص قراءة فقط لأي مسار مخزون في فوديكس (للمالك): يعيد أول سجلين كما هما
+ * لمعرفة أسماء الحقول الفعلية في الحساب. لا يكتب شيئاً في فوديكس.
+ */
+export async function probeFoodics(path: string, params: Record<string, string>) {
+  if (!/^(inventory|purchase|transfer|warehouse|branches|supplier|reports\/inventory|stock|quantity_adjust|inventory_count|production|waste)[a-z_/0-9-]*$/.test(path)) {
+    throw new FoodicsError("المسار غير مسموح للفحص", 400);
+  }
+  const body = await foodicsGet(path, { per_page: "2", ...params });
+  const rows = Array.isArray(body.data) ? body.data.slice(0, 2) : body.data;
+  return { path, meta: body.meta ?? null, sample: JSON.stringify(rows, null, 1).slice(0, 8000) };
+}
