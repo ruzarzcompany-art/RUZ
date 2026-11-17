@@ -87,20 +87,21 @@ export const ROUTES: Record<string, Route> = {
   cashier_not_closed: { first: "manager", escalate: true, anyAge: true, zone: "cashier" },
   stock_mismatch: { first: "owner", escalate: false, anyAge: true },
   camera_down: { first: "owner", escalate: false },
-  camera_moved: { first: "owner", escalate: false },
+  // تحريك الزاوية كثير الإنذارات الكاذبة (تغيّر الإضاءة نهاراً/ليلاً): ملاحظة بسيطة لا تنبيه فوري
+  camera_moved: { first: "owner", escalate: false, minor: true },
   // الخدمة → الموظف ثم المدير ثم المالك
   prep_overdue: { first: "staff", escalate: true, order: true, zone: "kitchen" },
   customer_wait: { first: "staff", escalate: true, order: true },
   dirty_table: { first: "staff", escalate: true, zone: "dining" },
   table_complaint: { first: "staff", escalate: true, zone: "dining" },
   cashier_queue: { first: "staff", escalate: true, zone: "cashier" },
-  fridge_door_open: { first: "staff", escalate: true, zone: "kitchen" },
+  fridge_door_open: { first: "staff", escalate: false, zone: "kitchen", minor: true },
   // المدير
   customer_complaint: { first: "manager", escalate: true },
   google_review: { first: "manager", escalate: false, anyAge: true },
   customer_left: { first: "manager", escalate: false },
   order_returned: { first: "manager", escalate: false },
-  hygiene: { first: "manager", escalate: false },
+  hygiene: { first: "manager", escalate: false, minor: true },
   // ملاحظات بسيطة
   staff_phone: { first: "manager", escalate: false, minor: true },
   station_left: { first: "manager", escalate: false, minor: true },
@@ -403,6 +404,12 @@ async function eligibleRecipients(branchId: number, tier: Tier, zone: string, at
   return inZone.filter((r) => !r.onShiftOnly || !r.employeeId || onShift.has(r.employeeId));
 }
 
+const CONFIDENCE_AR: Record<string, string> = { high: "مؤكد تقريباً", medium: "محتمل — راجع الصورة", low: "ضعيف — للمراجعة فقط" };
+
+/**
+ * رسالة واتساب مختصرة ومفيدة: ماذا حدث، أين ومتى، من كان على رأس العمل،
+ * المطلوب بالضبط، ورابط واحد يفتح الصورة ويؤكد الاستلام.
+ */
 function alertMessage(input: {
   alert: AlertRow;
   branch: BranchRow;
@@ -411,21 +418,28 @@ function alertMessage(input: {
   escalatedFrom: Tier | null;
   waitedMinutes: number;
 }): string {
-  const { alert, branch } = input;
+  const { alert, branch, recipient } = input;
   const spec = ALERT_TYPES[alert.alertType];
-  const action = (spec?.action ?? "").trim();
+  const action = (alert.suggestedAction || spec?.action || "").split(/(?<=[.。])\s/)[0].trim();
+  // تفاصيل الاشتباه وأسماء الموظفين لا تظهر إلا للمالك والمدير
+  const privileged = recipient.tier !== "staff";
+  const details = alert.isSuspicion && recipient.tier !== "owner" ? "" : alert.details.replace(/\s+/g, " ").slice(0, 260);
+  const people = privileged && alert.peopleNote ? alert.peopleNote.replace(/\s*\|\s*/g, " — ").slice(0, 160) : "";
+  const head = input.escalatedFrom
+    ? `⬆️ تصعيد: لم يستلمه ${TIER_LABELS[input.escalatedFrom]} خلال ${Math.max(1, Math.round(input.waitedMinutes))} د`
+    : alert.isUrgent
+      ? "🔴 عاجل"
+      : alert.isSuspicion
+        ? "🟠 اشتباه للمراجعة"
+        : "🟡 تنبيه";
   return [
-    input.escalatedFrom
-      ? `⬆️ تصعيد — لم يستلمه ${TIER_LABELS[input.escalatedFrom]} خلال ${Math.max(1, Math.round(input.waitedMinutes))} د`
-      : alert.isUrgent
-        ? "🔴 تنبيه فوري"
-        : "🟠 تنبيه",
-    `${spec?.label ?? alert.alertType} — ${branch.name}`,
-    `📍 ${alert.location || "—"} · ${hhmm(alert.occurredAt, branch.timezone)}`,
-    alert.details ? alert.details.slice(0, 320) : "",
-    action ? `الإجراء: ${action}` : "",
-    alert.isSuspicion ? "هذا اشتباه يحتاج مراجعة المقطع وليس حكماً نهائياً." : "",
-    `تأكيد الاستلام: ${publicBaseUrl()}/app/ack/?t=${ackToken(input.dispatchId, input.recipient.id)}`,
+    `${head} — ${spec?.label ?? alert.alertType}`,
+    `📍 ${alert.location || branch.name} · 🕒 ${hhmm(alert.occurredAt, branch.timezone)}`,
+    details ? `\n${details}` : "",
+    people ? `👤 ${people}` : "",
+    alert.confidence && alert.confidence !== "high" ? `الدقة: ${CONFIDENCE_AR[alert.confidence] ?? alert.confidence}` : "",
+    action ? `\n✅ المطلوب: ${action}` : "",
+    `\n📷 الصورة والتأكيد: ${publicBaseUrl()}/app/ack/?t=${ackToken(input.dispatchId, recipient.id)}`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -668,11 +682,45 @@ export async function acknowledge(input: {
 
 /* ── تقييمات قوقل ─────────────────────────────────────────────── */
 
+/**
+ * طريقتان لسحب التقييمات:
+ *   • «مكان قوقل» (الأسهل): مفتاح GOOGLE_PLACES_API_KEY + معرّف المكان (ChIJ…) —
+ *     يعيد أحدث 5 تقييمات، ويكفي للتنبيه بالجديد السيئ كل 15 دقيقة.
+ *   • «ملف النشاط التجاري» (الكامل): GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN +
+ *     المسار accounts/…/locations/… — يحتاج موافقة قوقل على واجهة Business Profile.
+ */
 export function googleConfig() {
   const clientId = (env("GOOGLE_CLIENT_ID") ?? "").trim();
   const clientSecret = (env("GOOGLE_CLIENT_SECRET") ?? "").trim();
   const refreshToken = (env("GOOGLE_REFRESH_TOKEN") ?? "").trim();
-  return { configured: Boolean(clientId && clientSecret && refreshToken), clientId, clientSecret, refreshToken };
+  const placesKey = (env("GOOGLE_PLACES_API_KEY") ?? "").trim();
+  const business = Boolean(clientId && clientSecret && refreshToken);
+  return { configured: business || Boolean(placesKey), business, places: Boolean(placesKey), placesKey, clientId, clientSecret, refreshToken };
+}
+
+export const GOOGLE_BUSINESS_PATH = /^accounts\/[\w-]+\/locations\/[\w-]+$/;
+export const GOOGLE_PLACE_ID = /^(places\/)?[A-Za-z0-9_-]{20,}$/;
+
+/** التقييمات من واجهة «الأماكن» (Places API New) بصيغة موحّدة مع واجهة النشاط التجاري. */
+async function placesReviews(placeRef: string, key: string): Promise<GoogleReview[]> {
+  const id = placeRef.replace(/^places\//, "");
+  const response = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(id)}?languageCode=ar`, {
+    headers: { "X-Goog-Api-Key": key, "X-Goog-FieldMask": "rating,userRatingCount,reviews" },
+    signal: AbortSignal.timeout(10_000),
+  });
+  const body = (await response.json().catch(() => ({}))) as {
+    reviews?: Array<{ name?: string; rating?: number; text?: { text?: string }; originalText?: { text?: string }; authorAttribution?: { displayName?: string }; publishTime?: string }>;
+    error?: { message?: string };
+  };
+  if (!response.ok) throw new Error(`قوقل ردّ بالرمز ${response.status}${body.error?.message ? ` — ${body.error.message}` : ""}`);
+  const names = ["", "ONE", "TWO", "THREE", "FOUR", "FIVE"];
+  return (body.reviews ?? []).map((r) => ({
+    reviewId: r.name ?? `${r.authorAttribution?.displayName ?? ""}:${r.publishTime ?? ""}`,
+    reviewer: { displayName: r.authorAttribution?.displayName },
+    starRating: names[Math.round(r.rating ?? 0)] ?? "",
+    comment: r.originalText?.text ?? r.text?.text ?? "",
+    createTime: r.publishTime,
+  }));
 }
 
 const STARS: Record<string, number> = { ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5 };
@@ -714,20 +762,31 @@ interface GoogleReview {
 export async function syncGoogleReviews(branch: BranchRow): Promise<{ fetched: number; added: number; alerted: number }> {
   const db = getDb();
   const settings = await controlSettingsFor(branch.id);
-  if (!googleConfig().configured) throw new Error("ربط قوقل غير مضبوط (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN)");
-  if (!/^accounts\/[\w-]+\/locations\/[\w-]+$/.test(settings.googleLocation)) {
-    throw new Error("مسار الموقع في قوقل غير صحيح — الصيغة: accounts/123/locations/456");
+  const config = googleConfig();
+  const location = settings.googleLocation.trim();
+  const usePlaces = GOOGLE_PLACE_ID.test(location) && !GOOGLE_BUSINESS_PATH.test(location);
+  if (!location) throw new Error("أدخل معرّف المكان في قوقل (يبدأ غالباً بـ ChIJ) في «التقرير والتقييمات»");
+  if (usePlaces && !config.places) throw new Error("أضف المفتاح GOOGLE_PLACES_API_KEY في إعدادات Netlify لتفعيل التقييمات");
+  if (!usePlaces && !GOOGLE_BUSINESS_PATH.test(location)) {
+    throw new Error("المعرّف غير صحيح — ضع معرّف المكان (ChIJ…) أو المسار accounts/123/locations/456");
   }
+  if (!usePlaces && !config.business) throw new Error("ربط ملف النشاط غير مضبوط (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN)");
   try {
-    const token = await googleAccessToken();
-    const response = await fetch(
-      `https://mybusiness.googleapis.com/v4/${settings.googleLocation}/reviews?pageSize=50&orderBy=${encodeURIComponent("updateTime desc")}`,
-      { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) },
-    );
-    const body = (await response.json().catch(() => ({}))) as { reviews?: GoogleReview[]; error?: { message?: string } };
-    if (!response.ok) throw new Error(`قوقل ردّ بالرمز ${response.status}${body.error?.message ? ` — ${body.error.message}` : ""}`);
+    let fetched: GoogleReview[];
+    if (usePlaces) {
+      fetched = await placesReviews(location, config.placesKey);
+    } else {
+      const token = await googleAccessToken();
+      const response = await fetch(
+        `https://mybusiness.googleapis.com/v4/${location}/reviews?pageSize=50&orderBy=${encodeURIComponent("updateTime desc")}`,
+        { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) },
+      );
+      const body = (await response.json().catch(() => ({}))) as { reviews?: GoogleReview[]; error?: { message?: string } };
+      if (!response.ok) throw new Error(`قوقل ردّ بالرمز ${response.status}${body.error?.message ? ` — ${body.error.message}` : ""}`);
+      fetched = body.reviews ?? [];
+    }
 
-    const reviews = (body.reviews ?? []).filter((r) => r.reviewId);
+    const reviews = fetched.filter((r) => r.reviewId);
     const [existingAny] = await db
       .select({ id: googleReviews.id })
       .from(googleReviews)

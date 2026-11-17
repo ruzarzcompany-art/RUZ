@@ -48,7 +48,10 @@ const MAX_IMAGE_BYTES = 4_500_000;
 /** نافذة منع تكرار نفس التنبيه من نفس الكاميرا */
 const DEDUP_WINDOW_MINUTES = 20;
 /** عدد مرات الفشل المتتالية قبل اعتبار الكاميرا متوقفة */
-const OFFLINE_AFTER_FAILURES = 2;
+const OFFLINE_AFTER_FAILURES = 3;
+
+/** ملاحظات سلوكية تحتاج ثقة عالية ولا تتكرر أكثر من مرة في الساعة لكل كاميرا. */
+const MINOR_FINDINGS = new Set(["staff_phone", "staff_gathering", "station_left", "hygiene", "waste_observed", "fridge_door_open"]);
 
 type CameraRow = typeof surveillanceCameras.$inferSelect;
 type BranchRow = typeof branches.$inferSelect;
@@ -546,12 +549,18 @@ export async function processFrame(input: {
     const offline = failures >= OFFLINE_AFTER_FAILURES;
     if (offline) {
       await recordStatusChange(camera, "offline", false, error, at);
-      await raise("camera_down", {
-        confidence: "high",
-        details: `الكاميرا ${camera.cameraNumber} لا تستجيب (${failures} محاولات متتالية): ${error}`,
-        frameId: frame.id,
-        refSuffix: `offline:${camera.lastFrameAt?.getTime() ?? 0}`,
-      });
+      // إذا كان السبب أن جهاز الربط نفسه لا يرسل (وليس الكاميرا) فتنبيه
+      // «جهاز التحليل منقطع» الواحد يكفي — لا نرسل تنبيهاً لكل كاميرا.
+      const agentProblem = /جهاز الربط|لم تصل لقطات/.test(error);
+      if (!agentProblem && failures === OFFLINE_AFTER_FAILURES) {
+        await raise("camera_down", {
+          confidence: "high",
+          details: `الكاميرا ${camera.cameraNumber}${camera.name ? ` (${camera.name})` : ""} انقطعت ولا تصل منها صورة منذ ${failures} محاولات. السبب الظاهر: ${error}`,
+          frameId: frame.id,
+          // مرة واحدة في اليوم لكل كاميرا مهما تكرر الانقطاع والعودة
+          refSuffix: `offline:${isoDateInZone(at, tz)}`,
+        });
+      }
     }
     await db
       .update(surveillanceCameras)
@@ -652,8 +661,23 @@ export async function processFrame(input: {
   /* ── حالة الكاميرا ── */
   const status = CAMERA_STATUS_OF[result.cameraState] ?? "online";
   await recordStatusChange(camera, status, status === "online", result.cameraNote, at);
-  // الخلل يُنبَّه عنه مرة واحدة عند بدايته، لا مع كل لقطة ما دام مستمراً
-  if (cameraProblem && camera.status !== status) {
+  // خلل الكاميرا لا يُنبَّه عنه إلا إذا كان حقيقياً ومستمراً:
+  //   • «مظلمة/غير واضحة» ليلاً أو خارج الدوام طبيعية (وضع الأشعة الليلية) — تُتجاهل.
+  //   • يجب أن يتكرر نفس الخلل في 3 لقطات متتالية (لا لقطة واحدة عابرة).
+  //   • «تحريك الزاوية» لا يُعتمد إلا بثقة عالية، ويُرسل كملاحظة بسيطة لا كتنبيه فوري.
+  //   • مرة واحدة في اليوم لكل كاميرا ونوع خلل، مهما تذبذبت الحالة.
+  const nightNormal = ["dark", "blurry"].includes(result.cameraState) && isOffHours(at, tz, settings.openTime, settings.closeTime);
+  let persisted = false;
+  if (cameraProblem && !nightNormal && (result.cameraState !== "moved" || result.cameraStateConfidence === "high")) {
+    const previous = await db
+      .select({ state: surveillanceFrames.cameraState })
+      .from(surveillanceFrames)
+      .where(and(eq(surveillanceFrames.cameraId, camera.id), lt(surveillanceFrames.id, frame.id), gte(surveillanceFrames.capturedAt, new Date(at.getTime() - 3 * 3600_000))))
+      .orderBy(desc(surveillanceFrames.id))
+      .limit(2);
+    persisted = previous.length === 2 && previous.every((p) => p.state === result.cameraState);
+  }
+  if (persisted) {
     await raise(result.cameraState === "moved" ? "camera_moved" : "camera_down", {
       confidence: result.cameraStateConfidence,
       details: `الكاميرا ${camera.cameraNumber}: ${
@@ -662,7 +686,7 @@ export async function processFrame(input: {
         ] ?? result.cameraState
       }${result.cameraNote ? ` — ${result.cameraNote}` : ""}`,
       frameId: frame.id,
-      refSuffix: `${result.cameraState}:${frame.id}`,
+      refSuffix: `${result.cameraState}:${isoDateInZone(at, tz)}`,
     });
   }
 
@@ -698,6 +722,10 @@ export async function processFrame(input: {
 
     const alertType = FINDING_TO_ALERT[finding.type];
     if (!alertType) continue;
+    // الملاحظات السلوكية (جوال، تجمّع، ترك المكان، نظافة، هدر، باب ثلاجة) كثيرة
+    // الإنذارات الكاذبة: لا تُسجَّل إلا بثقة عالية، ومرة واحدة في الساعة لكل كاميرا.
+    const behavioural = MINOR_FINDINGS.has(alertType);
+    if (behavioural && finding.confidence !== "high") continue;
     const extra =
       alertType === "drawer_no_sale"
         ? " — يلزم مطابقة الوقت مع عمليات فودكس قبل أي حكم."
@@ -709,6 +737,7 @@ export async function processFrame(input: {
       peopleNote,
       employeeIds: attributedIds,
       frameId: frame.id,
+      ...(behavioural ? { refSuffix: `h:${Math.floor(at.getTime() / 3600_000)}` } : {}),
     });
 
     // الدرج المفتوح يُسجَّل أيضاً في «الطلبات والكاشير» لمطابقته مع فودكس

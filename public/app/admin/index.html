@@ -1638,6 +1638,15 @@
             <button id="rcv-print" class="btn btn--ghost btn--xs" type="button">طباعة نموذج الاستلام اليومي</button>
           </div>
         </div>
+        <details class="howto" open>
+          <summary><strong>كيف يتم الاستلام؟ (4 خطوات)</strong></summary>
+          <ol class="hint">
+            <li><strong>في فوديكس:</strong> أنشئ «أمر شراء» للمورد (المخزون ← أوامر الشراء)، وعند وصول البضاعة اضغط «استلام» وأدخل الكميات الواصلة.</li>
+            <li><strong>هنا تلقائياً:</strong> يظهر المستند في هذه القائمة خلال 10 دقائق بكمياته وتكلفته (أو اضغط «سحب كل بيانات المخزون الآن» من تبويب الأرصدة).</li>
+            <li><strong>الموظف المستلِم:</strong> يفتح تطبيق «سِجل» على جواله ← «استلام المخزون» ← يطابق البضاعة ويضغط «مطابق» أو «يوجد فرق» ويكتب الكمية الفعلية. ويمكنك أنت التأكيد من زر «الأصناف» في الجدول.</li>
+            <li><strong>الرقابة:</strong> أي فرق يصل تنبيهه للمالك فوراً، والاستلام الذي لم يُؤكَّد حتى 4 فجراً يصل تنبيهه لمدير الفرع.</li>
+          </ol>
+        </details>
         <div id="rcv-totals" class="fin-tiles"></div>
         <div class="table-wrap">
           <table class="table" id="rcv-table">
@@ -2852,8 +2861,12 @@
               <input id="ct-brief-time" type="time" />
             </label>
             <label class="field">
-              <span class="field__label">موقع النشاط في قوقل (accounts/…/locations/…)</span>
-              <input id="ct-google" type="text" dir="ltr" autocomplete="off" placeholder="accounts/123/locations/456" />
+              <span class="field__label">معرّف المطعم في قوقل (Place ID يبدأ بـ ChIJ)</span>
+              <input id="ct-google" type="text" dir="ltr" autocomplete="off" placeholder="ChIJ…" />
+              <span class="hint">
+                للحصول عليه: افتح <a href="https://developers.google.com/maps/documentation/places/web-service/place-id" target="_blank" rel="noopener">صفحة Place ID Finder</a>،
+                اكتب اسم المطعم، وانسخ الرمز الذي يبدأ بـ ChIJ والصقه هنا ثم «حفظ الإعدادات».
+              </span>
             </label>
           </div>
           <div class="row row--wrap">
@@ -2920,6 +2933,12 @@
           جهاز التحليل داخل المطعم يتابع الكاميرات باستمرار ويعدّ لكل طاولة مرسومة: متى جلس
           العملاء، هل وصلهم موظف، ومتى فضيت ونُظّفت. لا يُرسل شيء إلا عند الخلل مع لقطة واحدة.
         </p>
+        <ol class="hint">
+          <li>اختر <strong>الكاميرا</strong> التي ترى الطاولات (كاميرات الصالة)، واختر النوع «طاولة» واكتب رقمها.</li>
+          <li><strong>انقر على الصورة</strong> عند زوايا سطح الطاولة (3 نقاط أو أكثر) حتى يحيط الشكل بالطاولة.</li>
+          <li>اضغط <strong>«حفظ المنطقة»</strong> — يزيد رقم الطاولة تلقائياً، فارسم الطاولة التالية مباشرة.</li>
+          <li>للطابور: النوع «طابور الكاشير» وارسم مكان وقوف العملاء. للباب: النوع «باب» ونقطتان لخط العتبة (لعدّ الداخلين).</li>
+        </ol>
         <div class="form-grid" data-sv-manage>
           <div class="form-grid__fields">
             <label class="field field--sm">

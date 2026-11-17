@@ -153,7 +153,15 @@ function renderStatus() {
       : chip("جهاز التحليل غير متصل — الصور قديمة", "badge--disputed"),
   );
   if (tables.length === 0) {
-    box.append(chip("لم تُرسم مناطق بعد — ارسمها من «الكاميرات والمناطق»", "badge--warn"));
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "btn btn--primary btn--xs";
+    go.textContent = "ارسم الطاولات الآن ←";
+    go.onclick = () => {
+      document.querySelector('[data-sv="cameras"]')?.click();
+      setTimeout(() => document.querySelector('[data-sv-section="ct-zones"]')?.scrollIntoView({ behavior: "smooth", block: "start" }), 400);
+    };
+    box.append(chip("لم تُرسم الطاولات بعد", "badge--warn"), go);
     return;
   }
   box.append(

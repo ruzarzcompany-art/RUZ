@@ -76,7 +76,9 @@ function renderStatus() {
     settings.enabled ? chip("الإبلاغ مفعّل", "badge--ok") : chip("الإبلاغ متوقف", "badge--warn"),
     google.configured && settings.googleLocation
       ? chip("تقييمات قوقل مربوطة", "badge--ok")
-      : chip("تقييمات قوقل غير مربوطة", "badge--submitted"),
+      : !settings.googleLocation
+        ? chip("تقييمات قوقل: أدخل معرّف المطعم (ChIJ…)", "badge--warn")
+        : chip("تقييمات قوقل: ينقص مفتاح GOOGLE_PLACES_API_KEY في Netlify", "badge--warn"),
   );
   for (const tier of ["owner", "manager", "staff"]) {
     const count = recipients.filter((r) => r.tier === tier && r.isActive).length;
