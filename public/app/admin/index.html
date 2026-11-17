@@ -1042,6 +1042,7 @@
         <button class="tab" type="button" data-fin="close">تقفيل اليوم</button>
         <button class="tab" type="button" data-fin="settle">الشبكات والتطبيقات</button>
         <button class="tab" type="button" data-fin="month">إقفال الشهر</button>
+        <button class="tab" type="button" data-fin="bank">البنك والمطابقة</button>
       </div>
       <p id="cashbox-alert" class="alert" role="status" hidden></p>
 
@@ -1474,6 +1475,29 @@
           يحسبها الخادم عند التأكيد ويثبّت تاريخه واسم المحاسب.
         </p>
       </section>
+      </div>
+
+      <div data-fin-tab="bank" hidden>
+        <section class="card">
+          <div class="card__head">
+            <h2 class="card__title card__title--sm">البنك والمطابقة</h2>
+            <div class="row row--wrap">
+              <label class="field field--sm"><span class="field__label">من</span><input id="bank-from" type="date" /></label>
+              <label class="field field--sm"><span class="field__label">إلى</span><input id="bank-to" type="date" /></label>
+              <button id="bank-load" class="btn btn--ghost btn--xs" type="button">عرض</button>
+            </div>
+          </div>
+          <form id="bank-upload-form" class="row row--wrap" data-bank-manage hidden>
+            <label class="field"><span class="field__label">كشف حساب البنك (Excel أو CSV)</span><input id="bank-file" type="file" accept=".xls,.xlsx,.csv" /></label>
+            <button class="btn btn--primary btn--sm" type="submit">رفع الكشف</button>
+            <button id="bank-delete" class="btn btn--ghost btn--xs" type="button">حذف حركات الفترة</button>
+          </form>
+          <p class="hint">
+            ارفع الكشف كما ينزّله البنك؛ الحركات المرفوعة سابقاً لا تتكرر لو تداخلت الكشوف. ثبّت أسماء الجهات أول مرة،
+            وبعدها يُطابق البرنامج الإيداعات بمستحقات فوديكس والتحويلات بفواتير الموردين تلقائياً.
+          </p>
+        </section>
+        <div id="bank-body"></div>
       </div>
 
       <div data-fin-tab="month" hidden>

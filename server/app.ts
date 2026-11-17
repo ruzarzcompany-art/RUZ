@@ -39,6 +39,7 @@ import { purgeRouter } from "./routes/purge.js";
 import { controlRouter } from "./routes/control.js";
 import { dayCloseRouter } from "./routes/dayClose.js";
 import { stockRouter } from "./routes/foodicsInventory.js";
+import { bankRouter } from "./routes/bank.js";
 import { ensureSeeded } from "./seed.js";
 import {
   getAutoCloseHour,
@@ -71,6 +72,7 @@ export function createApp() {
   app.use("/api/surveillance/snapshots", express.json({ limit: "6mb" }));
   // استلام المشتريات يحمل صورة الفاتورة (مضغوطة في المتصفح) ضمن الطلب
   app.use("/api/purchases/receipts", express.json({ limit: "4mb" }));
+  app.use("/api/bank/import", express.json({ limit: "6mb" }));
   // أحداث جهاز التحليل تحمل لقطة الدليل (JPEG مضغوطة) مع كل حدث
   app.use("/api/control/edge", express.json({ limit: "5mb" }));
   app.use(express.json({ limit: "1mb" }));
@@ -464,6 +466,7 @@ export function createApp() {
   app.use("/api", controlRouter);
   app.use("/api", dayCloseRouter);
   app.use("/api", stockRouter);
+  app.use("/api", bankRouter);
 
   app.use("/api", (_req: Request, res: Response) => {
     res.status(404).json({ ok: false, error: "المسار غير موجود" });
