@@ -2656,7 +2656,11 @@
 
       <!-- الهدر -->
       <section class="card" data-sv-section="waste" hidden>
-        <form id="sv-waste-form" class="form-grid" data-sv-write>
+        <p class="hint">
+          تسجيل الهدر انتقل إلى مسار واحد: الموظف يسجّله من تطبيقه («المخزون والهدر» ← «تسجيل الهدر») والمسؤول يعتمده من
+          «المخزون» ← «الهدر» فيُخصم من الرصيد. هذا الجدول يعرض ما رصدته الكاميرات والهدر المعتمد لليوم المختار.
+        </p>
+        <form id="sv-waste-form" class="form-grid" hidden>
           <label class="field field--sm">
             <span class="field__label">الصنف</span>
             <input id="sv-waste-item" type="text" required />

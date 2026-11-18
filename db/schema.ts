@@ -2535,3 +2535,21 @@ export const wasteSettings = pgTable("waste_settings", {
   limitPercent: doublePrecision("limit_percent").notNull().default(3),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * foodics_consumption_days — أيام سُحب استهلاكها من فوديكس (استهلاك الطلبات حسب
+ * الوصفات) ورُحّل إلى حركات المخزون، حتى لا يُعاد سحب يوم منتهٍ ولا يُنسى يوم.
+ */
+export const foodicsConsumptionDays = pgTable(
+  "foodics_consumption_days",
+  {
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    businessDate: date("business_date").notNull(),
+    /** عدد الأصناف المستهلكة في ذلك اليوم */
+    lines: integer().notNull().default(0),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("foodics_consumption_days_key_idx").on(table.branchId, table.businessDate)],
+);

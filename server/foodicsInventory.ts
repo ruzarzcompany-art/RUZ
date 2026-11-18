@@ -14,7 +14,7 @@
 
 import { and, eq, inArray, isNull, like, lt, max, ne, sql } from "drizzle-orm";
 import { getDb } from "../db/index.js";
-import { branches, foodicsItemStock, foodicsStockDocs, inventoryItems, inventoryMovements, surveillanceSettings } from "../db/schema.js";
+import { branches, foodicsConsumptionDays, foodicsItemStock, foodicsStockDocs, inventoryItems, inventoryMovements, surveillanceSettings } from "../db/schema.js";
 import { FoodicsError, foodicsCredentials, foodicsGet, foodicsList, num, pick, when, type Json } from "./foodics.js";
 import { businessDateNow } from "./dayClose.js";
 import { financeStartDate } from "./financeStart.js";
@@ -541,6 +541,150 @@ export async function syncStockDocs(branch: BranchRow, options: { days?: number 
   return stats;
 }
 
+/* ══ الاستهلاك من فوديكس → خصم من مخزون «سِجل» ════════════════════
+ *
+ * فوديكس يسجّل لكل طلب مبيعات «استهلاكاً» (حركة مخزون نوع 8، مراجعها OC-…)
+ * بكميات المواد حسب وصفة المنتج، و«مرتجع طلب» (نوع 9، OR-…) يعيد ما أُرجع.
+ * نجمع صافي اليوم لكل صنف في حركة «إخراج/استهلاك» واحدة بتاريخ يوم العمل،
+ * فيصير رصيد «سِجل» = المشتريات − الاستهلاك − الهدر المعتمد، والفرق عند
+ * الجرد هو ما خرج بلا تسجيل. اليوم الجاري وأمس يُعاد سحبهما كل نبضة، وما
+ * قبلهما من «بداية الحسابات» يُستكمل تدريجياً ولا يُعاد بعد اكتماله.
+ * ══════════════════════════════════════════════════════════════════ */
+
+const dayBefore = (iso: string, days = 1) => new Date(new Date(`${iso}T12:00:00Z`).getTime() - days * 86_400_000).toISOString().slice(0, 10);
+
+async function consumptionOfDay(foodicsBranchId: string, date: string) {
+  const totals = new Map<string, { line: DocLine; quantity: number; cost: number }>();
+  for (const [type, sign] of [["8", 1], ["9", -1]] as const) {
+    for (let page = 1; page <= 40; page++) {
+      const body = await foodicsGet(PURCHASING_PATH(), {
+        "filter[type]": type,
+        "filter[branch_id]": foodicsBranchId,
+        "filter[business_date]": date,
+        include: "items",
+        per_page: "50",
+        page: String(page),
+      });
+      const rows = (Array.isArray(body.data) ? body.data : []) as Json[];
+      for (const o of rows) {
+        // بعض الحسابات تتجاهل فلتر التاريخ — نتأكد بأنفسنا
+        if (String(o.business_date ?? "") !== date || pick(o, "deleted_at")) continue;
+        for (const i of (o.items ?? []) as Json[]) {
+          const quantity = num(pick(i, "pivot.quantity", "quantity"));
+          if (!quantity) continue;
+          const sku = String(i.sku ?? "");
+          const fid = String(i.id ?? "");
+          const key = sku || fid;
+          if (!key) continue;
+          const t = totals.get(key) ?? {
+            line: { name: String(pick(i, "name_localized", "name") ?? ""), sku, unit: String(pick(i, "storage_unit", "ingredient_unit") ?? ""), ordered: 0, received: 0, cost: 0, fid },
+            quantity: 0,
+            cost: 0,
+          };
+          t.quantity += sign * quantity;
+          t.cost += sign * num(pick(i, "pivot.cost", "cost"));
+          totals.set(key, t);
+        }
+      }
+      const last = Number(body.meta?.last_page ?? 0);
+      if (!rows.length || (last && page >= last)) break;
+    }
+  }
+  return totals;
+}
+
+/** يطابق حركات استهلاك يوم واحد مع فوديكس ويعيد عدد الحركات التي تغيّرت. */
+async function syncConsumptionDay(branch: BranchRow, foodicsBranchId: string, date: string, ctx: PostContext): Promise<number> {
+  const db = getDb();
+  const totals = await consumptionOfDay(foodicsBranchId, date);
+  const prefix = `fcons:${branch.id}:${date}:`;
+  const wanted = new Map<string, { itemId: number; quantity: number; unitCost: number; totalCost: number }>();
+  for (const t of totals.values()) {
+    const quantity = round3(t.quantity);
+    if (!(quantity > 0)) continue;
+    const itemId = await itemOfLine(t.line, ctx);
+    if (!itemId) continue;
+    const ref = `${prefix}${itemId}`;
+    const before = wanted.get(ref);
+    const q = round3((before?.quantity ?? 0) + quantity);
+    const c = round2((before?.totalCost ?? 0) + Math.max(0, t.cost));
+    wanted.set(ref, { itemId, quantity: q, unitCost: q ? round2(c / q) : 0, totalCost: c });
+  }
+  const existing = await db.select().from(inventoryMovements).where(like(inventoryMovements.sourceRef, `${prefix}%`));
+  let changed = 0;
+  const stale: number[] = [];
+  for (const m of existing) {
+    const w = wanted.get(m.sourceRef);
+    if (!w) {
+      stale.push(m.id);
+      continue;
+    }
+    wanted.delete(m.sourceRef);
+    if (m.quantity === w.quantity && m.totalCost === w.totalCost) continue;
+    await db.update(inventoryMovements).set({ quantity: w.quantity, unitCost: w.unitCost, totalCost: w.totalCost, updatedAt: new Date() }).where(eq(inventoryMovements.id, m.id));
+    changed++;
+  }
+  if (stale.length) {
+    await db.delete(inventoryMovements).where(inArray(inventoryMovements.id, stale));
+    changed += stale.length;
+  }
+  if (wanted.size) {
+    await db.insert(inventoryMovements).values(
+      [...wanted].map(([sourceRef, w]) => ({
+        branchId: branch.id,
+        itemId: w.itemId,
+        movementType: "out",
+        businessDate: date,
+        quantity: w.quantity,
+        unitCost: w.unitCost,
+        totalCost: w.totalCost,
+        reason: "consumption",
+        reference: `استهلاك ${date}`,
+        sourceRef,
+        notes: "من فوديكس — استهلاك الطلبات حسب الوصفات (بعد خصم مرتجعات الطلبات)",
+      })),
+    );
+    changed += wanted.size;
+  }
+  await db
+    .insert(foodicsConsumptionDays)
+    .values({ branchId: branch.id, businessDate: date, lines: totals.size, syncedAt: new Date() })
+    .onConflictDoUpdate({ target: [foodicsConsumptionDays.branchId, foodicsConsumptionDays.businessDate], set: { lines: totals.size, syncedAt: new Date() } });
+  return changed;
+}
+
+/** اليوم وأمس دائماً، ثم استكمال الأيام السابقة من بداية الحسابات ما دام في الوقت متّسع. */
+export async function syncConsumption(branch: BranchRow, budgetMs = 8_000) {
+  const stats = { days: 0, movements: 0, remaining: 0 };
+  const foodicsBranchId = await foodicsBranchOf(branch.id);
+  if (!foodicsBranchId) return stats;
+  const db = getDb();
+  const started = Date.now();
+  const ctx = await loadPostContext(branch);
+  const today = businessDateNow(branch.timezone);
+  const yesterday = dayBefore(today);
+  const start = ctx.start ?? dayBefore(today, 30);
+  const done = new Set(
+    (await db.select({ d: foodicsConsumptionDays.businessDate }).from(foodicsConsumptionDays).where(eq(foodicsConsumptionDays.branchId, branch.id))).map((r) => r.d),
+  );
+  const backlog: string[] = [];
+  for (let d = dayBefore(yesterday); d >= start && backlog.length < 120; d = dayBefore(d)) if (!done.has(d)) backlog.push(d);
+  const queue = [today, yesterday].filter((d) => d >= start).concat(backlog);
+  try {
+    for (const [index, date] of queue.entries()) {
+      if (index >= 2 && Date.now() - started > budgetMs) {
+        stats.remaining = queue.length - index;
+        break;
+      }
+      stats.movements += await syncConsumptionDay(branch, foodicsBranchId, date, ctx);
+      stats.days++;
+    }
+  } catch (error) {
+    if (!(error instanceof FoodicsError && [400, 404, 422].includes(error.status))) throw error;
+  }
+  return stats;
+}
+
 /* ══ تأكيد الاستلام ═══════════════════════════════════════════════ */
 
 export const KIND_LABELS: Record<string, string> = {
@@ -639,6 +783,7 @@ export async function runInventoryTick(budgetMs = 20_000) {
       // الأصناف وأرصدتها مرة كل ساعة تقريباً
       const [last] = await db.select({ at: max(foodicsItemStock.syncedAt) }).from(foodicsItemStock).where(eq(foodicsItemStock.branchId, branch.id));
       if (!last?.at || Date.now() - new Date(last.at).getTime() > 55 * 60_000) await syncInventoryItems(branch);
+      await syncConsumption(branch, 6_000);
     } catch (error) {
       console.error(`[inventory] فرع ${branch.id}:`, (error as Error).message);
     }
