@@ -100,11 +100,13 @@ export async function syncInventoryItems(branch: BranchRow) {
   for (const o of got.rows) {
     const code = itemCode(o);
     const name = String(pick(o, "name_localized", "name") ?? code);
+    // فوديكس لا يرسل تكلفة الصنف في كل الحسابات: لا نصفّر بها سعراً أُخذ من آخر فاتورة شراء
+    const foodicsCost = round2(num(pick(o, "cost", "unit_cost", "average_cost")));
     const values = {
       name,
       category: String(pick(o, "category.name_localized", "category.name") ?? ""),
       unit: String(pick(o, "storage_unit", "ingredient_unit", "unit", "unit.name") ?? "قطعة"),
-      unitCost: round2(num(pick(o, "cost", "unit_cost", "average_cost"))),
+      ...(foodicsCost > 0 ? { unitCost: foodicsCost } : {}),
       minQuantity: num(pick(o, "minimum_level", "min_level", "par_level", "reorder_level")),
       isActive: !pick(o, "deleted_at"),
       updatedAt: new Date(),
@@ -369,6 +371,27 @@ async function postDocToStock(doc: DocRow, ctx: PostContext): Promise<number> {
   return changed;
 }
 
+/**
+ * سعر وحدة الصنف = سعر الوحدة في آخر فاتورة شراء له من فوديكس (بتاريخ الفاتورة)،
+ * فتُحسب قيمة المخزون بسعر الشراء الفعلي بدل تكلفة فوديكس الفارغة.
+ */
+export async function applyLastPurchaseCosts(): Promise<number> {
+  const db = getDb();
+  const res = await db.execute(sql`
+    update inventory_items i
+       set unit_cost = m.unit_cost, updated_at = now()
+      from (
+        select distinct on (item_id) item_id, unit_cost
+          from inventory_movements
+         where movement_type = 'in' and reason = 'purchase' and source_ref like 'fdoc:%' and unit_cost > 0
+         order by item_id, business_date desc, id desc
+      ) m
+     where m.item_id = i.id and i.unit_cost is distinct from m.unit_cost
+    returning i.id`);
+  const rows = (res as { rows?: unknown[] }).rows ?? (Array.isArray(res) ? res : []);
+  return rows.length;
+}
+
 /** يرحّل من المحفوظ ما لم يُرحَّل بعد (مستندات لم يعد فوديكس يعيدها في السحب). */
 async function postPendingDocs(branch: BranchRow, ctx: PostContext): Promise<number> {
   const db = getDb();
@@ -407,7 +430,7 @@ export async function syncStockDocs(branch: BranchRow, options: { days?: number 
       ? new Date(new Date(last.at).getTime() - 3 * 3600_000)
       : new Date(Date.now() - 30 * 86_400_000);
   const after = since.toISOString().slice(0, 19).replace("T", " ");
-  const stats = { docs: 0, received: 0, posted: 0, purchasePath: "", transferPath: "", notes: [] as string[] };
+  const stats = { docs: 0, received: 0, posted: 0, priced: 0, purchasePath: "", transferPath: "", notes: [] as string[] };
   // فلتر «updated_after» لا يقبله فوديكس على كل المسارات (كان يعيد صفراً):
   // في السحب الكامل نطلب بلا فلتر تاريخ ونفلتر نحن حسب آخر تحديث.
   const recent = (o: Json) => {
@@ -504,6 +527,7 @@ export async function syncStockDocs(branch: BranchRow, options: { days?: number 
     stats.notes.push("حركات الشراء غير متاحة في الحساب");
   }
   stats.posted += await postPendingDocs(branch, ctx);
+  stats.priced = await applyLastPurchaseCosts();
   return stats;
 }
 

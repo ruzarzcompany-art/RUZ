@@ -97,7 +97,7 @@ async function syncNow() {
   const notes = res.docs.notes?.length ? ` ملاحظات: ${res.docs.notes.join("، ")}.` : "";
   setAlert(
     el("stk-alert"),
-    `تم: ${res.items.items} صنف (${res.items.stocks} برصيد)، و${res.docs.docs} مستند شراء/تحويل منها ${res.docs.received} مستلم في فوديكس، وأُضيفت/حُدّثت ${res.docs.posted ?? 0} حركة شراء في مخزون «سِجل».${notes}`,
+    `تم: ${res.items.items} صنف (${res.items.stocks} برصيد)، و${res.docs.docs} مستند شراء/تحويل منها ${res.docs.received} مستلم في فوديكس، وأُضيفت/حُدّثت ${res.docs.posted ?? 0} حركة شراء في مخزون «سِجل»${res.docs.priced ? `، وحُدّث سعر ${res.docs.priced} صنف من آخر فاتورة شراء` : ""}.${notes}`,
     "ok",
   );
   await Promise.all([loadItems(), state.tab === "receive" ? loadDocs() : null]);
