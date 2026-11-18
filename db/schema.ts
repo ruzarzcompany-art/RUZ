@@ -2477,3 +2477,61 @@ export const financeSettings = pgTable("finance_settings", {
   startDate: date("start_date"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/* ══ الهدر: تسجيل ← اعتماد ← خصم من المخزون ═══════════════════════
+ *
+ * موظف الهدر يسجّل من تطبيقه لحظة الحدوث (صنف من المخزون، كمية، سبب)، فيبقى
+ * «بانتظار الاعتماد». المعتمِد يعتمد أو يرفض؛ والمعتمد وحده يُخصم من رصيد
+ * الصنف بحركة «إخراج/هدر» بسعر آخر شراء. جداول جديدة فقط.
+ * ══════════════════════════════════════════════════════════════════ */
+
+export const wasteEntries = pgTable(
+  "waste_entries",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    itemId: integer("item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "cascade" }),
+    businessDate: date("business_date").notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+    quantity: doublePrecision().notNull().default(0),
+    /** وحدة الصنف وقت التسجيل */
+    unit: text().notNull().default(""),
+    /** spoiled | expired | burnt | over_prep | dropped | returned | other */
+    reason: text().notNull().default("other"),
+    station: text().notNull().default(""),
+    notes: text().notNull().default(""),
+    /** سعر الوحدة (آخر شراء) وقيمة الهدر وقت التسجيل، وتُثبَّت عند الاعتماد */
+    unitCost: money("unit_cost"),
+    totalCost: money("total_cost"),
+    /** pending | approved | rejected */
+    status: text().notNull().default("pending"),
+    recordedByEmployeeId: integer("recorded_by_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    reviewedByEmployeeId: integer("reviewed_by_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    reviewNote: text("review_note").notNull().default(""),
+    /** حركة الخصم في `inventory_movements` بعد الاعتماد (عمود عادي بلا مفتاح أجنبي) */
+    movementId: integer("movement_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("waste_entries_branch_date_idx").on(table.branchId, table.businessDate),
+    index("waste_entries_status_idx").on(table.branchId, table.status),
+  ],
+);
+
+/** waste_settings — حد الهدر المقبول لكل فرع كنسبة من مبيعات اليوم. */
+export const wasteSettings = pgTable("waste_settings", {
+  branchId: integer("branch_id")
+    .primaryKey()
+    .references(() => branches.id, { onDelete: "cascade" }),
+  limitPercent: doublePrecision("limit_percent").notNull().default(3),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

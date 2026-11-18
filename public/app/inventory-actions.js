@@ -23,7 +23,6 @@ const MOVEMENT_ACTIONS = [
   { movementType: "in", reason: "transfer", group: "إدخال", label: "تحويل من فرع آخر" },
   { movementType: "in", reason: "other", group: "إدخال", label: "إدخال لسبب آخر" },
   { movementType: "out", reason: "consumption", group: "إخراج", label: "استهلاك" },
-  { movementType: "out", reason: "waste", group: "إخراج", label: "هدر / تالف" },
   { movementType: "out", reason: "transfer", group: "إخراج", label: "تحويل إلى فرع آخر" },
   { movementType: "out", reason: "other", group: "إخراج", label: "إخراج لسبب آخر" },
   { movementType: "count", reason: "stocktake", group: "جرد", label: "إثبات الكمية المعدودة" },

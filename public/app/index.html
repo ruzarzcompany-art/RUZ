@@ -210,7 +210,7 @@
         <button class="tab" type="button" data-panel="requests">الطلبات</button>
         <button class="tab" type="button" data-panel="file">الملف الوظيفي</button>
         <button class="tab" type="button" data-panel="cashier">تقفيل اليوم</button>
-        <button class="tab" type="button" data-panel="inventory">حركة المخزون</button>
+        <button class="tab" type="button" data-panel="inventory">المخزون والهدر</button>
         <button class="tab" type="button" data-panel="password">تغيير كلمة المرور</button>
       </nav>
 
@@ -420,7 +420,7 @@
           <button id="self-inv-refresh" class="btn btn--ghost btn--xs" type="button">تحديث</button>
         </div>
 
-        <p class="hint">
+        <p class="hint" id="rcv-hint">
           الشراء والتحويلات تأتي من فوديكس. عند وصول البضاعة: عُدّ الأصناف ثم اضغط «مطابق»، أو
           «يوجد فرق» واكتب الكمية الواصلة فعلاً للصنف المختلف.
         </p>
@@ -428,8 +428,33 @@
         <div id="rcv-mine"></div>
         <p id="rcv-mine-empty" class="empty" hidden>لا استلام بانتظار تأكيدك الآن.</p>
 
-        <details class="form-grid">
-          <summary class="btn btn--ghost btn--sm">تسجيل جرد أو هدر يدوي</summary>
+        <section id="waste-box" hidden>
+          <h3 class="card__title card__title--sm">تسجيل الهدر</h3>
+          <p class="hint">سجّل الهدر لحظة حدوثه: الصنف والكمية والسبب. يبقى «بانتظار الاعتماد» ولا يُخصم من المخزون إلا بعد اعتماد المسؤول.</p>
+          <p id="waste-alert" class="alert" role="status" hidden></p>
+          <form id="waste-form" class="form-grid" novalidate>
+            <label class="field field--sm"><span class="field__label">التصنيف</span><select id="waste-category"></select></label>
+            <label class="field field--sm"><span class="field__label">الصنف</span><select id="waste-item" required></select></label>
+            <label class="field field--sm"><span class="field__label" id="waste-qty-label">الكمية</span><input id="waste-qty" type="number" step="any" min="0" inputmode="decimal" required /></label>
+            <label class="field field--sm"><span class="field__label">السبب</span><select id="waste-reason" required></select></label>
+            <label class="field field--sm"><span class="field__label">المحطة</span>
+              <select id="waste-station"><option value="">—</option><option>المطبخ</option><option>الشواية</option><option>التحضير</option><option>الكاشير</option><option>المستودع</option><option>الثلاجة</option></select>
+            </label>
+            <label class="field field--sm field--wide"><span class="field__label">ملاحظات</span><textarea id="waste-notes" rows="2" maxlength="500"></textarea></label>
+            <button id="waste-submit" class="btn btn--primary btn--sm" type="submit">تسجيل الهدر</button>
+          </form>
+          <h3 class="card__title card__title--xs">تسجيلاتي (آخر 3 أيام)</h3>
+          <div class="table-wrap">
+            <table class="table" id="waste-mine">
+              <thead><tr><th>التاريخ</th><th>الصنف</th><th>الكمية</th><th>السبب</th><th>الحالة</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="waste-mine-empty" class="empty" hidden>لا تسجيلات هدر بعد.</p>
+        </section>
+
+        <details class="form-grid" id="self-inv-manual">
+          <summary class="btn btn--ghost btn--sm">تسجيل جرد أو حركة مخزون يدوية</summary>
 
         <details id="self-purchase-details" class="form-grid" hidden>
           <summary class="btn btn--ghost btn--sm">استلام مشتريات بفاتورة</summary>

@@ -21,6 +21,7 @@ import { financeStartDate } from "./financeStart.js";
 import { createAlert, type BranchRow } from "./routes/surveillance.js";
 import { isoDateInZone, safeTimeZone } from "./time.js";
 import { alertPriceChanges } from "./priceReport.js";
+import { runWasteTick } from "./waste.js";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -642,6 +643,7 @@ export async function runInventoryTick(budgetMs = 20_000) {
       console.error(`[inventory] فرع ${branch.id}:`, (error as Error).message);
     }
     reminded += await remindUnconfirmed(branch);
+    await runWasteTick(branch).catch((error) => console.error(`[waste] فرع ${branch.id}:`, (error as Error).message));
   }
   return { branches: linked.length, reminded };
 }

@@ -37,6 +37,8 @@ export const stockRouter = Router();
 
 const canRead = [requireAuth, requireAnyPermission(PERMISSIONS.inventoryRead, PERMISSIONS.sectionInventory)];
 const canManage = [requireAuth, requirePermission(PERMISSIONS.inventoryItemsManage)];
+/** المستلِم: من مُنح «استلام المشتريات» بعينها، أو من يملك حركة المخزون كلها */
+const RECEIVE_CODES = [PERMISSIONS.stockReceive, PERMISSIONS.inventoryWrite];
 
 function fail(res: Response, error: unknown) {
   if (error instanceof FoodicsError) {
@@ -56,7 +58,7 @@ async function namesOf(ids: Array<number | null>) {
 
 /* ── المستلِم ─────────────────────────────────────────────────── */
 
-stockRouter.get("/stock/mine", requireAuth, requirePermission(PERMISSIONS.inventoryWrite), async (req: AuthedRequest, res: Response) => {
+stockRouter.get("/stock/mine", requireAuth, requireAnyPermission(...RECEIVE_CODES), async (req: AuthedRequest, res: Response) => {
   const branch = await loadBranch(req.employee?.branchId ?? null);
   if (!branch) {
     res.json({ ok: true, available: false, docs: [] });
@@ -82,7 +84,7 @@ stockRouter.get("/stock/mine", requireAuth, requirePermission(PERMISSIONS.invent
   res.json({ ok: true, available: true, today, docs: rows.map((d) => docView(d, names)) });
 });
 
-stockRouter.post("/stock/docs/:id/confirm", requireAuth, requirePermission(PERMISSIONS.inventoryWrite), async (req: AuthedRequest, res: Response) => {
+stockRouter.post("/stock/docs/:id/confirm", requireAuth, requireAnyPermission(...RECEIVE_CODES), async (req: AuthedRequest, res: Response) => {
   const actor = req.employee!;
   const id = asId(req.params.id);
   if (id === null) {

@@ -40,6 +40,7 @@ import { controlRouter } from "./routes/control.js";
 import { dayCloseRouter } from "./routes/dayClose.js";
 import { stockRouter } from "./routes/foodicsInventory.js";
 import { bankRouter } from "./routes/bank.js";
+import { wasteRouter } from "./routes/waste.js";
 import { ensureSeeded } from "./seed.js";
 import {
   getAutoCloseHour,
@@ -467,6 +468,7 @@ export function createApp() {
   app.use("/api", dayCloseRouter);
   app.use("/api", stockRouter);
   app.use("/api", bankRouter);
+  app.use("/api", wasteRouter);
 
   app.use("/api", (_req: Request, res: Response) => {
     res.status(404).json({ ok: false, error: "المسار غير موجود" });
