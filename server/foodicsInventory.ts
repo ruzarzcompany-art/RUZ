@@ -654,9 +654,92 @@ async function syncConsumptionDay(branch: BranchRow, foodicsBranchId: string, da
   return changed;
 }
 
+/**
+ * الإنتاج في فوديكس → مخزون «سِجل»: الصنف المصنَّع (أرز مطبوخ، خلطة…) يدخل رصيده
+ * بحركة «إنتاج» (نوع 5، مراجعها PRD-…) وتُخصم خاماته بحركة «استهلاك إنتاج»
+ * (نوع 7، PC-…). بدونهما يُخصم المصنَّع مع كل طلب ولا يدخل أبداً فيبقى سالباً.
+ * الحركات قليلة، فتُسحب أحدث صفحة لكل نوع وتُجمع لكل يوم وصنف.
+ */
+export async function syncProduction(branch: BranchRow, ctx: PostContext): Promise<number> {
+  const foodicsBranchId = await foodicsBranchOf(branch.id);
+  if (!foodicsBranchId) return 0;
+  const db = getDb();
+  const start = ctx.start ?? dayBefore(ctx.today, 30);
+  const wanted = new Map<string, { itemId: number; date: string; type: "in" | "out"; quantity: number; totalCost: number }>();
+  let oldest = ctx.today;
+  for (const [type, direction, tag] of [["5", "in", "fprod"], ["7", "out", "fpc"]] as const) {
+    let body: Json;
+    try {
+      body = await foodicsGet(PURCHASING_PATH(), { "filter[type]": type, "filter[branch_id]": foodicsBranchId, sort: "-business_date", include: "items", per_page: "50" });
+    } catch (error) {
+      if (error instanceof FoodicsError && [400, 404, 422].includes(error.status)) continue;
+      throw error;
+    }
+    for (const o of (Array.isArray(body.data) ? body.data : []) as Json[]) {
+      const date = String(o.business_date ?? "").slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < start || pick(o, "deleted_at")) continue;
+      if (date < oldest) oldest = date;
+      for (const i of (o.items ?? []) as Json[]) {
+        const quantity = Math.abs(num(pick(i, "pivot.quantity", "quantity")));
+        if (!quantity) continue;
+        const line: DocLine = { name: String(pick(i, "name_localized", "name") ?? ""), sku: String(i.sku ?? ""), unit: String(pick(i, "storage_unit", "ingredient_unit") ?? ""), ordered: 0, received: 0, cost: 0, fid: String(i.id ?? "") };
+        const itemId = await itemOfLine(line, ctx);
+        if (!itemId) continue;
+        const ref = `${tag}:${branch.id}:${date}:${itemId}`;
+        const w = wanted.get(ref) ?? { itemId, date, type: direction, quantity: 0, totalCost: 0 };
+        w.quantity = round3(w.quantity + quantity);
+        w.totalCost = round2(w.totalCost + Math.abs(num(pick(i, "pivot.cost", "cost"))));
+        wanted.set(ref, w);
+      }
+    }
+  }
+  const existing = (
+    await db
+      .select()
+      .from(inventoryMovements)
+      .where(and(eq(inventoryMovements.branchId, branch.id), sql`(${inventoryMovements.sourceRef} like ${`fprod:${branch.id}:%`} or ${inventoryMovements.sourceRef} like ${`fpc:${branch.id}:%`})`))
+  ).filter((m) => m.businessDate >= oldest);
+  let changed = 0;
+  const stale: number[] = [];
+  for (const m of existing) {
+    const w = wanted.get(m.sourceRef);
+    if (!w) {
+      stale.push(m.id);
+      continue;
+    }
+    wanted.delete(m.sourceRef);
+    if (m.quantity === w.quantity && m.totalCost === w.totalCost) continue;
+    await db.update(inventoryMovements).set({ quantity: w.quantity, totalCost: w.totalCost, unitCost: w.quantity ? round2(w.totalCost / w.quantity) : 0, updatedAt: new Date() }).where(eq(inventoryMovements.id, m.id));
+    changed++;
+  }
+  if (stale.length) {
+    await db.delete(inventoryMovements).where(inArray(inventoryMovements.id, stale));
+    changed += stale.length;
+  }
+  if (wanted.size) {
+    await db.insert(inventoryMovements).values(
+      [...wanted].map(([sourceRef, w]) => ({
+        branchId: branch.id,
+        itemId: w.itemId,
+        movementType: w.type,
+        businessDate: w.date,
+        quantity: w.quantity,
+        unitCost: w.quantity ? round2(w.totalCost / w.quantity) : 0,
+        totalCost: w.totalCost,
+        reason: "manufacture",
+        reference: w.type === "in" ? `إنتاج ${w.date}` : `خامات إنتاج ${w.date}`,
+        sourceRef,
+        notes: w.type === "in" ? "من فوديكس — صنف مصنَّع دخل المخزون" : "من فوديكس — خامات استُهلكت في الإنتاج",
+      })),
+    );
+    changed += wanted.size;
+  }
+  return changed;
+}
+
 /** اليوم وأمس دائماً، ثم استكمال الأيام السابقة من بداية الحسابات ما دام في الوقت متّسع. */
 export async function syncConsumption(branch: BranchRow, budgetMs = 8_000) {
-  const stats = { days: 0, movements: 0, remaining: 0 };
+  const stats = { days: 0, movements: 0, remaining: 0, production: 0 };
   const foodicsBranchId = await foodicsBranchOf(branch.id);
   if (!foodicsBranchId) return stats;
   const db = getDb();
@@ -672,6 +755,7 @@ export async function syncConsumption(branch: BranchRow, budgetMs = 8_000) {
   for (let d = dayBefore(yesterday); d >= start && backlog.length < 120; d = dayBefore(d)) if (!done.has(d)) backlog.push(d);
   const queue = [today, yesterday].filter((d) => d >= start).concat(backlog);
   try {
+    stats.production = await syncProduction(branch, ctx);
     for (const [index, date] of queue.entries()) {
       if (index >= 2 && Date.now() - started > budgetMs) {
         stats.remaining = queue.length - index;
