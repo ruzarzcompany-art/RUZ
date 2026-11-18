@@ -261,6 +261,14 @@ export const ALERT_TYPES: Record<string, AlertTypeSpec> = {
     severity: 1,
     action: "عدّ الصنف في المستودع فوراً، ومطابقة فاتورة المورد، ومراجعة لقطات المستودع وقت الاستلام.",
   },
+  price_change: {
+    label: "تغيّر سعر شراء صنف بأكثر من 10٪ عن آخر شراء",
+    role: "gm",
+    urgent: true,
+    suspicion: false,
+    severity: 2,
+    action: "مقارنة الفاتورة بالفاتورة السابقة للصنف، وسؤال المشتري والمندوب عن سبب التغيّر، وطلب عرض سعر من مورد آخر إن لزم.",
+  },
   receipt_not_confirmed: {
     label: "استلام في فوديكس لم يؤكّده أحد",
     role: "warehouse",
