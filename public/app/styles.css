@@ -2405,3 +2405,22 @@ select option {
   cursor: pointer;
   font-weight: 600;
 }
+
+/* شبكة اختيار أصناف الجرد اليومي */
+.pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 6px 14px;
+  max-height: 420px;
+  overflow: auto;
+  margin: 10px 0;
+  padding: 8px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  border-radius: 8px;
+}
+.pick-grid__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+}

@@ -1172,8 +1172,12 @@ function inventoryCountSheet(data) {
     ],
   }));
 
+  const scopeLabel =
+    payload.scope === "daily" ? "جرد يومي — الأصناف المحدّدة" : payload.scope === "monthly" ? "جرد شهري — كل الأصناف" : "كل الأصناف";
+
   const nodes = [
     pairs([
+      ["نوع الجرد", scopeLabel],
       ["تاريخ الجرد", formatDate(payload.date ?? data.today)],
       ["الفرع", payload.branch?.name],
       ["عدد الأصناف", totals.items ?? rows.length],
@@ -1197,7 +1201,19 @@ function inventoryCountSheet(data) {
       bodyRows,
       "sheet__table sheet__count",
     ),
-    rows.length === 0 ? note("لا توجد أصناف نشطة لعرضها في ورقة الجرد.") : null,
+    rows.length === 0
+      ? note(
+          payload.scope === "daily"
+            ? "لم تُحدَّد أصناف للجرد اليومي بعد — حدّدها من المخزون ← الجرد ← «تحديد أصناف الجرد اليومي»."
+            : "لا توجد أصناف نشطة لعرضها في ورقة الجرد.",
+        )
+      : null,
+    pairs([
+      ["اسم القائم بالجرد", ""],
+      ["التوقيع", ""],
+      ["مدير الفرع", ""],
+      ["وقت الجرد", ""],
+    ]),
     note(
       "يُعبَّأ عمودا «الكمية المعدودة» و«الفرق» باليد في المستودع، ثم تُسجَّل الكميات في النظام " +
         "كحركة جرد ليُثبَّت الرصيد عليها. الأصناف المظلَّلة رصيدها تحت الحد الأدنى.",

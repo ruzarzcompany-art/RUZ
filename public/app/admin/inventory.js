@@ -83,6 +83,7 @@ function printDailySheet() {
   openDocument("inventory_count_sheet", {
     branchId,
     date: el("inventory-daily-date").value || todayIso(),
+    scope: el("inventory-daily-scope").value,
   });
 }
 
@@ -398,7 +399,8 @@ async function loadDaily() {
   }
 
   const date = el("inventory-daily-date").value || todayIso();
-  const result = await api(`/inventory/daily?branchId=${branchId}&date=${date}`);
+  const scope = el("inventory-daily-scope").value;
+  const result = await api(`/inventory/daily?branchId=${branchId}&date=${date}&scope=${scope}`);
 
   if (!result.ok) {
     setAlert(el("inventory-daily-result"), result.error ?? "تعذّر تحميل ورقة الجرد", "error");
@@ -408,6 +410,78 @@ async function loadDaily() {
   el("inventory-daily-date").value = result.businessDate;
   setAlert(el("inventory-daily-result"), "");
   renderDaily(result);
+  el("inventory-daily-empty").textContent =
+    scope === "daily" ? "لم تُحدَّد أصناف للجرد اليومي بعد — افتح «تحديد أصناف الجرد اليومي» أسفل الصفحة." : "لا توجد أصناف نشطة.";
+  await loadDailyPick();
+}
+
+/* ── تحديد أصناف الجرد اليومي ──────────────────────────────── */
+
+const dailyPick = { items: [], selected: new Set(), loaded: false };
+
+function drawDailyPick() {
+  const term = el("inventory-daily-pick-q").value.trim().toLowerCase();
+  const category = el("inventory-daily-pick-cat").value;
+  const shown = dailyPick.items.filter(
+    (i) => (category === "" || (i.category || "") === category) && (!term || i.name.toLowerCase().includes(term) || i.code.toLowerCase().includes(term)),
+  );
+  dailyPick.shown = shown;
+  el("inventory-daily-pick-list").replaceChildren(
+    ...shown.map((i) => {
+      const label = document.createElement("label");
+      label.className = "pick-grid__item";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = dailyPick.selected.has(i.id);
+      box.onchange = () => {
+        if (box.checked) dailyPick.selected.add(i.id);
+        else dailyPick.selected.delete(i.id);
+        el("inventory-daily-pick-count").textContent = `(${dailyPick.selected.size} صنف محدّد — لم يُحفظ بعد)`;
+      };
+      const text = document.createElement("span");
+      text.textContent = `${i.name} (${i.unit}) · ${i.code}`;
+      label.append(box, text);
+      return label;
+    }),
+  );
+}
+
+async function loadDailyPick(force = false) {
+  if (dailyPick.loaded && !force) return;
+  const result = await api("/inventory/daily-items");
+  if (!result.ok) return;
+  dailyPick.loaded = true;
+  dailyPick.items = result.items;
+  dailyPick.selected = new Set(result.items.filter((i) => i.dailyCount).map((i) => i.id));
+  el("inventory-daily-pick-count").textContent = `(${dailyPick.selected.size} صنف محدّد)`;
+  const select = el("inventory-daily-pick-cat");
+  const categories = [...new Set(result.items.map((i) => i.category || ""))].filter(Boolean);
+  select.replaceChildren(
+    ...[["", "كل التصنيفات"], ...categories.map((c) => [c, c])].map(([value, text]) => {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = text;
+      return o;
+    }),
+  );
+  drawDailyPick();
+}
+
+function setShownDaily(checked) {
+  for (const i of dailyPick.shown ?? []) {
+    if (checked) dailyPick.selected.add(i.id);
+    else dailyPick.selected.delete(i.id);
+  }
+  el("inventory-daily-pick-count").textContent = `(${dailyPick.selected.size} صنف محدّد — لم يُحفظ بعد)`;
+  drawDailyPick();
+}
+
+async function saveDailyPick() {
+  const result = await api("/inventory/daily-items", { method: "PUT", body: { itemIds: [...dailyPick.selected] } });
+  setAlert(el("inventory-daily-result"), result.ok ? result.message : (result.error ?? "تعذّر حفظ القائمة"), result.ok ? "ok" : "error");
+  if (!result.ok) return;
+  await loadDailyPick(true);
+  await loadDaily();
 }
 
 /* ── الحركات ───────────────────────────────────────────────────── */
@@ -833,6 +907,12 @@ export function initInventoryModule({ can }) {
   el("inventory-filter-run").addEventListener("click", loadMovements);
   el("inventory-daily-run").addEventListener("click", loadDaily);
   el("inventory-daily-print").addEventListener("click", printDailySheet);
+  el("inventory-daily-scope").addEventListener("change", loadDaily);
+  el("inventory-daily-pick-q").addEventListener("input", drawDailyPick);
+  el("inventory-daily-pick-cat").addEventListener("change", drawDailyPick);
+  el("inventory-daily-pick-all").addEventListener("click", () => setShownDaily(true));
+  el("inventory-daily-pick-none").addEventListener("click", () => setShownDaily(false));
+  el("inventory-daily-pick-save").addEventListener("click", saveDailyPick);
   el("inventory-movements-print").addEventListener("click", printMovements);
   el("inventory-print-last").addEventListener("click", () => {
     if (state.lastMovementId !== null) printMovement(state.lastMovementId);

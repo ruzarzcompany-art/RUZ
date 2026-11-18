@@ -1008,6 +1008,8 @@ export const inventoryItems = pgTable("inventory_items", {
   priceMode: text("price_mode").notNull().default("fixed"),
   minQuantity: doublePrecision("min_quantity").notNull().default(0),
   note: text().notNull().default(""),
+  /** يُجرد يومياً: يظهر في ورقة الجرد اليومي. الجرد الشهري يشمل كل الأصناف. */
+  dailyCount: boolean("daily_count").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

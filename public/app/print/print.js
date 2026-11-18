@@ -213,6 +213,7 @@ async function renderPackaged(company) {
     "itemId",
     "movementType",
     "terminationBy",
+    "scope",
   ]) {
     const value = params.get(key);
     if (value) query.set(key, value);
@@ -257,7 +258,9 @@ async function renderPackaged(company) {
     result.inventory?.kind === "movement"
       ? `حركة رقم ${result.inventory.movement?.id ?? ""}`
       : "",
-    result.inventory?.kind === "countSheet" ? `جرد يوم ${result.inventory.date}` : "",
+    result.inventory?.kind === "countSheet"
+      ? `${result.inventory.scope === "daily" ? "الجرد اليومي" : result.inventory.scope === "monthly" ? "الجرد الشهري — كل الأصناف" : "جرد"} ${result.inventory.date}`
+      : "",
     // جهة إنهاء العقد تظهر في عنوان المخالصة نفسها لا في متنها وحده
     result.termination ? result.termination.label : "",
   ].filter(Boolean);
