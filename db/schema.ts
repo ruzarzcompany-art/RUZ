@@ -1383,6 +1383,11 @@ export const providerSettlementPayments = pgTable(
     /** رقم الحوالة أو مرجع كشف الجهة */
     reference: text().notNull().default(""),
     notes: text().notNull().default(""),
+    /**
+     * حركة كشف البنك التي جاءت منها الدفعة آلياً (فارغ = دفعة أُدخلت يدوياً).
+     * عمود عادي بلا مفتاح أجنبي: المطابقة تحذف الدفعة إن حُذفت حركتها من الكشف.
+     */
+    bankTransactionId: integer("bank_transaction_id"),
     createdByEmployeeId: integer("created_by_employee_id").references(
       () => employees.id,
       { onDelete: "set null" },
@@ -1395,6 +1400,7 @@ export const providerSettlementPayments = pgTable(
       table.settlementId,
       table.paymentDate,
     ),
+    uniqueIndex("provider_settlement_payments_bank_tx_idx").on(table.bankTransactionId),
   ],
 );
 

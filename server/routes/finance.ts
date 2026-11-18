@@ -19,9 +19,12 @@ import {
   cashierClosings,
   employees,
   monthlyCashClosings,
+  bankTransactions,
   providerSettlementPayments,
   providerSettlements,
 } from "../../db/schema.js";
+import { loadRules, norm as normName } from "../bank.js";
+import { financeStartDate } from "../financeStart.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
 import {
@@ -217,16 +220,34 @@ async function monthlyProviderSales(
   }
 
   if (providerType === "network") {
-    const foodicsRows = await db
-      .select({ foodicsSales: cashierClosings.foodicsSales })
-      .from(cashierClosings)
+    // تقفيلات فوديكس الآلية تحمل «فودكس باي» بنداً باسم طريقة الدفع نفسها؛ فلا يُضاف
+    // إجماليها مرة ثانية تحت «شبكة فودكس» (كان يُحسب مرتين). يبقى للتقفيلات اليدوية القديمة.
+    const autoLines = await db
+      .select({ closingId: cashierClosingLines.closingId })
+      .from(cashierClosingLines)
+      .innerJoin(cashierClosings, eq(cashierClosingLines.closingId, cashierClosings.id))
       .where(
         and(
           eq(cashierClosings.branchId, branchId),
+          eq(cashierClosingLines.category, "network"),
+          eq(cashierClosingLines.reference, "فوديكس"),
           gte(cashierClosings.businessDate, from),
           lte(cashierClosings.businessDate, to),
         ),
       );
+    const autoClosings = new Set(autoLines.map((l) => l.closingId));
+    const foodicsRows = (
+      await db
+        .select({ id: cashierClosings.id, foodicsSales: cashierClosings.foodicsSales })
+        .from(cashierClosings)
+        .where(
+          and(
+            eq(cashierClosings.branchId, branchId),
+            gte(cashierClosings.businessDate, from),
+            lte(cashierClosings.businessDate, to),
+          ),
+        )
+    ).filter((row) => !autoClosings.has(row.id));
     const foodicsTotal = sumBy(foodicsRows, (row) => row.foodicsSales);
     if (foodicsTotal !== 0) buckets.set(FOODICS_LABEL, [{ amount: foodicsTotal }]);
   }
@@ -566,6 +587,171 @@ async function recomputeSettlement(settlementId: number) {
 
   return { before: row, settlement: updated, figures, payments };
 }
+
+/* ══ ربط كشف البنك بالمحوّل فعلاً ════════════════════════════════════
+ *
+ * كل إيداع في كشف البنك من جهة مثبّتة كـ«مبيعات (شبكة / تطبيق)» يصير دفعة
+ * تحويل آلية في تسوية تلك الجهة — فلا يكتب أحد «المحوّل فعلاً» بيده.
+ *   • الجهة تُطابَق باسم طريقة الدفع في فوديكس (الاسم المثبّت في قاعدة البنك).
+ *   • الشهر = شهر يوم المبيعات (تاريخ الإيداع − مهلة الوصول المثبّتة للجهة).
+ *   • تُنشأ التسوية «بانتظار السداد» إن لم تكن مسجّلة، ولا تُمسّ تسوية مؤكَّدة
+ *     ولا شهر مقفل، ولا الدفعات اليدوية.
+ *   • إن حُذفت الحركة من الكشف أو غُيّرت قاعدة جهتها حُذفت دفعتها الآلية.
+ * ══════════════════════════════════════════════════════════════════ */
+
+function shiftDate(iso: string, days: number): string {
+  const d = new Date(`${iso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+export async function syncBankTransfers(branchId: number, year: number, month: number) {
+  const db = getDb();
+  const stats = { added: 0, updated: 0, removed: 0, settlements: 0 };
+  const { from, to } = monthBounds(year, month);
+  const lock = await monthLockFor(branchId, from);
+  if (lock) {
+    const today = isoDateInZone(new Date(), await branchTimezone(branchId));
+    if (today > settlementWindowEnd(to)) return stats;
+  }
+
+  const rules = await loadRules(branchId);
+  const maxLag = Math.max(0, ...[...rules.values()].map((r) => r.lagDays || 0));
+  const txs = await db
+    .select()
+    .from(bankTransactions)
+    .where(
+      and(
+        eq(bankTransactions.branchId, branchId),
+        gte(bankTransactions.txDate, from),
+        lte(bankTransactions.txDate, shiftDate(to, maxLag)),
+      ),
+    )
+    .orderBy(asc(bankTransactions.txDate), asc(bankTransactions.id));
+
+  // إيداعات الشهر لكل جهة (باسم طريقة الدفع في فوديكس بعد التوحيد)
+  const deposits = new Map<string, typeof txs>();
+  for (const tx of txs) {
+    if (!(tx.credit > 0)) continue;
+    const rule = rules.get(tx.counterparty);
+    if (!rule || rule.category !== "sales_provider" || !rule.mappedName) continue;
+    const salesDate = shiftDate(tx.txDate, -(rule.lagDays || 0));
+    if (salesDate < from || salesDate > to) continue;
+    const key = normName(rule.mappedName);
+    deposits.set(key, [...(deposits.get(key) ?? []), tx]);
+  }
+
+  const previous = previousMonth(year, month);
+  for (const providerType of PROVIDER_TYPES) {
+    const sales = await monthlyProviderSales(branchId, from, to, providerType);
+    const settlements = await db
+      .select()
+      .from(providerSettlements)
+      .where(
+        and(
+          eq(providerSettlements.branchId, branchId),
+          eq(providerSettlements.providerType, providerType),
+          eq(providerSettlements.periodFrom, from),
+          eq(providerSettlements.periodTo, to),
+        ),
+      )
+      .orderBy(desc(providerSettlements.id));
+    const names = new Set<string>([...sales.keys(), ...settlements.map((s) => s.providerName)]);
+    let carryIn: Map<string, number> | null = null;
+
+    for (const providerName of names) {
+      const wanted = deposits.get(normName(providerName)) ?? [];
+      let settlement = settlements.find((s) => s.providerName === providerName) ?? null;
+      if (!settlement && wanted.length === 0) continue;
+      if (settlement?.status === "confirmed") continue;
+
+      const liveSales = round2(sales.get(providerName) ?? 0);
+      if (!settlement) {
+        carryIn ??= await carriedOutByProvider(branchId, providerType, previous.year, previous.month);
+        const carried = round2(carryIn.get(providerName) ?? 0);
+        [settlement] = await db
+          .insert(providerSettlements)
+          .values({
+            branchId,
+            providerType,
+            providerName,
+            periodFrom: from,
+            periodTo: to,
+            salesAmount: liveSales,
+            carriedInAmount: carried,
+            carriedFromMonth: carried > 0 ? monthKeyOf(previous.year, previous.month) : "",
+            status: "pending",
+            notes: "أُنشئت آلياً من كشف البنك",
+          })
+          .returning();
+        if (!settlement) continue;
+      }
+
+      const existing = (await settlementPaymentRows(settlement.id)).filter((p) => p.bankTransactionId !== null);
+      let changed = false;
+      for (const tx of wanted) {
+        const amount = round2(tx.credit);
+        const reference = (tx.reference || tx.counterparty).slice(0, 120);
+        const current = existing.find((p) => p.bankTransactionId === tx.id);
+        if (!current) {
+          await db
+            .insert(providerSettlementPayments)
+            .values({ settlementId: settlement.id, paymentDate: tx.txDate, amount, reference, notes: "من كشف البنك", bankTransactionId: tx.id })
+            .onConflictDoNothing();
+          stats.added++;
+          changed = true;
+        } else if (round2(Number(current.amount) || 0) !== amount || current.paymentDate !== tx.txDate) {
+          await db
+            .update(providerSettlementPayments)
+            .set({ amount, paymentDate: tx.txDate, reference, updatedAt: new Date() })
+            .where(eq(providerSettlementPayments.id, current.id));
+          stats.updated++;
+          changed = true;
+        }
+      }
+      const keep = new Set(wanted.map((tx) => tx.id));
+      const stale = existing.filter((p) => !keep.has(p.bankTransactionId!)).map((p) => p.id);
+      if (stale.length) {
+        await db.delete(providerSettlementPayments).where(inArray(providerSettlementPayments.id, stale));
+        stats.removed += stale.length;
+        changed = true;
+      }
+
+      // مبيعات التسوية المفتوحة تتبع المجمَّع الحيّ حتى لا تُحسب العمولة على رقم قديم
+      const hasAuto = wanted.length > 0;
+      if (hasAuto && round2(Number(settlement.salesAmount) || 0) !== liveSales) {
+        await db.update(providerSettlements).set({ salesAmount: liveSales }).where(eq(providerSettlements.id, settlement.id));
+        changed = true;
+      }
+      if (changed) {
+        await recomputeSettlement(settlement.id);
+        stats.settlements++;
+      }
+    }
+  }
+  return stats;
+}
+
+/** يربط كشف البنك بالتسويات لكل الشهور من بداية الحسابات (بحد أقصى 6 شهور) حتى الشهر الحالي. */
+export async function syncBankTransfersSince(branchId: number) {
+  const today = isoDateInZone(new Date(), await branchTimezone(branchId));
+  const start = (await financeStartDate(branchId)) ?? today;
+  let cursor = { year: Number(today.slice(0, 4)), month: Number(today.slice(5, 7)) };
+  const total = { added: 0, updated: 0, removed: 0, settlements: 0 };
+  for (let i = 0; i < 6; i++) {
+    if (monthBounds(cursor.year, cursor.month).to < start) break;
+    const s = await syncBankTransfers(branchId, cursor.year, cursor.month);
+    total.added += s.added;
+    total.updated += s.updated;
+    total.removed += s.removed;
+    total.settlements += s.settlements;
+    cursor = previousMonth(cursor.year, cursor.month);
+  }
+  return total;
+}
+
+const BANK_PAYMENT_LOCKED =
+  "هذه الدفعة مأخوذة آلياً من كشف البنك ولا تُعدَّل ولا تُحذف هنا — عدّل كشف البنك أو قاعدة الجهة في «البنك والمطابقة» فتتغيّر تلقائياً.";
 
 /** يتحقّق أن مبلغاً مُدخلاً ضمن الحدود المعقولة. */
 function moneyOrError(value: unknown, allowZero = true): number | string {
@@ -1517,6 +1703,11 @@ financeRouter.get(
       return;
     }
 
+    // «المحوّل فعلاً» يُملأ من كشف البنك قبل العرض (آلياً وبلا تكرار)
+    await syncBankTransfers(branchId, period.year, period.month).catch((error) =>
+      console.error("[finance] ربط كشف البنك بالتسويات:", error),
+    );
+
     const { from, to, monthKey, rows } = await monthlyProviderRows(
       branchId,
       providerType,
@@ -2036,6 +2227,11 @@ financeRouter.patch(
       return;
     }
 
+    if (before.bankTransactionId !== null) {
+      res.status(409).json({ ok: false, error: BANK_PAYMENT_LOCKED });
+      return;
+    }
+
     const settlement = await settlementOr404(before.settlementId, res);
     if (!settlement) return;
     if (settlement.status === "confirmed") {
@@ -2138,6 +2334,11 @@ financeRouter.delete(
       .limit(1);
     if (!before) {
       res.status(404).json({ ok: false, error: "الدفعة غير موجودة" });
+      return;
+    }
+
+    if (before.bankTransactionId !== null) {
+      res.status(409).json({ ok: false, error: BANK_PAYMENT_LOCKED });
       return;
     }
 

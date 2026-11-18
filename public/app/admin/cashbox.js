@@ -463,7 +463,15 @@ async function loadPayments(type, provider) {
     ...payments.map((payment) => {
       const actions = document.createElement("span");
       actions.className = "row-actions";
-      if (mayEditPayment) {
+      // دفعة آلية من كشف البنك: لا تُعدَّل ولا تُحذف هنا — مصدرها الكشف نفسه
+      const fromBank = payment.bankTransactionId !== null && payment.bankTransactionId !== undefined;
+      if (fromBank) {
+        const tag = document.createElement("span");
+        tag.className = "badge badge--ok";
+        tag.textContent = "من كشف البنك";
+        actions.append(tag);
+      }
+      if (mayEditPayment && !fromBank) {
         actions.append(
           button("تعديل", {
             className: "btn btn--ghost btn--xs",
@@ -471,7 +479,7 @@ async function loadPayments(type, provider) {
           }),
         );
       }
-      if (mayDeletePayment) {
+      if (mayDeletePayment && !fromBank) {
         actions.append(
           button("حذف", {
             className: "btn btn--danger btn--xs",
