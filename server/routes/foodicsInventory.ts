@@ -5,6 +5,7 @@
  *   POST /api/stock/docs/:id/confirm             تأكيد الاستلام (مطابق أو بفروق)
  *   GET  /api/stock/items?branchId=              أرصدة الأصناف من فوديكس
  *   GET  /api/stock/docs?branchId=&from=&to=&confirm=   مستندات الشراء والتحويل
+ *   GET  /api/stock/price-report?branchId=&period=&date=   تغيّر أسعار الشراء بين فترتين
  *   POST /api/stock/sync                         مزامنة فورية (أصناف + مستندات)
  *   POST /api/stock/test                         الحقول الفعلية من حساب فوديكس
  */
@@ -16,7 +17,8 @@ import { employees, foodicsStockDocs } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
 import { PERMISSIONS, hasAnyPermission, requireAnyPermission, requirePermission } from "../rbac.js";
-import { asDateOnly, asId, asNumber, asString } from "../validate.js";
+import { asDateOnly, asEnum, asId, asNumber, asString } from "../validate.js";
+import { PRICE_ALERT_PERCENT, priceReport } from "../priceReport.js";
 import { FoodicsError } from "../foodics.js";
 import { businessDateNow } from "../dayClose.js";
 import {
@@ -181,6 +183,19 @@ stockRouter.get("/stock/docs", ...canRead, async (req: AuthedRequest, res: Respo
       disputed: docs.filter((d) => d.confirmStatus === "disputed").length,
     },
   });
+});
+
+stockRouter.get("/stock/price-report", ...canRead, async (req: AuthedRequest, res: Response) => {
+  const branch = await loadBranch(asId(req.query.branchId) ?? req.employee?.branchId ?? null);
+  if (!branch) {
+    res.status(400).json({ ok: false, error: "اختر الفرع" });
+    return;
+  }
+  const period = asEnum(req.query.period, ["day", "week", "month"] as const) ?? "week";
+  const anchor = asDateOnly(req.query.date) ?? businessDateNow(branch.timezone);
+  const t = asNumber(req.query.threshold);
+  const threshold = t !== null && t >= 1 && t <= 100 ? t : PRICE_ALERT_PERCENT;
+  res.json({ ok: true, ...(await priceReport(branch, period, anchor, threshold)) });
 });
 
 stockRouter.post("/stock/sync", ...canManage, async (req: AuthedRequest, res: Response) => {

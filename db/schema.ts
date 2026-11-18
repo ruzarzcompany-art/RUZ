@@ -1975,6 +1975,11 @@ export const foodicsStockDocs = pgTable(
     /** تاريخ فاتورة المورد كما كُتب في فوديكس — به تُعرض المشتريات وتدخل المخزون */
     invoiceDate: date("invoice_date"),
     invoiceNumber: text("invoice_number").notNull().default(""),
+    /** المورد، ومندوبه (جهة الاتصال في بطاقة المورد بفوديكس) وجواله، ومن أدخل الشراء في فوديكس */
+    supplierName: text("supplier_name").notNull().default(""),
+    supplierRep: text("supplier_rep").notNull().default(""),
+    supplierPhone: text("supplier_phone").notNull().default(""),
+    enteredBy: text("entered_by").notNull().default(""),
     /** وقت ترحيل المستند إلى حركات مخزون «سِجل» أول مرة (فارغ = لم يُرحَّل بعد) */
     stockPostedAt: timestamp("stock_posted_at", { withTimezone: true }),
     expectedAt: timestamp("expected_at", { withTimezone: true }),

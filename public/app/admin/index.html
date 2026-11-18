@@ -1586,6 +1586,7 @@
         <div class="tabs" id="inv-tabs" role="tablist">
           <button class="tab is-active" type="button" data-inv="stock">الأرصدة من فوديكس</button>
           <button class="tab" type="button" data-inv="receive">الاستلام اليومي</button>
+          <button class="tab" type="button" data-inv="prices">تغيّر الأسعار</button>
           <button class="tab" type="button" data-inv="count">الجرد اليومي</button>
           <button class="tab" type="button" data-inv="log">السجل</button>
         </div>
@@ -1660,6 +1661,52 @@
         <p class="hint">
           الموظف المستلِم يؤكّد من تطبيقه: «مطابق» أو «يوجد فرق» مع الكمية الفعلية. أي فرق يصل تنبيهه
           للمالك، والاستلام الذي لا يُؤكَّد حتى الساعة 4 فجراً يصل تنبيهه لمدير الفرع.
+        </p>
+      </section>
+      </div>
+
+      <div data-inv-tab="prices" hidden>
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">تقرير تغيّر أسعار الشراء — مقارنة فترتين</h2>
+          <div class="row row--wrap">
+            <label class="field field--sm"><span class="field__label">التقرير</span>
+              <select id="prc-period"><option value="day">يومي</option><option value="week" selected>أسبوعي (7 أيام)</option><option value="month">شهري</option></select>
+            </label>
+            <label class="field field--sm"><span class="field__label">حتى تاريخ</span><input id="prc-date" type="date" /></label>
+            <label class="field field--sm"><span class="field__label">العرض</span>
+              <select id="prc-filter"><option value="">كل الأصناف</option><option value="flagged">أكثر من 10٪ فقط</option></select>
+            </label>
+            <button id="prc-load" class="btn btn--ghost btn--xs" type="button">عرض</button>
+            <button id="prc-print" class="btn btn--ghost btn--xs" type="button">طباعة التقرير</button>
+          </div>
+        </div>
+        <p id="prc-range" class="hint"></p>
+        <div id="prc-totals" class="fin-tiles"></div>
+
+        <h3 class="card__title card__title--sm">مقارنة الفترتين لكل صنف</h3>
+        <div class="table-wrap">
+          <table class="table" id="prc-items">
+            <thead><tr><th>الصنف</th><th>الرمز</th><th>السعر السابق</th><th>السعر الحالي</th><th>التغيّر</th><th>الكمية المشتراة</th><th>قيمة الشراء</th><th>أثر التغيّر</th><th>المورد</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="prc-items-empty" class="empty" hidden>لا مشتريات في هذه الفترة.</p>
+
+        <h3 class="card__title card__title--sm">كل مرة تغيّر فيها السعر (فاتورة بفاتورة)</h3>
+        <div class="table-wrap">
+          <table class="table" id="prc-events">
+            <thead><tr><th>تاريخ الفاتورة</th><th>الصنف</th><th>السعر قبل</th><th>السعر بعد</th><th>التغيّر</th><th>الكمية</th><th>الأثر</th><th>المورد</th><th>المندوب</th><th>المشتري</th><th>المستلِم</th><th>المستند</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="prc-events-empty" class="empty" hidden>لم يتغيّر سعر أي صنف عن آخر شراء له في هذه الفترة.</p>
+        <p class="hint">
+          الأسعار من فواتير الشراء المستلمة في فوديكس بتاريخ فاتورة المورد، وسعر الوحدة = تكلفة السطر ÷ الكمية.
+          «السعر السابق» متوسط الفترة السابقة، وإن لم يُشترَ الصنف فيها فآخر سعر شراء قبل الفترة.
+          أي تغيّر أكبر من 10٪ عن آخر شراء يصل تنبيهه للمالك عند دخول الفاتورة.
+          «المشتري» هو من أدخل الشراء في فوديكس، و«المستلِم» من أكّد الاستلام في «سِجل»،
+          و«المندوب» اسم جهة الاتصال وجوالها في بطاقة المورد بفوديكس (الموردون ← المورد ← اسم جهة الاتصال).
         </p>
       </section>
       </div>

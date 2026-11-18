@@ -1,11 +1,11 @@
 /**
- * تبويبات شاشة المخزون: الأرصدة من فوديكس · الاستلام اليومي · الجرد · السجل.
+ * تبويبات شاشة المخزون: الأرصدة من فوديكس · الاستلام اليومي · تغيّر الأسعار · الجرد · السجل.
  */
 
 import { api, el, formatDateTime, formatMoney, setAlert, setBusy, todayIso } from "../api.js";
 import { createPager } from "../pagination.js";
 
-const state = { tab: "stock", can: () => false, items: [], docs: [], onCount: null, onLog: null, branchName: "" };
+const state = { tab: "stock", can: () => false, items: [], docs: [], prices: null, onCount: null, onLog: null, branchName: "" };
 const stockPager = createPager("stk-table", { unit: "صنف" });
 const rcvPager = createPager("rcv-table", { unit: "مستند" });
 
@@ -155,6 +155,8 @@ function showDoc(d) {
   info.textContent = [
     `تاريخ الفاتورة ${d.invoiceDate ?? "غير مكتوب في فوديكس"}`,
     d.invoiceNumber ? `رقم الفاتورة ${d.invoiceNumber}` : "",
+    d.supplierRep ? `المندوب ${d.supplierRep}` : "",
+    d.enteredBy ? `المشتري (أدخله في فوديكس) ${d.enteredBy}` : "",
     `أُدخل في فوديكس ${d.businessDate ?? "—"}`,
     `الحالة في فوديكس: ${STATE_TEXT[d.state] ?? d.state}`,
     d.confirmedBy ? `أكّده ${d.confirmedBy} ${formatDateTime(d.confirmedAt)}` : "",
@@ -287,6 +289,88 @@ ${blocks || "<p>لا مستندات في هذه الفترة.</p>"}
   w.document.close();
 }
 
+/* ── تغيّر الأسعار ─────────────────────────────────────────────── */
+
+const PERIOD_LABEL = { day: "اليومي", week: "الأسبوعي", month: "الشهري" };
+const pct = (v) => (v === null || v === undefined ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(2)}٪`);
+const pctBadge = (v, flagged) => (v === null || v === undefined ? "جديد" : badge(pct(v), flagged ? "badge--disputed" : Math.abs(v) < 0.5 ? "" : v > 0 ? "badge--warn" : "badge--ok"));
+const signed = (v) => (v ? `${v > 0 ? "+" : "−"}${formatMoney(Math.abs(v))}` : "—");
+const prevText = (i) => (i.previousPrice === null ? "أول شراء" : `${money(i.previousPrice)}${i.basis === "last" ? ` (آخر شراء ${i.previousDate})` : ""}`);
+
+function fillBody(tableId, emptyId, rows) {
+  el(tableId).querySelector("tbody").replaceChildren(...rows);
+  el(emptyId).hidden = rows.length > 0;
+}
+
+function drawPrices() {
+  const r = state.prices;
+  if (!r) return;
+  const only = el("prc-filter").value === "flagged";
+  const items = only ? r.items.filter((i) => i.flagged) : r.items;
+  const events = only ? r.events.filter((e) => e.flagged) : r.events;
+  fillBody(
+    "prc-items",
+    "prc-items-empty",
+    items.map((i) =>
+      tr([i.name, i.sku || "—", prevText(i), money(i.currentPrice), pctBadge(i.percent, i.flagged), `${qty(i.currentQuantity)} ${i.unit}`, money(i.currentValue), signed(i.impact), i.suppliers || "—"], i.flagged ? "row--attention" : ""),
+    ),
+  );
+  fillBody(
+    "prc-events",
+    "prc-events-empty",
+    events.map((e) =>
+      tr(
+        [e.date, e.name, `${money(e.previousCost)} (${e.previousDate})`, money(e.cost), pctBadge(e.percent, e.flagged), `${qty(e.quantity)} ${e.unit}`, signed(e.impact), e.supplier || "—", e.rep || "—", e.buyer || "—", e.receiver || "لم يؤكَّد", `${e.reference}${e.invoiceNumber ? ` · فاتورة ${e.invoiceNumber}` : ""}`],
+        e.flagged ? "row--attention" : "",
+      ),
+    ),
+  );
+}
+
+async function loadPrices() {
+  if (!el("prc-date").value) el("prc-date").value = todayIso();
+  const res = await api(`/stock/price-report?${q({ period: el("prc-period").value, date: el("prc-date").value })}`);
+  if (!res.ok) return setAlert(el("stk-alert"), res.error ?? "تعذّر تحميل تقرير الأسعار", "error");
+  state.prices = res;
+  const t = res.totals;
+  el("prc-range").textContent = `الفترة الحالية: ${res.cur.from} إلى ${res.cur.to} — تُقارن بالفترة السابقة: ${res.prev.from} إلى ${res.prev.to}`;
+  el("prc-totals").replaceChildren(
+    tile("أصناف مشتراة", String(t.items), "", `بقيمة ${money(t.currentValue)}`),
+    tile("ارتفع سعرها", String(t.up), t.up ? "warn" : "good"),
+    tile("انخفض سعرها", String(t.down), "good"),
+    tile(`تغيّر أكثر من ${res.threshold}٪`, String(t.flagged), t.flagged ? "bad" : "good", `${t.flaggedEvents} فاتورة`),
+    tile("أثر تغيّر الأسعار", signed(t.impact), t.impact > 0 ? "bad" : "good", t.impact > 0 ? "دفعنا أكثر من الفترة السابقة" : "وفّرنا عن الفترة السابقة"),
+  );
+  drawPrices();
+}
+
+function printPrices() {
+  const r = state.prices;
+  if (!r) return;
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const row = (cells, flagged) => `<tr${flagged ? ' class="f"' : ""}>${cells.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`;
+  const items = r.items.map((i) => row([i.name, i.sku, prevText(i), money(i.currentPrice), i.percent === null ? "جديد" : pct(i.percent), `${qty(i.currentQuantity)} ${i.unit}`, money(i.currentValue), signed(i.impact), i.suppliers], i.flagged)).join("");
+  const events = r.events
+    .map((e) => row([e.date, e.name, `${money(e.previousCost)} (${e.previousDate})`, money(e.cost), pct(e.percent), `${qty(e.quantity)} ${e.unit}`, signed(e.impact), e.supplier, e.rep || "—", e.buyer || "—", e.receiver || "لم يؤكَّد", `${e.reference} ${e.invoiceNumber ? `· ${e.invoiceNumber}` : ""}`], e.flagged))
+    .join("");
+  const t = r.totals;
+  const html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>تقرير تغيّر أسعار الشراء</title>
+<style>@page{size:A4 landscape;margin:12mm}body{font-family:Tahoma,Arial,sans-serif;color:#111}h1{font-size:19px;margin:0 0 4px}h3{font-size:14px;margin:16px 0 6px}
+table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #999;padding:4px;text-align:right}th{background:#eee}tr.f td{background:#fde2e2;font-weight:bold}.sum{margin:8px 0;font-size:13px}</style></head>
+<body><h1>تقرير تغيّر أسعار الشراء ${esc(PERIOD_LABEL[r.period])} — ${esc(r.branchName)}</h1>
+<div>الفترة الحالية ${esc(r.cur.from)} إلى ${esc(r.cur.to)} مقابل الفترة السابقة ${esc(r.prev.from)} إلى ${esc(r.prev.to)}</div>
+<div class="sum">أصناف مشتراة: ${t.items} بقيمة ${esc(money(t.currentValue))} · ارتفع: ${t.up} · انخفض: ${t.down} · تغيّر أكثر من ${r.threshold}٪: ${t.flagged} (مظلّلة) · أثر تغيّر الأسعار: ${esc(signed(t.impact))}</div>
+<h3>مقارنة الفترتين لكل صنف</h3>
+<table><thead><tr><th>الصنف</th><th>الرمز</th><th>السعر السابق</th><th>السعر الحالي</th><th>التغيّر</th><th>الكمية</th><th>قيمة الشراء</th><th>أثر التغيّر</th><th>المورد</th></tr></thead><tbody>${items || '<tr><td colspan="9">لا مشتريات في هذه الفترة.</td></tr>'}</tbody></table>
+<h3>كل مرة تغيّر فيها السعر</h3>
+<table><thead><tr><th>تاريخ الفاتورة</th><th>الصنف</th><th>السعر قبل</th><th>السعر بعد</th><th>التغيّر</th><th>الكمية</th><th>الأثر</th><th>المورد</th><th>المندوب</th><th>المشتري</th><th>المستلِم</th><th>المستند</th></tr></thead><tbody>${events || '<tr><td colspan="12">لم يتغيّر سعر أي صنف.</td></tr>'}</tbody></table>
+<script>window.onload=()=>window.print()</script></body></html>`;
+  const w = window.open("", "_blank");
+  if (!w) return setAlert(el("stk-alert"), "اسمح بالنوافذ المنبثقة لطباعة التقرير.", "warn");
+  w.document.write(html);
+  w.document.close();
+}
+
 /* ── التبويبات ─────────────────────────────────────────────────── */
 
 async function showTab(tab) {
@@ -296,6 +380,7 @@ async function showTab(tab) {
   setAlert(el("stk-alert"), "");
   if (tab === "stock") await loadItems();
   if (tab === "receive") await loadDocs();
+  if (tab === "prices") await loadPrices();
   if (tab === "count") await state.onCount?.();
   if (tab === "log") await state.onLog?.();
 }
@@ -321,6 +406,10 @@ export function initInventoryTabs({ can, onCount, onLog }) {
   el("rcv-load").addEventListener("click", loadDocs);
   el("rcv-status").addEventListener("change", loadDocs);
   el("rcv-print").addEventListener("click", printDaily);
+  el("prc-load").addEventListener("click", loadPrices);
+  el("prc-period").addEventListener("change", loadPrices);
+  el("prc-filter").addEventListener("change", drawPrices);
+  el("prc-print").addEventListener("click", printPrices);
 }
 
 

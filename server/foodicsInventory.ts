@@ -20,6 +20,7 @@ import { businessDateNow } from "./dayClose.js";
 import { financeStartDate } from "./financeStart.js";
 import { createAlert, type BranchRow } from "./routes/surveillance.js";
 import { isoDateInZone, safeTimeZone } from "./time.js";
+import { alertPriceChanges } from "./priceReport.js";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -230,6 +231,10 @@ async function upsertDoc(branch: BranchRow, kind: string, o: Json, party: string
     businessDate,
     invoiceDate,
     invoiceNumber: String(pick(o, "invoice_number") ?? "").slice(0, 80),
+    supplierName: kind === "purchase" ? String(pick(o, "supplier.name_localized", "supplier.name") ?? "").slice(0, 200) : "",
+    supplierRep: String(pick(o, "supplier.contact_name") ?? "").slice(0, 120),
+    supplierPhone: String(pick(o, "supplier.phone") ?? "").slice(0, 40),
+    enteredBy: String(pick(o, "creator.name") ?? "").slice(0, 120),
     expectedAt,
     receivedAt,
     total,
@@ -430,7 +435,7 @@ export async function syncStockDocs(branch: BranchRow, options: { days?: number 
       ? new Date(new Date(last.at).getTime() - 3 * 3600_000)
       : new Date(Date.now() - 30 * 86_400_000);
   const after = since.toISOString().slice(0, 19).replace("T", " ");
-  const stats = { docs: 0, received: 0, posted: 0, priced: 0, purchasePath: "", transferPath: "", notes: [] as string[] };
+  const stats = { docs: 0, received: 0, posted: 0, priced: 0, priceAlerts: 0, purchasePath: "", transferPath: "", notes: [] as string[] };
   // فلتر «updated_after» لا يقبله فوديكس على كل المسارات (كان يعيد صفراً):
   // في السحب الكامل نطلب بلا فلتر تاريخ ونفلتر نحن حسب آخر تحديث.
   const recent = (o: Json) => {
@@ -528,6 +533,10 @@ export async function syncStockDocs(branch: BranchRow, options: { days?: number 
   }
   stats.posted += await postPendingDocs(branch, ctx);
   stats.priced = await applyLastPurchaseCosts();
+  stats.priceAlerts = await alertPriceChanges(branch).catch((error) => {
+    console.error("[inventory] فحص تغيّر الأسعار:", error);
+    return 0;
+  });
   return stats;
 }
 
@@ -684,6 +693,8 @@ export function docView(d: typeof foodicsStockDocs.$inferSelect, names: Map<numb
     date: stockDateOf(d),
     invoiceDate: d.invoiceDate,
     invoiceNumber: d.invoiceNumber,
+    supplierRep: [d.supplierRep, d.supplierPhone].filter(Boolean).join(" · "),
+    enteredBy: d.enteredBy,
     businessDate: d.businessDate,
     expectedAt: d.expectedAt,
     receivedAt: d.receivedAt,
