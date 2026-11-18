@@ -1761,8 +1761,12 @@
       <div data-inv-tab="count" hidden>
       <section class="card">
         <div class="card__head">
-          <h2 class="card__title card__title--sm">ورقة الجرد اليومي</h2>
+          <h2 class="card__title card__title--sm">ورقة الجرد</h2>
           <div class="row row--wrap">
+            <select id="inventory-daily-scope" aria-label="نوع الجرد">
+              <option value="daily">الجرد اليومي — أصنافي المحدّدة</option>
+              <option value="monthly">الجرد الشهري — كل الأصناف</option>
+            </select>
             <input id="inventory-daily-date" type="date" />
             <button id="inventory-daily-run" class="btn btn--ghost btn--xs" type="button">
               عرض
@@ -1792,6 +1796,23 @@
         </div>
         <p id="inventory-daily-empty" class="empty" hidden>لا توجد أصناف نشطة.</p>
         <p id="inventory-daily-result" class="alert" role="status" hidden></p>
+        <p class="hint">
+          الجرد اليومي: اطبع الورقة كل يوم عند الإقفال، يكتب القائم بالجرد الكميات باليد ويوقّع، ثم تُدخل هنا في عمود «المعدود».
+          الجرد الشهري: آخر يوم في الشهر على كل الأصناف. الجرد يُثبّت رصيد نهاية يومه.
+        </p>
+
+        <details id="inventory-daily-pick" class="howto" data-stk-manage>
+          <summary><strong>تحديد أصناف الجرد اليومي</strong> <span id="inventory-daily-pick-count" class="hint"></span></summary>
+          <div class="row row--wrap">
+            <input id="inventory-daily-pick-q" type="search" placeholder="بحث باسم الصنف أو رمزه" />
+            <label class="field field--sm"><span class="field__label">التصنيف</span><select id="inventory-daily-pick-cat"></select></label>
+            <button id="inventory-daily-pick-all" class="btn btn--ghost btn--xs" type="button">تحديد المعروض</button>
+            <button id="inventory-daily-pick-none" class="btn btn--ghost btn--xs" type="button">إلغاء المعروض</button>
+            <button id="inventory-daily-pick-save" class="btn btn--primary btn--xs" type="button">حفظ القائمة</button>
+          </div>
+          <div id="inventory-daily-pick-list" class="pick-grid"></div>
+          <p class="hint">ضع علامة على الأصناف التي تُجرد كل يوم (الأغلى والأسرع حركة: الدجاج، اللحم، الأرز، الزيت، المشروبات…). غير المحدّد يُجرد في الجرد الشهري فقط.</p>
+        </details>
       </section>
 
       </div>

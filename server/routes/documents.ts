@@ -60,7 +60,7 @@ import {
   readIdentityFields,
 } from "../printIdentity.js";
 import { loadLines as loadCashierLines } from "./cashier.js";
-import { loadDailySheet } from "./inventory.js";
+import { COUNT_SCOPES, loadDailySheet, type CountScope } from "./inventory.js";
 import { loadCompanySettings } from "./settings.js";
 
 export const documentsRouter = Router();
@@ -1290,16 +1290,18 @@ async function loadInventoryMovement(movementId: number) {
  * ورقة الجرد اليومي: تُبنى من نفس دالة شاشة المخزون حتى يتطابق الرصيد
  * الدفتري على الورق مع المعروض، ثم يُدخل القائم بالجرد الكميات المعدودة يدوياً.
  */
-async function loadInventoryCountSheet(branchId: number, businessDate: string) {
+async function loadInventoryCountSheet(branchId: number, businessDate: string, scope: CountScope = "all") {
   const [branch, rows] = await Promise.all([
     branchHeader(branchId),
-    loadDailySheet(branchId, businessDate),
+    loadDailySheet(branchId, businessDate, scope),
   ]);
 
   return {
     kind: "countSheet" as const,
     branch: branch ?? { id: branchId, name: "" },
     date: businessDate,
+    /** daily = الأصناف المحدّدة للجرد اليومي، monthly = كل الأصناف */
+    scope,
     rows,
     totals: {
       items: rows.length,
@@ -1784,6 +1786,7 @@ documentsRouter.get(
       inventory = await loadInventoryCountSheet(
         branchId,
         asDateOnly(req.query.date) ?? sheetToday,
+        asEnum(req.query.scope, COUNT_SCOPES) ?? "all",
       );
     } else if (doc.key === "inventory_movements_range") {
       if (branchId === null) {

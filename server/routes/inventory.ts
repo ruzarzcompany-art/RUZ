@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { getDb } from "../../db/index.js";
 import {
   branches,
@@ -797,6 +797,9 @@ inventoryRouter.patch(
   },
 );
 
+export const COUNT_SCOPES = ["daily", "monthly", "all"] as const;
+export type CountScope = (typeof COUNT_SCOPES)[number];
+
 /**
  * صفوف ورقة الجرد اليومي لفرع في تاريخ محدّد: الرصيد الدفتري لكل صنف نشط
  * مع وارد اليوم وصادره والكمية المعدودة إن سُجّلت. تستخدمها شاشة المخزون
@@ -805,6 +808,8 @@ inventoryRouter.patch(
 export async function loadDailySheet(
   branchId: number,
   businessDate: string,
+  /** daily = الأصناف المحدّدة للجرد اليومي فقط، monthly/all = كل الأصناف النشطة */
+  scope: CountScope = "all",
 ): Promise<
   Array<{
     itemId: number;
@@ -851,7 +856,7 @@ export async function loadDailySheet(
     byItem.set(row.itemId, entry);
   }
 
-  return items.map((item) => {
+  return items.filter((item) => scope !== "daily" || item.dailyCount).map((item) => {
     const today = byItem.get(item.id) ?? { in: 0, out: 0, count: null };
     const balance = balances.get(item.id)?.balance ?? 0;
     return {
@@ -889,14 +894,67 @@ inventoryRouter.get(
 
     const timezone = await branchTimezone(branchId);
     const businessDate = asDateOnly(req.query.date) ?? isoDateInZone(new Date(), timezone);
+    const scope = asEnum(req.query.scope, COUNT_SCOPES) ?? "all";
 
     res.json({
       ok: true,
       branchId,
       businessDate,
       timezone,
-      rows: await loadDailySheet(branchId, businessDate),
+      scope,
+      rows: await loadDailySheet(branchId, businessDate, scope),
     });
+  },
+);
+
+/** أصناف المخزون مع علامة «يُجرد يومياً» — لشاشة تحديد أصناف الجرد اليومي. */
+inventoryRouter.get(
+  "/inventory/daily-items",
+  requireAuth,
+  requirePermission(PERMISSIONS.inventoryRead),
+  async (_req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const items = await db
+      .select({
+        id: inventoryItems.id,
+        code: inventoryItems.code,
+        name: inventoryItems.name,
+        category: inventoryItems.category,
+        unit: inventoryItems.unit,
+        dailyCount: inventoryItems.dailyCount,
+      })
+      .from(inventoryItems)
+      .where(eq(inventoryItems.isActive, true))
+      .orderBy(asc(inventoryItems.category), asc(inventoryItems.name));
+    res.json({ ok: true, items, selected: items.filter((i) => i.dailyCount).length });
+  },
+);
+
+/** يثبّت قائمة أصناف الجرد اليومي: المذكور يُجرد يومياً، وغيره في الجرد الشهري فقط. */
+inventoryRouter.put(
+  "/inventory/daily-items",
+  requireAuth,
+  requirePermission(PERMISSIONS.inventoryItemsManage),
+  async (req: AuthedRequest, res: Response) => {
+    const db = getDb();
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const raw = Array.isArray(body.itemIds) ? body.itemIds : null;
+    if (raw === null) {
+      res.status(400).json({ ok: false, error: "قائمة الأصناف مطلوبة" });
+      return;
+    }
+    const ids = [...new Set(raw.map((x) => asId(x)).filter((x): x is number => x !== null))].slice(0, 2000);
+    await db.update(inventoryItems).set({ dailyCount: false }).where(eq(inventoryItems.dailyCount, true));
+    if (ids.length) await db.update(inventoryItems).set({ dailyCount: true }).where(inArray(inventoryItems.id, ids));
+    await recordAudit({
+      actorEmployeeId: req.employee!.id,
+      action: "inventory.daily_items",
+      entityType: "inventory_items",
+      entityId: null,
+      after: { itemIds: ids },
+      ipAddress: clientIp(req),
+    });
+    res.json({ ok: true, selected: ids.length, message: `حُدّد ${ids.length} صنف للجرد اليومي.` });
   },
 );
 
