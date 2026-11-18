@@ -392,6 +392,8 @@ function renderDaily(payload) {
 }
 
 async function loadDaily() {
+  // قائمة أصناف الجرد اليومي عامة لا تخص فرعاً: تُحمَّل حتى قبل اختيار الفرع
+  void loadDailyPick();
   const branchId = currentBranch();
   if (!branchId) {
     setAlert(el("inventory-daily-result"), "اختر الفرع لعرض ورقة الجرد.", "warn");
