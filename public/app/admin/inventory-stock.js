@@ -97,7 +97,7 @@ async function syncNow() {
   const notes = res.docs.notes?.length ? ` ملاحظات: ${res.docs.notes.join("، ")}.` : "";
   setAlert(
     el("stk-alert"),
-    `تم: ${res.items.items} صنف (${res.items.stocks} برصيد)، و${res.docs.docs} مستند شراء/تحويل منها ${res.docs.received} مستلم في فوديكس.${notes}`,
+    `تم: ${res.items.items} صنف (${res.items.stocks} برصيد)، و${res.docs.docs} مستند شراء/تحويل منها ${res.docs.received} مستلم في فوديكس، وأُضيفت/حُدّثت ${res.docs.posted ?? 0} حركة شراء في مخزون «سِجل».${notes}`,
     "ok",
   );
   await Promise.all([loadItems(), state.tab === "receive" ? loadDocs() : null]);
@@ -153,7 +153,9 @@ function showDoc(d) {
   const info = document.createElement("p");
   info.className = "hint";
   info.textContent = [
-    `التاريخ ${d.businessDate}`,
+    `تاريخ الفاتورة ${d.invoiceDate ?? "غير مكتوب في فوديكس"}`,
+    d.invoiceNumber ? `رقم الفاتورة ${d.invoiceNumber}` : "",
+    `أُدخل في فوديكس ${d.businessDate ?? "—"}`,
     `الحالة في فوديكس: ${STATE_TEXT[d.state] ?? d.state}`,
     d.confirmedBy ? `أكّده ${d.confirmedBy} ${formatDateTime(d.confirmedAt)}` : "",
     d.confirmNote ? `ملاحظة: ${d.confirmNote}` : "",
@@ -254,7 +256,7 @@ async function loadDocs() {
     open.textContent = "الأصناف";
     open.onclick = () => showDoc(d);
     return tr(
-      [d.businessDate, d.kindLabel, d.reference, d.party || "—", String(d.items.length), money(d.total), badge(STATE_TEXT[d.state] ?? d.state, d.state === "received" ? "badge--ok" : ""), badge(d.confirmLabel, CONFIRM_TONE[d.confirmStatus]), d.confirmedBy || "—", open],
+      [d.date ?? d.businessDate, d.kindLabel, d.reference, d.party || "—", String(d.items.length), money(d.total), badge(STATE_TEXT[d.state] ?? d.state, d.state === "received" ? "badge--ok" : ""), badge(d.confirmLabel, CONFIRM_TONE[d.confirmStatus]), d.confirmedBy || "—", open],
       d.confirmStatus === "disputed" ? "row--attention" : "",
     );
   });
@@ -266,7 +268,7 @@ function printDaily() {
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   const blocks = docs
     .map(
-      (d) => `<section><h3>${esc(d.kindLabel)} رقم ${esc(d.reference)} — ${esc(d.party)} <small>${esc(d.businessDate)} · ${esc(d.confirmLabel)}</small></h3>
+      (d) => `<section><h3>${esc(d.kindLabel)} رقم ${esc(d.reference)} — ${esc(d.party)} <small>${esc(d.date ?? d.businessDate)} · ${esc(d.confirmLabel)}</small></h3>
 <table><thead><tr><th>الصنف</th><th>الرمز</th><th>الكمية في فوديكس</th><th>الوحدة</th><th>الواصل فعلاً</th><th>ملاحظة</th></tr></thead><tbody>
 ${d.items.map((l) => `<tr><td>${esc(l.name)}</td><td>${esc(l.sku)}</td><td>${qty(l.received || l.ordered)}</td><td>${esc(l.unit)}</td><td></td><td></td></tr>`).join("")}
 </tbody></table></section>`,
