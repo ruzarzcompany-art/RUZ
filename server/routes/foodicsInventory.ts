@@ -19,6 +19,7 @@ import { clientIp, recordAudit } from "../audit.js";
 import { PERMISSIONS, hasAnyPermission, requireAnyPermission, requirePermission } from "../rbac.js";
 import { asDateOnly, asEnum, asId, asNumber, asString } from "../validate.js";
 import { PRICE_ALERT_PERCENT, priceReport } from "../priceReport.js";
+import { varianceReport } from "../leakage.js";
 import { FoodicsError } from "../foodics.js";
 import { businessDateNow } from "../dayClose.js";
 import {
@@ -199,6 +200,19 @@ stockRouter.get("/stock/price-report", ...canRead, async (req: AuthedRequest, re
   const t = asNumber(req.query.threshold);
   const threshold = t !== null && t >= 1 && t <= 100 ? t : PRICE_ALERT_PERCENT;
   res.json({ ok: true, ...(await priceReport(branch, period, anchor, threshold)) });
+});
+
+/** فروقات الجرد: ما نقص عن الرصيد الدفتري (مشتريات − استهلاك − هدر) وتقدير المبيعات غير المفوترة. */
+stockRouter.get("/stock/variance-report", ...canRead, async (req: AuthedRequest, res: Response) => {
+  const branch = await loadBranch(asId(req.query.branchId) ?? req.employee?.branchId ?? null);
+  if (!branch) {
+    res.status(400).json({ ok: false, error: "اختر الفرع" });
+    return;
+  }
+  const today = businessDateNow(branch.timezone);
+  const from = asDateOnly(req.query.from) ?? `${today.slice(0, 8)}01`;
+  const to = asDateOnly(req.query.to) ?? today;
+  res.json({ ok: true, ...(await varianceReport(branch, from <= to ? from : to, from <= to ? to : from)) });
 });
 
 stockRouter.post("/stock/sync", ...canManage, async (req: AuthedRequest, res: Response) => {

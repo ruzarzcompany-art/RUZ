@@ -5,6 +5,7 @@
 import { api, el, formatDateTime, formatMoney, setAlert, setBusy, todayIso } from "../api.js";
 import { createPager } from "../pagination.js";
 import { initWaste, loadWaste } from "./waste.js";
+import { initVariance, loadVariance } from "./variance.js";
 
 const state = { tab: "stock", can: () => false, items: [], docs: [], prices: null, onCount: null, onLog: null, branchName: "" };
 const stockPager = createPager("stk-table", { unit: "صنف" });
@@ -383,7 +384,10 @@ async function showTab(tab) {
   if (tab === "receive") await loadDocs();
   if (tab === "prices") await loadPrices();
   if (tab === "waste") await loadWaste();
-  if (tab === "count") await state.onCount?.();
+  if (tab === "count") {
+    await state.onCount?.();
+    await loadVariance();
+  }
   if (tab === "log") await state.onLog?.();
 }
 
@@ -413,6 +417,7 @@ export function initInventoryTabs({ can, onCount, onLog }) {
   el("prc-filter").addEventListener("change", drawPrices);
   el("prc-print").addEventListener("click", printPrices);
   initWaste();
+  initVariance();
 }
 
 
