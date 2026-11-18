@@ -139,9 +139,23 @@ export async function liveView(branch: BranchRow) {
       lastFrameAt: camera.lastFrameAt,
       zones: zones
         .filter((zone) => zone.cameraId === camera.id && zone.isActive)
-        .map((zone) => ({ id: zone.id, kind: zone.kind, label: zone.label, points: zone.points, live: live.get(zone.id) ?? null })),
+        .map((zone) => ({ id: zone.id, kind: zone.kind, label: zone.label, points: zone.points, live: displayState(live.get(zone.id) ?? null) })),
     })),
   };
+}
+
+/**
+ * «فضيت وتحتاج تنظيف» لا تبقى معلّقة على الشاشة إلى الأبد: الجهاز يصوّر الطاولة
+ * 3 مرات فقط بعد مغادرة العملاء، فإن لم تُحسم (صورة غير واضحة) تبقى عنده «فاضية
+ * تنتظر التنظيف» حتى يجلس أحد. بعد 20 دقيقة تُعرض فارغة — والتنبيه، إن رُئيت
+ * أطباق فعلاً، يكون قد خرج قبل ذلك.
+ */
+const STALE_VACATED_SECONDS = 20 * 60;
+function displayState(state: Record<string, unknown> | null) {
+  if (state && state.state === "vacated" && Number(state.seconds ?? 0) > STALE_VACATED_SECONDS) {
+    return { ...state, state: "empty", seconds: 0, alert: false };
+  }
+  return state;
 }
 
 /** ما يحتاجه جهاز التحليل: المناطق لكل كاميرا والحدود وساعات العمل. */
@@ -242,13 +256,15 @@ async function verifyTable(image: Buffer): Promise<{ verdict: TableVerdict; note
           {
             type: "text",
             text: [
-              "This is a crop of ONE dining table from a restaurant CCTV camera. The customers who sat here have left.",
+              "This is a crop around ONE dining table from a restaurant CCTV camera (it may be low resolution and seen from above at an angle).",
+              "Neighbouring tables may appear at the edges — judge ONLY the table in the centre of the crop.",
               "Decide the table state:",
-              "- dirty: used plates, cups, food leftovers, trays, bags or rubbish are still on the table.",
-              "- clean: the table is cleared. A standard setup (napkin holder, menu, condiments, table number) is still clean.",
-              "- occupied: people are sitting at this table.",
-              "- unclear: the image is too dark, blurry or blocked to decide.",
-              "Do not guess. Write the note in short Arabic. Call the table_state tool.",
+              "- occupied: one or more people are sitting at this table (even partly hidden, e.g. in a booth seat).",
+              "- dirty: clearly visible used items remain on the table top: plates/bowls with food or leftovers, used cups, trays, food wrappers, bags, rubbish or spills.",
+              "- clean: the table top is cleared. A tissue box, menu, condiment set, table number or a neatly placed setting is still CLEAN. Light reflections, shadows and wood grain are NOT dirt.",
+              "- unclear: too dark, blurred, blocked or too small to decide.",
+              "Only answer dirty when you can actually see used dishes or rubbish. If you are unsure between clean and dirty, answer unclear.",
+              "Write the note in short Arabic (what you see on the table). Call the table_state tool.",
             ].join("\n"),
           },
         ],
@@ -421,9 +437,11 @@ export async function ingestEdgeEvent(branch: BranchRow, raw: Record<string, unk
     } else {
       verdict = "unverified";
     }
-    // نظيفة أو عاد إليها عملاء: لا تنبيه — والجهاز يُسجّل وقت التنظيف
-    if (verdict === "clean" || verdict === "occupied") return { ok: true, type, raised: false, verdict };
-    confidence = verdict === "dirty" ? "high" : "medium";
+    // نظيفة أو عاد إليها عملاء: لا تنبيه — والجهاز يُسجّل وقت التنظيف.
+    // وغير المؤكَّد (صورة غير واضحة أو تعذّر التحقق) لا يُنبَّه عنه أيضاً؛ الجهاز
+    // يعيد التصوير لاحقاً، والتنبيه لا يخرج إلا حين تُرى الأطباق أو البقايا فعلاً.
+    if (verdict !== "dirty") return { ok: true, type, raised: false, verdict };
+    confidence = "high";
     details =
       verdict === "dirty"
         ? `${tableName} فضيت منذ ${minutesText(seconds)} ولم تُنظَّف${note ? `: ${note}` : ""}.`
