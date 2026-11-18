@@ -271,6 +271,8 @@ export async function confirmDayClose(input: {
   employeeId: number;
   branchId: number | null;
   canReview: boolean;
+  /** صلاحية «تعديل إدخال الصندوق»: تتجاوز قفل التأكيد والمراجعة */
+  canEdit?: boolean;
   countedCash: number;
   openingFloat?: number | null;
   expenses: Array<{ label: string; amount: number }>;
@@ -279,8 +281,10 @@ export async function confirmDayClose(input: {
   const db = getDb();
   const [closing] = await db.select().from(cashierClosings).where(eq(cashierClosings.id, input.closingId));
   if (!closing) return { error: "التقفيل غير موجود", status: 404 };
+  const canEdit = Boolean(input.canEdit);
+  if (canEdit) input.canReview = true;
   if (!input.canReview && closing.branchId !== input.branchId) return { error: "هذا التقفيل لفرع آخر", status: 403 };
-  if (closing.status === "reviewed") return { error: "تمّت مراجعة هذا اليوم. راجع مدير الفرع لأي تعديل.", status: 409 };
+  if (closing.status === "reviewed" && !canEdit) return { error: "تمّت مراجعة هذا اليوم. راجع مدير الفرع لأي تعديل.", status: 409 };
   if (!input.canReview && !OPEN_STATUSES.includes(closing.status)) {
     return { error: "أُكّد هذا التقفيل مسبقاً. راجع مدير الفرع لأي تعديل.", status: 409 };
   }

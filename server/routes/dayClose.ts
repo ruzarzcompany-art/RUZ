@@ -183,6 +183,76 @@ dayCloseRouter.post("/dayclose/:id/confirm", requireAuth, requirePermission(PERM
   res.json({ ok: true, closing: view, message: "تم تأكيد تقفيل اليوم" });
 });
 
+/**
+ * تعديل إدخال الصندوق من المالك (أو من مُنح «تعديل إدخال الصندوق»): النقد
+ * المعدود والعهدة ومصاريف الدرج والملاحظة، حتى بعد تأكيد الكاشير أو مراجعة
+ * اليوم. تبقى حالة اليوم كما هي، ويُسجَّل ما قبل التعديل وما بعده في سجل التدقيق.
+ */
+dayCloseRouter.patch("/dayclose/:id/edit", requireAuth, requirePermission(PERMISSIONS.cashierEditClosing), async (req: AuthedRequest, res: Response) => {
+  const actor = req.employee!;
+  const id = asId(req.params.id);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const counted = asNumber(body.countedCash);
+  const float = body.openingFloat === undefined || body.openingFloat === "" ? null : asNumber(body.openingFloat);
+  if (id === null || counted === null || counted < 0 || counted > 10_000_000) {
+    res.status(400).json({ ok: false, error: "اكتب النقد المعدود (رقم صحيح)" });
+    return;
+  }
+  if (float !== null && (float < 0 || float > 1_000_000)) {
+    res.status(400).json({ ok: false, error: "مبلغ العهدة غير صحيح" });
+    return;
+  }
+  const expenses: Array<{ label: string; amount: number }> = [];
+  for (const e of Array.isArray(body.expenses) ? body.expenses : []) {
+    const item = (e ?? {}) as Record<string, unknown>;
+    const label = (asString(item.label, 120) ?? "").trim();
+    const amount = asNumber(item.amount) ?? 0;
+    if (!label && !amount) continue;
+    if (!label || amount <= 0 || amount > 1_000_000) {
+      res.status(400).json({ ok: false, error: `بيان أو مبلغ المصروف «${label || "بلا بيان"}» غير صحيح` });
+      return;
+    }
+    expenses.push({ label, amount });
+  }
+  const reason = (asString(body.reason, 300) ?? "").trim();
+  if (!reason) {
+    res.status(400).json({ ok: false, error: "اكتب سبب التعديل" });
+    return;
+  }
+  const db = getDb();
+  const [before] = await db.select().from(cashierClosings).where(eq(cashierClosings.id, id));
+  if (!before) {
+    res.status(404).json({ ok: false, error: "التقفيل غير موجود" });
+    return;
+  }
+  const result = await confirmDayClose({
+    closingId: id,
+    employeeId: actor.id,
+    branchId: actor.branchId ?? null,
+    canReview: true,
+    canEdit: true,
+    countedCash: counted,
+    openingFloat: float,
+    expenses,
+    notes: asString(body.notes, 1000) ?? before.notes,
+  });
+  if ("error" in result) {
+    res.status(result.status ?? 400).json({ ok: false, error: result.error });
+    return;
+  }
+  await recordAudit({
+    actorEmployeeId: actor.id,
+    action: "dayclose.owner_edit",
+    entityType: "cashier_closings",
+    entityId: id,
+    before: { countedCash: before.countedCash, openingFloat: before.openingFloat, expenses: before.expenses, difference: before.difference, status: before.status },
+    after: { ...result.closing, reason },
+    ipAddress: clientIp(req),
+  });
+  const [view] = await withLines(result.closing ? [result.closing] : []);
+  res.json({ ok: true, closing: view, message: "حُفظ تعديل إدخال الصندوق وسُجّل في سجل التدقيق." });
+});
+
 /* ── المالية ──────────────────────────────────────────────────── */
 
 dayCloseRouter.get("/dayclose", ...canRead, async (req: AuthedRequest, res: Response) => {

@@ -53,6 +53,8 @@ export const PERMISSIONS = {
   cashierReadAll: "cashier.read_all",
   /** مراجعة/اعتماد التقفيل وتعديله بعد الرفع */
   cashierReview: "cashier.review",
+  /** تعديل إدخال الصندوق (النقد المعدود والعهدة ومصاريف الدرج) بعد تأكيده أو مراجعته */
+  cashierEditClosing: "cashier.edit_closing",
   inventoryRead: "inventory.read",
   inventoryWrite: "inventory.write",
   /** إدارة أصناف المخزون نفسها (لا الحركات فقط) */
@@ -168,6 +170,10 @@ export const PERMISSION_CATALOG: Array<{ code: string; description: string }> = 
     description: "عرض تقفيلات جميع الكاشيرات",
   },
   { code: PERMISSIONS.cashierReview, description: "مراجعة تقفيل الكاشير وتعديله" },
+  {
+    code: PERMISSIONS.cashierEditClosing,
+    description: "تعديل إدخال الصندوق بعد تأكيده أو مراجعته (النقد المعدود والعهدة ومصاريف الدرج)",
+  },
   { code: PERMISSIONS.inventoryRead, description: "عرض المخزون وحركاته" },
   { code: PERMISSIONS.inventoryWrite, description: "تسجيل حركة مخزون (إدخال/إخراج/جرد)" },
   { code: PERMISSIONS.inventoryItemsManage, description: "إدارة أصناف المخزون" },
@@ -318,6 +324,12 @@ export const SECTION_CATALOG: Array<{
     code: PERMISSIONS.cashierReview,
     label: "مراجعة التقفيل",
     hint: "اعتماد أو الاعتراض على تقفيلات الكاشير",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.cashierEditClosing,
+    label: "تعديل إدخال الصندوق",
+    hint: "تعديل النقد المعدود والعهدة ومصاريف الدرج بعد تأكيد الكاشير أو مراجعة اليوم",
     group: "صلاحيات التنفيذ",
   },
   {
@@ -731,6 +743,19 @@ export const MODULE_CATALOG: AccessModule[] = [
         level: 4,
         codes: [P.cashierReview],
         hint: "اعتماد التقفيل أو الاعتراض عليه",
+      },
+    ],
+  },
+  {
+    key: "cashier_close_edit",
+    label: "تعديل إدخال الصندوق",
+    hint: "تعديل النقد المعدود والعهدة ومصاريف الدرج في تقفيل اليوم بعد تأكيده أو مراجعته — يُسجَّل كل تعديل في سجل التدقيق",
+    group: "الكاشير والمالية",
+    levels: [
+      {
+        level: 1,
+        codes: [P.cashierEditClosing, P.cashierReadAll, P.sectionCashierClosing],
+        hint: "إظهار زر «تعديل إدخال الصندوق» في تقفيل اليوم والحفظ",
       },
     ],
   },
