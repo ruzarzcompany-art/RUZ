@@ -247,7 +247,7 @@ export async function reconcile(branchId: number, fromRaw: string, to: string) {
   // ── المشتريات: فواتير الموردين (بتاريخ الفاتورة) ↔ التحويلات ──
   const docDate = sql<string>`coalesce(${foodicsStockDocs.invoiceDate}, ${foodicsStockDocs.businessDate})`;
   const stockDocs = await db
-    .select({ party: foodicsStockDocs.party, supplierName: foodicsStockDocs.supplierName, state: foodicsStockDocs.state, total: foodicsStockDocs.total, date: foodicsStockDocs.businessDate, reference: foodicsStockDocs.reference })
+    .select({ party: foodicsStockDocs.party, supplierName: foodicsStockDocs.supplierName, state: foodicsStockDocs.state, total: foodicsStockDocs.total, date: docDate, reference: foodicsStockDocs.reference, invoiceNumber: foodicsStockDocs.invoiceNumber })
     .from(foodicsStockDocs)
     .where(and(eq(foodicsStockDocs.branchId, branchId), eq(foodicsStockDocs.kind, "purchase"), gte(docDate, from), lte(docDate, to)))
     // اسم المورد وحده: «المورد — أدخله فلان» كان يفصل المورد الواحد عن تحويلاته وعن نفسه
@@ -263,12 +263,15 @@ export async function reconcile(branchId: number, fromRaw: string, to: string) {
     suppliers.set(key, s);
     return s;
   };
+  // سطور التفصيل: كل فاتورة وكل تحويل بتاريخه ومبلغه — للفلترة والطباعة في الشاشة
+  const purchaseLines: Array<{ supplier: string; kind: "invoice" | "payment"; date: string; reference: string; amount: number; source: string }> = [];
   for (const d of stockDocs) {
     if (!d.party) continue;
     const s = sup(d.party);
     s.invoices = round2(s.invoices + d.total);
     s.invoiceCount++;
     s.sources.add("مشتريات فوديكس");
+    purchaseLines.push({ supplier: s.supplier, kind: "invoice", date: d.date ?? "", reference: [d.reference, d.invoiceNumber ? `فاتورة ${d.invoiceNumber}` : ""].filter(Boolean).join(" · "), amount: round2(d.total), source: "مشتريات فوديكس" });
   }
   for (const r of receipts) {
     if (!r.party) continue;
@@ -276,13 +279,16 @@ export async function reconcile(branchId: number, fromRaw: string, to: string) {
     s.invoices = round2(s.invoices + r.total);
     s.invoiceCount++;
     s.sources.add("استلام البضاعة");
+    purchaseLines.push({ supplier: s.supplier, kind: "invoice", date: r.date ?? "", reference: r.reference ?? "", amount: round2(r.total), source: "استلام البضاعة" });
   }
   for (const t of withRule) {
     if (t.debit <= 0 || t.rule.category !== "supplier") continue;
     const s = sup(t.rule.mappedName || t.counterparty);
     s.paid = round2(s.paid + t.debit);
     s.payments++;
+    purchaseLines.push({ supplier: s.supplier, kind: "payment", date: t.txDate, reference: t.reference || t.kind, amount: round2(t.debit), source: "تحويل بنكي" });
   }
+  purchaseLines.sort((a, b) => b.date.localeCompare(a.date) || a.supplier.localeCompare(b.supplier, "ar"));
   const purchases = [...suppliers.values()]
     .map((s) => ({ ...s, sources: [...s.sources], difference: round2(s.paid - s.invoices) }))
     .sort((a, b) => Math.max(b.invoices, b.paid) - Math.max(a.invoices, a.paid));
@@ -307,6 +313,7 @@ export async function reconcile(branchId: number, fromRaw: string, to: string) {
     categories: [...categories.values()].sort((a, b) => b.credit + b.debit - (a.credit + a.debit)),
     sales: sales.sort((a, b) => b.expected + b.received - (a.expected + a.received)),
     purchases,
+    purchaseLines,
     methodNames: [...methodNames].sort(),
     supplierNames,
     transactions: withRule.map((t) => ({

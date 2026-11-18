@@ -2357,7 +2357,6 @@
           <div class="tabs tabs--more" id="sv-more-tabs" role="tablist" hidden>
             <button class="tab" type="button" data-sv="new" data-sv-write>تسجيل حالة يدوياً</button>
             <button class="tab" type="button" data-sv="orders">الطلبات والكاشير</button>
-            <button class="tab" type="button" data-sv="waste">الهدر</button>
             <button class="tab" type="button" data-sv="limits">الحدود المعتمدة</button>
             <button class="tab" type="button" data-sv="connect">ربط الكاميرات</button>
             <button class="tab" type="button" data-sv="foodics">فوديكس والرقابة الثلاثية</button>
@@ -2547,7 +2546,11 @@
       <!-- الطلبات وأحداث الكاشير -->
       <section class="card" data-sv-section="orders" hidden>
         <h3 class="card__title card__title--sm">توقيت الطلبات (من فودكس إلى التسليم)</h3>
-        <form id="sv-order-form" class="form-grid" data-sv-write>
+        <p class="hint">
+          توقيت الطلبات يُسحب آلياً من فوديكس (وقت فتح الفاتورة ووقت جاهزية المطبخ). طلب خرج بلا فاتورة يُسجَّل من
+          «المزيد» ← «تسجيل حالة يدوياً».
+        </p>
+        <form id="sv-order-form" class="form-grid" hidden>
           <label class="field field--sm">
             <span class="field__label">رقم الطلب</span>
             <input id="sv-order-ref" type="text" required />
@@ -2613,7 +2616,11 @@
         <p id="sv-orders-empty" class="empty" hidden>لا توجد طلبات مسجّلة لهذا اليوم.</p>
 
         <h3 class="card__title card__title--sm">أحداث الكاشير الحساسة</h3>
-        <form id="sv-pos-form" class="form-grid" data-sv-write>
+        <p class="hint">
+          الإلغاء والخصم والاسترجاع تُسحب آلياً من فوديكس، وفتح الدرج بلا بيع ترصده الكاميرا ويُطابق بالفواتير.
+          أي حالة أخرى تُسجَّل من «المزيد» ← «تسجيل حالة يدوياً».
+        </p>
+        <form id="sv-pos-form" class="form-grid" hidden>
           <label class="field field--sm">
             <span class="field__label">الحدث</span>
             <select id="sv-pos-type">

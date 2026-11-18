@@ -286,33 +286,209 @@ function showSalesDetail(box, s) {
   box.replaceChildren(...parts);
 }
 
+/* ── مطابقة المشتريات: مربع بفلاتر (مورد، مدة، تاريخ، مبلغ) وطباعة ── */
+
+const pur = { filters: { supplier: "", kind: "", period: "", from: "", to: "", min: "", max: "" }, size: 10, page: 1 };
+
+function isoShift(iso, days) {
+  const d = new Date(`${iso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** حدود «المدة» السريعة داخل الفترة المعروضة. */
+function periodBounds(period, d) {
+  const today = todayIso();
+  if (period === "7") return [isoShift(today, -6), today];
+  if (period === "30") return [isoShift(today, -29), today];
+  if (period === "month") return [`${today.slice(0, 8)}01`, today];
+  if (period === "prev") {
+    const first = new Date(`${today.slice(0, 8)}01T12:00:00Z`);
+    const lastPrev = new Date(first.getTime() - 86_400_000).toISOString().slice(0, 10);
+    return [`${lastPrev.slice(0, 8)}01`, lastPrev];
+  }
+  return [d.from, d.to];
+}
+
+function filteredPurchases(d) {
+  const f = pur.filters;
+  const [pFrom, pTo] = periodBounds(f.period, d);
+  const from = f.from || pFrom;
+  const to = f.to || pTo;
+  const min = f.min === "" ? null : Number(f.min);
+  const max = f.max === "" ? null : Number(f.max);
+  const lines = (d.purchaseLines ?? []).filter(
+    (l) =>
+      (!f.supplier || l.supplier === f.supplier) &&
+      (!f.kind || l.kind === f.kind) &&
+      (!from || !l.date || l.date >= from) &&
+      (!to || !l.date || l.date <= to) &&
+      (min === null || l.amount >= min) &&
+      (max === null || l.amount <= max),
+  );
+  const map = new Map();
+  for (const l of lines) {
+    const s = map.get(l.supplier) ?? { supplier: l.supplier, invoices: 0, invoiceCount: 0, paid: 0, payments: 0 };
+    if (l.kind === "invoice") {
+      s.invoices += l.amount;
+      s.invoiceCount++;
+    } else {
+      s.paid += l.amount;
+      s.payments++;
+    }
+    map.set(l.supplier, s);
+  }
+  const summary = [...map.values()]
+    .map((s) => ({ ...s, invoices: Math.round(s.invoices * 100) / 100, paid: Math.round(s.paid * 100) / 100, difference: Math.round((s.paid - s.invoices) * 100) / 100 }))
+    .sort((a, b) => Math.max(b.invoices, b.paid) - Math.max(a.invoices, a.paid));
+  return { lines, summary, from, to };
+}
+
+function purchaseResult(s) {
+  if (!s.invoiceCount) return badge("دفعة بلا فاتورة مسجّلة", "badge--warn");
+  if (!s.payments) return badge("فاتورة لم تُدفع من البنك", "");
+  return diffBadge(s.difference, s.invoices);
+}
+
+function printPurchases(d) {
+  const { lines, summary, from, to } = filteredPurchases(d);
+  const esc = (x) => String(x ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const f = pur.filters;
+  const totalInv = summary.reduce((a, s) => a + s.invoices, 0);
+  const totalPaid = summary.reduce((a, s) => a + s.paid, 0);
+  const resultText = (s) => (!s.invoiceCount ? "دفعة بلا فاتورة" : !s.payments ? "لم تُدفع من البنك" : Math.abs(s.difference) < 0.01 ? "مطابق" : `${s.difference < 0 ? "ناقص" : "زائد"} ${money(Math.abs(s.difference))}`);
+  const html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>مطابقة المشتريات</title>
+<style>@page{size:A4;margin:12mm}body{font-family:Tahoma,Arial,sans-serif;color:#111}h1{font-size:18px;margin:0 0 4px}h3{font-size:14px;margin:16px 0 6px}.meta{font-size:12px;color:#444}
+table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #999;padding:4px;text-align:right}th{background:#eee}tfoot td{font-weight:bold;background:#f6f6f6}</style></head>
+<body><h1>مطابقة المشتريات: فواتير الموردين ↔ التحويلات</h1>
+<div class="meta">الفترة ${esc(from)} إلى ${esc(to)}${f.supplier ? ` · المورد: ${esc(f.supplier)}` : " · كل الموردين"}${f.kind ? ` · ${f.kind === "invoice" ? "الفواتير فقط" : "التحويلات فقط"}` : ""}${f.min !== "" ? ` · من مبلغ ${esc(f.min)}` : ""}${f.max !== "" ? ` · إلى مبلغ ${esc(f.max)}` : ""}</div>
+<h3>الملخّص حسب المورد</h3>
+<table><thead><tr><th>المورد</th><th>الفواتير</th><th>العدد</th><th>المدفوع من البنك</th><th>العدد</th><th>النتيجة</th></tr></thead>
+<tbody>${summary.map((s) => `<tr><td>${esc(s.supplier)}</td><td>${esc(money(s.invoices))}</td><td>${s.invoiceCount}</td><td>${esc(money(s.paid))}</td><td>${s.payments}</td><td>${esc(resultText(s))}</td></tr>`).join("") || '<tr><td colspan="6">لا نتائج.</td></tr>'}</tbody>
+<tfoot><tr><td>الإجمالي</td><td>${esc(money(totalInv))}</td><td></td><td>${esc(money(totalPaid))}</td><td></td><td>${esc(money(totalPaid - totalInv))}</td></tr></tfoot></table>
+<h3>التفصيل (${lines.length} سطر)</h3>
+<table><thead><tr><th>التاريخ</th><th>المورد</th><th>النوع</th><th>المبلغ</th><th>المرجع</th><th>المصدر</th></tr></thead>
+<tbody>${lines.map((l) => `<tr><td>${esc(l.date)}</td><td>${esc(l.supplier)}</td><td>${l.kind === "invoice" ? "فاتورة" : "تحويل"}</td><td>${esc(money(l.amount))}</td><td>${esc(l.reference)}</td><td>${esc(l.source)}</td></tr>`).join("") || '<tr><td colspan="6">لا نتائج.</td></tr>'}</tbody></table>
+<script>window.onload=()=>window.print()</script></body></html>`;
+  const w = window.open("", "_blank");
+  if (!w) return setAlert(alertBox(), "اسمح بالنوافذ المنبثقة للطباعة.", "warn");
+  w.document.write(html);
+  w.document.close();
+}
+
 function purchasesCard(d) {
-  const rows = d.purchases.map((p) =>
-    h(
-      "tr",
-      {},
-      h("td", {}, p.supplier),
-      h("td", {}, p.invoiceCount ? `${money(p.invoices)} (${p.invoiceCount})` : "—"),
-      h("td", {}, p.payments ? `${money(p.paid)} (${p.payments})` : "—"),
+  const card = h("section", { className: "card" });
+  const f = pur.filters;
+  const suppliers = [...new Set((d.purchaseLines ?? []).map((l) => l.supplier))].sort((a, b) => a.localeCompare(b, "ar"));
+  if (f.supplier && !suppliers.includes(f.supplier)) f.supplier = "";
+
+  const field = (label, control) => h("label", { className: "field field--sm" }, h("span", { className: "field__label" }, label), control);
+  const select = (key, options) => {
+    const node = h("select", {}, options.map(([value, text]) => h("option", { value }, text)));
+    node.value = f[key];
+    node.addEventListener("change", () => {
+      f[key] = node.value;
+      if (key === "period") {
+        f.from = "";
+        f.to = "";
+      }
+      pur.page = 1;
+      draw();
+    });
+    return node;
+  };
+  const input = (key, type, attrs = {}) => {
+    const node = h("input", { type, ...attrs });
+    node.value = f[key];
+    node.addEventListener("change", () => {
+      f[key] = node.value;
+      pur.page = 1;
+      draw();
+    });
+    return node;
+  };
+
+  const body = h("div", {});
+  function draw() {
+    const { lines, summary, from, to } = filteredPurchases(d);
+    const totalInv = summary.reduce((a, s) => a + s.invoices, 0);
+    const totalPaid = summary.reduce((a, s) => a + s.paid, 0);
+    const last = Math.max(1, Math.ceil(lines.length / pur.size));
+    pur.page = Math.min(Math.max(1, pur.page), last);
+    const start = (pur.page - 1) * pur.size;
+    const sizeSelect = h("select", { className: "pager__select" }, [5, 10, 25, 100].map((n) => h("option", { value: String(n) }, String(n))));
+    sizeSelect.value = String(pur.size);
+    sizeSelect.addEventListener("change", () => {
+      pur.size = Number(sizeSelect.value);
+      pur.page = 1;
+      draw();
+    });
+    const nav = (text, step, disabled) => h("button", { type: "button", className: "btn btn--ghost btn--xs pager__nav", disabled, onClick: () => ((pur.page += step), draw()) }, text);
+    body.replaceChildren(
+      h("p", { className: "hint" }, `المعروض: ${from} إلى ${to}${f.supplier ? ` — ${f.supplier}` : ""}`),
       h(
-        "td",
-        {},
-        !p.invoiceCount
-          ? badge("دفعة بلا فاتورة مسجّلة", "badge--warn")
-          : !p.payments
-            ? badge("فاتورة لم تُدفع من البنك", "")
-            : diffBadge(p.difference, p.invoices),
+        "div",
+        { className: "fin-tiles" },
+        tile("الفواتير", money(totalInv), "", `${lines.filter((l) => l.kind === "invoice").length} فاتورة`),
+        tile("المدفوع من البنك", money(totalPaid), "", `${lines.filter((l) => l.kind === "payment").length} تحويل`),
+        tile("الفرق", money(Math.abs(totalPaid - totalInv)), totalPaid - totalInv < -0.01 ? "warn" : "good", totalPaid - totalInv < -0.01 ? "فواتير لم تُدفع بعد من البنك" : totalPaid - totalInv > 0.01 ? "مدفوع أكثر من الفواتير المسجّلة" : "مطابق"),
+        tile("الموردون", String(summary.length)),
       ),
-      h("td", {}, p.sources.join("، ") || "—"),
-    ),
-  );
-  return h(
-    "section",
-    { className: "card" },
+      table(
+        ["المورد", "الفواتير (العدد)", "المدفوع من البنك (العدد)", "النتيجة"],
+        summary.map((s) =>
+          h(
+            "tr",
+            {},
+            h("td", {}, h("button", { type: "button", className: "btn btn--ghost btn--xs", title: "عرض هذا المورد فقط", onClick: () => ((f.supplier = f.supplier === s.supplier ? "" : s.supplier), (pur.page = 1), rebuild()) }, s.supplier)),
+            h("td", {}, s.invoiceCount ? `${money(s.invoices)} (${s.invoiceCount})` : "—"),
+            h("td", {}, s.payments ? `${money(s.paid)} (${s.payments})` : "—"),
+            h("td", {}, purchaseResult(s)),
+          ),
+        ),
+      ),
+      h("h3", { className: "card__title card__title--xs" }, `تفصيل الفواتير والتحويلات (${lines.length} سطر)`),
+      table(
+        ["التاريخ", "المورد", "النوع", "المبلغ", "المرجع", "المصدر"],
+        lines.slice(start, start + pur.size).map((l) =>
+          h("tr", {}, h("td", {}, l.date || "—"), h("td", {}, l.supplier), h("td", {}, badge(l.kind === "invoice" ? "فاتورة" : "تحويل", l.kind === "invoice" ? "" : "badge--ok")), h("td", {}, money(l.amount)), h("td", {}, l.reference || "—"), h("td", {}, l.source)),
+        ),
+      ),
+      lines.length
+        ? h(
+            "div",
+            { className: "pager" },
+            h("span", { className: "pager__range" }, `${start + 1}–${Math.min(lines.length, start + pur.size)} من ${lines.length}`),
+            h("div", { className: "pager__pages" }, nav("السابق", -1, pur.page <= 1), nav("التالي", 1, pur.page >= last)),
+            h("label", { className: "pager__size" }, h("span", {}, "عدد السطور"), sizeSelect),
+          )
+        : h("p", { className: "empty" }, "لا فواتير ولا تحويلات بهذه الفلاتر."),
+    );
+  }
+  function rebuild() {
+    card.replaceWith(purchasesCard(d));
+  }
+
+  card.append(
     h("h3", { className: "card__title card__title--sm" }, "مطابقة المشتريات: فواتير الموردين ↔ التحويلات"),
-    table(["المورد", "الفواتير (العدد)", "المدفوع من البنك (العدد)", "النتيجة", "مصدر الفواتير"], rows),
-    h("p", { className: "hint" }, "الفواتير من مشتريات فوديكس واستلام البضاعة غير النقدي. اكتب اسم المورد في «تثبيت الجهات» كما هو في الفواتير حتى تلتقي الدفعة بفاتورتها."),
+    h(
+      "div",
+      { className: "row row--wrap" },
+      field("المورد", select("supplier", [["", "كل الموردين"], ...suppliers.map((x) => [x, x])])),
+      field("النوع", select("kind", [["", "فواتير وتحويلات"], ["invoice", "الفواتير فقط"], ["payment", "التحويلات فقط"]])),
+      field("المدة", select("period", [["", "كل الفترة المعروضة"], ["7", "آخر 7 أيام"], ["30", "آخر 30 يوماً"], ["month", "هذا الشهر"], ["prev", "الشهر الماضي"]])),
+      field("من تاريخ", input("from", "date")),
+      field("إلى تاريخ", input("to", "date")),
+      field("المبلغ من", input("min", "number", { min: "0", step: "any", placeholder: "0" })),
+      field("المبلغ إلى", input("max", "number", { min: "0", step: "any" })),
+      h("button", { type: "button", className: "btn btn--ghost btn--xs", onClick: () => ((pur.filters = { supplier: "", kind: "", period: "", from: "", to: "", min: "", max: "" }), (pur.page = 1), rebuild()) }, "مسح الفلاتر"),
+      h("button", { type: "button", className: "btn btn--ghost btn--xs", onClick: () => printPurchases(d) }, "طباعة"),
+    ),
+    body,
+    h("p", { className: "hint" }, "الفواتير من مشتريات فوديكس (بتاريخ الفاتورة) واستلام البضاعة غير النقدي، والتحويلات من كشف البنك. الفلاتر تعمل داخل الفترة المحمّلة أعلى الصفحة («من / إلى» ثم «عرض»). اكتب اسم المورد في «تثبيت الجهات» كما هو في الفواتير حتى تلتقي الدفعة بفاتورتها."),
   );
+  draw();
+  return card;
 }
 
 function categoriesCard(d) {
