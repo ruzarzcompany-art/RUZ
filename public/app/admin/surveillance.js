@@ -1209,7 +1209,7 @@ const TAB_SECTIONS = {
   people: ["ct-recipients", "ct-settings", "ct-routes"],
   report: ["report", "ct-brief", "ct-reviews"],
 };
-const MORE_TABS = new Set(["new", "orders", "waste", "limits", "connect", "foodics"]);
+const MORE_TABS = new Set(["new", "orders", "waste", "limits", "connect", "fxorders"]);
 
 function setMoreOpen(open) {
   el("sv-more-tabs").hidden = !open;

@@ -668,7 +668,9 @@ export async function processFrame(input: {
   //   • مرة واحدة في اليوم لكل كاميرا ونوع خلل، مهما تذبذبت الحالة.
   const nightNormal = ["dark", "blurry"].includes(result.cameraState) && isOffHours(at, tz, settings.openTime, settings.closeTime);
   let persisted = false;
-  if (cameraProblem && !nightNormal && (result.cameraState !== "moved" || result.cameraStateConfidence === "high")) {
+  // تحريك زاوية الكاميرا لا يُبلَّغ عنه إطلاقاً (طلب المالك): كثير الإنذارات الكاذبة
+  // مع تغيّر الإضاءة، وتبقى الحالة ظاهرة في قائمة الكاميرات فقط.
+  if (cameraProblem && !nightNormal && result.cameraState !== "moved") {
     const previous = await db
       .select({ state: surveillanceFrames.cameraState })
       .from(surveillanceFrames)
