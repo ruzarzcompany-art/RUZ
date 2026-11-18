@@ -211,8 +211,117 @@ function showDetail(r) {
     }
     parts.push(actions);
   }
+  if (state.can("cashier.edit_closing") && !r.awaitingCash) parts.push(editForm(r));
   body.replaceChildren(...parts);
   el("dc-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/**
+ * «تعديل إدخال الصندوق» — لمن مُنح البند (المالك افتراضياً): النقد المعدود
+ * والعهدة ومصاريف الدرج والملاحظة، حتى بعد تأكيد الكاشير أو مراجعة اليوم.
+ * سبب التعديل إلزامي، وكل تعديل يُسجَّل في سجل التدقيق بما قبله وما بعده.
+ */
+function editForm(r) {
+  const box = document.createElement("details");
+  box.className = "card card--inset";
+  const sum = document.createElement("summary");
+  sum.innerHTML = "<strong>تعديل إدخال الصندوق</strong>";
+  box.append(sum);
+
+  const field = (label, input) => {
+    const l = document.createElement("label");
+    l.className = "field field--sm";
+    const sp = document.createElement("span");
+    sp.className = "field__label";
+    sp.textContent = label;
+    l.append(sp, input);
+    return l;
+  };
+  const num = (value) => {
+    const i = document.createElement("input");
+    i.type = "number";
+    i.min = "0";
+    i.step = "0.01";
+    i.value = value === null || value === undefined ? "" : String(value);
+    return i;
+  };
+  const counted = num(r.countedCash);
+  const float = num(r.openingFloat);
+  const notes = document.createElement("input");
+  notes.type = "text";
+  notes.maxLength = 1000;
+  notes.value = r.notes || "";
+  const reason = document.createElement("input");
+  reason.type = "text";
+  reason.maxLength = 300;
+  reason.placeholder = "مثال: خطأ في عدّ النقد، مصروف لم يُسجَّل…";
+
+  const grid = document.createElement("div");
+  grid.className = "form-grid__fields";
+  grid.append(field("النقد المعدود", counted), field("عهدة البداية", float), field("ملاحظة التقفيل", notes), field("سبب التعديل (إلزامي)", reason));
+
+  const expTitle = document.createElement("p");
+  expTitle.className = "hint";
+  expTitle.textContent = "مصاريف الدرج:";
+  const expList = document.createElement("div");
+  const addExpense = (e = { label: "", amount: "" }) => {
+    const rowEl = document.createElement("div");
+    rowEl.className = "row row--wrap";
+    const label = document.createElement("input");
+    label.type = "text";
+    label.maxLength = 120;
+    label.placeholder = "البيان";
+    label.value = e.label;
+    const amount = num(e.amount);
+    amount.placeholder = "المبلغ";
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "btn btn--ghost btn--xs";
+    del.textContent = "حذف";
+    del.onclick = () => rowEl.remove();
+    rowEl.append(label, amount, del);
+    rowEl.dataset.expense = "1";
+    expList.append(rowEl);
+  };
+  for (const e of r.expenseLines) addExpense(e);
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "btn btn--ghost btn--xs";
+  addBtn.textContent = "+ مصروف";
+  addBtn.onclick = () => addExpense();
+
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "btn btn--primary btn--sm";
+  save.textContent = "حفظ التعديل";
+  save.onclick = async () => {
+    if (counted.value === "") return setAlert(el("fh-alert"), "اكتب النقد المعدود.", "error");
+    if (!reason.value.trim()) return setAlert(el("fh-alert"), "اكتب سبب التعديل.", "error");
+    const expenses = [...expList.querySelectorAll("[data-expense]")]
+      .map((n) => {
+        const [l, a] = n.querySelectorAll("input");
+        return { label: l.value.trim(), amount: Number(a.value || 0) };
+      })
+      .filter((e) => e.label || e.amount);
+    setBusy(save, true);
+    const res = await api(`/dayclose/${r.id}/edit`, {
+      method: "PATCH",
+      body: { countedCash: Number(counted.value), openingFloat: float.value === "" ? "" : Number(float.value), expenses, notes: notes.value.trim(), reason: reason.value.trim() },
+    });
+    setBusy(save, false);
+    setAlert(el("fh-alert"), res.ok ? res.message : res.error, res.ok ? "ok" : "error");
+    if (res.ok) {
+      await loadDayCloses();
+      const fresh = state.rows.find((x) => x.id === r.id);
+      if (fresh) showDetail(fresh);
+    }
+  };
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "يُعاد حساب النقد المتوقّع وفرق الصندوق فوراً، وتبقى حالة اليوم كما هي، ويُسجَّل التعديل وسببه في سجل التدقيق.";
+  box.append(grid, expTitle, expList, addBtn, hint, save);
+  return box;
 }
 
 function branchId() {
