@@ -10,7 +10,7 @@
  */
 
 import { Router, type Response } from "express";
-import { and, desc, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { getDb } from "../../db/index.js";
 import { employees, foodicsStockDocs } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
@@ -161,9 +161,11 @@ stockRouter.get("/stock/docs", ...canRead, async (req: AuthedRequest, res: Respo
   const to = asDateOnly(req.query.to) ?? today;
   const confirm = asString(req.query.confirm, 20) ?? "";
   const db = getDb();
-  const conds = [eq(foodicsStockDocs.branchId, branch.id), gte(foodicsStockDocs.businessDate, from), lte(foodicsStockDocs.businessDate, to)];
+  // الفترة والترتيب بتاريخ الفاتورة (وإن لم يُكتب فبتاريخ الإدخال في فوديكس)
+  const docDate = sql<string>`coalesce(${foodicsStockDocs.invoiceDate}, ${foodicsStockDocs.businessDate})`;
+  const conds = [eq(foodicsStockDocs.branchId, branch.id), gte(docDate, from), lte(docDate, to)];
   if (["awaiting", "confirmed", "disputed", "skipped"].includes(confirm)) conds.push(eq(foodicsStockDocs.confirmStatus, confirm));
-  const rows = await db.select().from(foodicsStockDocs).where(and(...conds)).orderBy(desc(foodicsStockDocs.businessDate), desc(foodicsStockDocs.id));
+  const rows = await db.select().from(foodicsStockDocs).where(and(...conds)).orderBy(desc(docDate), desc(foodicsStockDocs.id));
   const names = await namesOf(rows.map((r) => r.confirmedByEmployeeId));
   const docs = rows.map((d) => docView(d, names));
   res.json({

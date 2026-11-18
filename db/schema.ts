@@ -1061,6 +1061,11 @@ export const inventoryMovements = pgTable(
      * مفتاح أجنبي لأن الجدول يشير إلى نفسه، والحذف يتكفّل بإزالة الطرفين معاً.
      */
     linkedMovementId: integer("linked_movement_id"),
+    /**
+     * مصدر الحركة الآلية: `fdoc:<رقم مستند فوديكس>:<السطر>` لحركات الشراء المسحوبة
+     * من فوديكس — يمنع تكرارها ويسمح بتحديثها إن عُدّل المستند. فارغ للحركات اليدوية.
+     */
+    sourceRef: text("source_ref").notNull().default(""),
     notes: text().notNull().default(""),
     createdByEmployeeId: integer("created_by_employee_id").references(
       () => employees.id,
@@ -1072,6 +1077,7 @@ export const inventoryMovements = pgTable(
   (table) => [
     index("inventory_movements_branch_date_idx").on(table.branchId, table.businessDate),
     index("inventory_movements_item_idx").on(table.itemId, table.businessDate),
+    index("inventory_movements_source_ref_idx").on(table.sourceRef),
   ],
 );
 
@@ -1964,7 +1970,13 @@ export const foodicsStockDocs = pgTable(
     foodicsStatus: text("foodics_status").notNull().default(""),
     /** open = لم يُستلم بعد في فوديكس، received = مستلم في فوديكس، cancelled */
     state: text().notNull().default("open"),
+    /** تاريخ الإدخال (يوم العمل) في فوديكس */
     businessDate: date("business_date"),
+    /** تاريخ فاتورة المورد كما كُتب في فوديكس — به تُعرض المشتريات وتدخل المخزون */
+    invoiceDate: date("invoice_date"),
+    invoiceNumber: text("invoice_number").notNull().default(""),
+    /** وقت ترحيل المستند إلى حركات مخزون «سِجل» أول مرة (فارغ = لم يُرحَّل بعد) */
+    stockPostedAt: timestamp("stock_posted_at", { withTimezone: true }),
     expectedAt: timestamp("expected_at", { withTimezone: true }),
     receivedAt: timestamp("received_at", { withTimezone: true }),
     total: money("total"),

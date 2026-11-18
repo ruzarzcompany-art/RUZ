@@ -22,7 +22,7 @@ function docCard(d) {
     make("h3", "card__title card__title--xs", `${d.kindLabel} رقم ${d.reference}`),
     make("span", `badge ${d.state === "received" ? "badge--warn" : ""}`, d.state === "received" ? "مستلم في فوديكس — أكّده" : "متوقّع وصوله"),
   );
-  card.append(head, make("p", "hint", [d.party, d.businessDate, d.total ? `القيمة ${formatMoney(d.total)}` : ""].filter(Boolean).join(" · ")));
+  card.append(head, make("p", "hint", [d.party, d.date ?? d.businessDate, d.total ? `القيمة ${formatMoney(d.total)}` : ""].filter(Boolean).join(" · ")));
 
   const list = make("div", "dc-figures");
   const inputs = [];

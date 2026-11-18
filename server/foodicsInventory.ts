@@ -12,11 +12,12 @@
  * بين الحسابات؛ وزر «اختبار المخزون» يعرض الحقول الفعلية من حسابك.
  */
 
-import { and, eq, lt, max, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, like, lt, max, ne, sql } from "drizzle-orm";
 import { getDb } from "../db/index.js";
-import { branches, foodicsItemStock, foodicsStockDocs, inventoryItems, surveillanceSettings } from "../db/schema.js";
+import { branches, foodicsItemStock, foodicsStockDocs, inventoryItems, inventoryMovements, surveillanceSettings } from "../db/schema.js";
 import { FoodicsError, foodicsCredentials, foodicsGet, foodicsList, num, pick, when, type Json } from "./foodics.js";
 import { businessDateNow } from "./dayClose.js";
+import { financeStartDate } from "./financeStart.js";
 import { createAlert, type BranchRow } from "./routes/surveillance.js";
 import { isoDateInZone, safeTimeZone } from "./time.js";
 
@@ -172,6 +173,8 @@ interface DocLine {
   ordered: number;
   received: number;
   cost: number;
+  /** معرّف الصنف في فوديكس — لربط السطر بصنف «سِجل» إن لم يكن له رمز SKU */
+  fid?: string;
 }
 
 function docLines(o: Json): DocLine[] {
@@ -202,7 +205,7 @@ function docState(o: Json, lines: DocLine[]): { state: string; receivedAt: Date 
   return { state: "open", receivedAt: null };
 }
 
-async function upsertDoc(branch: BranchRow, kind: string, o: Json, party: string, stats: { docs: number; received: number }) {
+async function upsertDoc(branch: BranchRow, kind: string, o: Json, party: string, stats: { docs: number; received: number; posted: number }, ctx: PostContext) {
   const db = getDb();
   const foodicsId = String(o.id ?? "");
   if (!foodicsId) return;
@@ -214,12 +217,17 @@ async function upsertDoc(branch: BranchRow, kind: string, o: Json, party: string
   const bd = String(o.business_date ?? "");
   const businessDate = /^\d{4}-\d{2}-\d{2}$/.test(bd) ? bd : isoDateInZone(new Date(ref.getTime() - 4 * 3600_000), tz);
   const total = round2(num(pick(o, "total_cost", "total", "total_price")) || lines.reduce((s, l) => s + (l.received || l.ordered) * l.cost, 0));
+  // تاريخ فاتورة المورد: به تُعرض المشتريات وتدخل المخزون. تاريخ مستقبلي = خطأ إدخال فيُهمل.
+  const inv = String(pick(o, "invoice_date") ?? "").slice(0, 10);
+  const invoiceDate = /^\d{4}-\d{2}-\d{2}$/.test(inv) && inv <= ctx.today ? inv : null;
   const values = {
     reference: String(pick(o, "reference", "number", "code") ?? foodicsId),
     party,
     foodicsStatus: String(o.status ?? ""),
     state,
     businessDate,
+    invoiceDate,
+    invoiceNumber: String(pick(o, "invoice_number") ?? "").slice(0, 80),
     expectedAt,
     receivedAt,
     total,
@@ -229,12 +237,149 @@ async function upsertDoc(branch: BranchRow, kind: string, o: Json, party: string
   // المستندات القديمة (أكثر من يومين) لا تُطلب من الموظف — تُحفظ للأرشيف فقط
   const today = businessDateNow(branch.timezone);
   const old = businessDate < isoDateInZone(new Date(new Date(`${today}T12:00:00Z`).getTime() - 2 * 86_400_000), "UTC");
-  await db
+  const [saved] = await db
     .insert(foodicsStockDocs)
     .values({ branchId: branch.id, kind, foodicsId, ...values, confirmStatus: old ? "skipped" : "awaiting" })
-    .onConflictDoUpdate({ target: [foodicsStockDocs.branchId, foodicsStockDocs.kind, foodicsStockDocs.foodicsId], set: values });
+    .onConflictDoUpdate({ target: [foodicsStockDocs.branchId, foodicsStockDocs.kind, foodicsStockDocs.foodicsId], set: values })
+    .returning();
   stats.docs++;
   if (state === "received") stats.received++;
+  if (saved) stats.posted += await postDocToStock(saved, ctx);
+}
+
+/* ══ ترحيل المشتريات إلى مخزون «سِجل» ═════════════════════════════
+ *
+ * كل شراء مستلم في فوديكس يُسجَّل حركة «وارد» لكل صنف فيه بتاريخ فاتورة المورد
+ * (لا بتاريخ إدخاله في فوديكس)، فيرتفع رصيد «سِجل» تلقائياً، ثم يُصحَّح أي خطأ
+ * في الكمية عند الجرد (حركة الجرد تثبّت الرصيد على المعدود فعلاً).
+ *   • الحركة مربوطة بالمستند عبر `sourceRef` فلا تتكرر، وتُحدَّث إن عُدّل المستند
+ *     أو سجّل المستلِم كمية فعلية مختلفة، وتُحذف إن أُلغي.
+ *   • ما قبل «بداية الحسابات» للفرع لا يُرحَّل.
+ * ══════════════════════════════════════════════════════════════════ */
+
+type DocRow = typeof foodicsStockDocs.$inferSelect;
+
+interface PostContext {
+  /** تاريخ اليوم في منطقة الفرع */
+  today: string;
+  /** بداية الحسابات — لا ترحيل قبلها */
+  start: string | null;
+  byCode: Map<string, number>;
+  byName: Map<string, number>;
+}
+
+async function loadPostContext(branch: Pick<BranchRow, "id" | "timezone">): Promise<PostContext> {
+  const db = getDb();
+  const items = await db.select({ id: inventoryItems.id, code: inventoryItems.code, name: inventoryItems.name }).from(inventoryItems);
+  const byCode = new Map<string, number>();
+  const byName = new Map<string, number>();
+  for (const i of items) {
+    byCode.set(i.code, i.id);
+    if (i.name && !byName.has(i.name)) byName.set(i.name, i.id);
+  }
+  return {
+    today: isoDateInZone(new Date(), safeTimeZone(branch.timezone)),
+    start: await financeStartDate(branch.id),
+    byCode,
+    byName,
+  };
+}
+
+/** صنف «سِجل» المقابل لسطر الشراء: بالرمز SKU ثم بالاسم، ويُنشأ إن لم يُسحب بعد. */
+async function itemOfLine(l: DocLine, ctx: PostContext): Promise<number | null> {
+  const code = l.sku.trim() || (l.fid ? `FX-${l.fid.slice(0, 12)}` : "");
+  const known = (code ? ctx.byCode.get(code) : undefined) ?? (l.name ? ctx.byName.get(l.name) : undefined);
+  if (known) return known;
+  if (!code) return null;
+  const db = getDb();
+  const [created] = await db
+    .insert(inventoryItems)
+    .values({ code, name: l.name || code, unit: l.unit || "قطعة", unitCost: l.cost, note: "من فوديكس" })
+    .onConflictDoUpdate({ target: inventoryItems.code, set: { updatedAt: new Date() } })
+    .returning({ id: inventoryItems.id });
+  if (!created) return null;
+  ctx.byCode.set(code, created.id);
+  return created.id;
+}
+
+/** تاريخ دخول المستند للمخزون: تاريخ الفاتورة، وإن لم يُكتب فتاريخ الإدخال في فوديكس. */
+export const stockDateOf = (d: Pick<DocRow, "invoiceDate" | "businessDate">) => d.invoiceDate ?? d.businessDate;
+
+/** يطابق حركات المخزون مع المستند (إضافة/تحديث/حذف) ويعيد عدد الحركات التي تغيّرت. */
+async function postDocToStock(doc: DocRow, ctx: PostContext): Promise<number> {
+  if (doc.kind !== "purchase") return 0;
+  const db = getDb();
+  const prefix = `fdoc:${doc.id}:`;
+  const existing = await db.select().from(inventoryMovements).where(like(inventoryMovements.sourceRef, `${prefix}%`));
+  const date = stockDateOf(doc);
+  const wanted = new Map<string, { itemId: number; quantity: number; unitCost: number; totalCost: number }>();
+  if (doc.state === "received" && date && (!ctx.start || date >= ctx.start)) {
+    const lines = JSON.parse(doc.itemsJson || "[]") as DocLine[];
+    const diffs = JSON.parse(doc.diffJson || "[]") as Array<{ sku: string; name: string; actual: number }>;
+    for (const [index, l] of lines.entries()) {
+      // إن سجّل المستلِم كمية فعلية مختلفة فهي التي دخلت المستودع
+      const diff = diffs.find((d) => (d.sku && d.sku === l.sku) || d.name === l.name);
+      const quantity = round3(diff ? num(diff.actual) : l.received || l.ordered);
+      if (!(quantity > 0)) continue;
+      const itemId = await itemOfLine(l, ctx);
+      if (!itemId) continue;
+      wanted.set(`${prefix}${index}`, { itemId, quantity, unitCost: l.cost, totalCost: round2(quantity * l.cost) });
+    }
+  }
+  const notes = `من فوديكس${doc.party ? ` — ${doc.party}` : ""}${doc.invoiceNumber ? ` — فاتورة رقم ${doc.invoiceNumber}` : ""}`.slice(0, 1000);
+  let changed = 0;
+  const stale: number[] = [];
+  for (const m of existing) {
+    const w = wanted.get(m.sourceRef);
+    if (!w) {
+      stale.push(m.id);
+      continue;
+    }
+    wanted.delete(m.sourceRef);
+    if (m.itemId === w.itemId && m.quantity === w.quantity && m.unitCost === w.unitCost && m.businessDate === date && m.reference === doc.reference && m.notes === notes) continue;
+    await db
+      .update(inventoryMovements)
+      .set({ itemId: w.itemId, quantity: w.quantity, unitCost: w.unitCost, totalCost: w.totalCost, businessDate: date!, reference: doc.reference, notes, updatedAt: new Date() })
+      .where(eq(inventoryMovements.id, m.id));
+    changed++;
+  }
+  if (stale.length) {
+    await db.delete(inventoryMovements).where(inArray(inventoryMovements.id, stale));
+    changed += stale.length;
+  }
+  if (wanted.size) {
+    await db.insert(inventoryMovements).values(
+      [...wanted].map(([sourceRef, w]) => ({
+        branchId: doc.branchId,
+        itemId: w.itemId,
+        movementType: "in",
+        businessDate: date!,
+        quantity: w.quantity,
+        unitCost: w.unitCost,
+        totalCost: w.totalCost,
+        reason: "purchase",
+        reference: doc.reference,
+        sourceRef,
+        notes,
+      })),
+    );
+    changed += wanted.size;
+  }
+  if (!doc.stockPostedAt) await db.update(foodicsStockDocs).set({ stockPostedAt: new Date() }).where(eq(foodicsStockDocs.id, doc.id));
+  return changed;
+}
+
+/** يرحّل من المحفوظ ما لم يُرحَّل بعد (مستندات لم يعد فوديكس يعيدها في السحب). */
+async function postPendingDocs(branch: BranchRow, ctx: PostContext): Promise<number> {
+  const db = getDb();
+  const pending = await db
+    .select()
+    .from(foodicsStockDocs)
+    .where(and(eq(foodicsStockDocs.branchId, branch.id), eq(foodicsStockDocs.kind, "purchase"), isNull(foodicsStockDocs.stockPostedAt)))
+    .limit(300);
+  let changed = 0;
+  for (const d of pending) changed += await postDocToStock(d, ctx);
+  return changed;
 }
 
 /** يسحب أوامر الشراء والتحويلات المحدَّثة منذ آخر مزامنة (أو آخر 30 يوماً أول مرة). */
@@ -243,13 +388,26 @@ export async function syncStockDocs(branch: BranchRow, options: { days?: number 
   const foodicsBranchId = await foodicsBranchOf(branch.id);
   if (!foodicsBranchId) throw new FoodicsError("الفرع غير مربوط بفرع في فوديكس");
   const [last] = await db.select({ at: max(foodicsStockDocs.syncedAt) }).from(foodicsStockDocs).where(eq(foodicsStockDocs.branchId, branch.id));
+  const ctx = await loadPostContext(branch);
+  if (!options.days) {
+    // مستندات محفوظة قبل ترحيل المشتريات للمخزون: سحب كامل مرة واحدة لجلب تاريخ الفاتورة
+    const [unposted] = await db
+      .select({ id: foodicsStockDocs.id })
+      .from(foodicsStockDocs)
+      .where(and(eq(foodicsStockDocs.branchId, branch.id), eq(foodicsStockDocs.kind, "purchase"), isNull(foodicsStockDocs.stockPostedAt)))
+      .limit(1);
+    if (unposted) {
+      const sinceStart = ctx.start ? Math.ceil((Date.now() - new Date(`${ctx.start}T00:00:00Z`).getTime()) / 86_400_000) + 3 : 30;
+      options = { days: Math.min(90, Math.max(30, sinceStart)) };
+    }
+  }
   const since = options.days
     ? new Date(Date.now() - options.days * 86_400_000)
     : last?.at
       ? new Date(new Date(last.at).getTime() - 3 * 3600_000)
       : new Date(Date.now() - 30 * 86_400_000);
   const after = since.toISOString().slice(0, 19).replace("T", " ");
-  const stats = { docs: 0, received: 0, purchasePath: "", transferPath: "", notes: [] as string[] };
+  const stats = { docs: 0, received: 0, posted: 0, purchasePath: "", transferPath: "", notes: [] as string[] };
   // فلتر «updated_after» لا يقبله فوديكس على كل المسارات (كان يعيد صفراً):
   // في السحب الكامل نطلب بلا فلتر تاريخ ونفلتر نحن حسب آخر تحديث.
   const recent = (o: Json) => {
@@ -274,7 +432,7 @@ export async function syncStockDocs(branch: BranchRow, options: { days?: number 
       // بعض الحسابات تتجاهل فلتر الفرع — نتأكد بأنفسنا
       const bid = String(pick(o, "branch.id", "branch_id", "warehouse.id") ?? foodicsBranchId);
       if (bid !== foodicsBranchId) continue;
-      await upsertDoc(branch, "purchase", o, String(pick(o, "supplier.name_localized", "supplier.name") ?? ""), stats);
+      await upsertDoc(branch, "purchase", o, String(pick(o, "supplier.name_localized", "supplier.name") ?? ""), stats, ctx);
     }
   } else stats.notes.push("أوامر الشراء غير متاحة في الحساب");
 
@@ -290,9 +448,9 @@ export async function syncStockDocs(branch: BranchRow, options: { days?: number 
       const to = String(pick(o, "destination.id", "destination_branch_id", "to_branch.id", "warehouse.id") ?? "");
       const from = String(pick(o, "source.id", "branch.id", "branch_id", "from_branch.id") ?? "");
       if (to === foodicsBranchId) {
-        await upsertDoc(branch, "transfer_in", o, String(pick(o, "source.name", "branch.name", "from_branch.name") ?? "فرع آخر"), stats);
+        await upsertDoc(branch, "transfer_in", o, String(pick(o, "source.name", "branch.name", "from_branch.name") ?? "فرع آخر"), stats, ctx);
       } else if (from === foodicsBranchId) {
-        await upsertDoc(branch, "transfer_out", o, String(pick(o, "destination.name", "warehouse.name", "to_branch.name") ?? "فرع آخر"), stats);
+        await upsertDoc(branch, "transfer_out", o, String(pick(o, "destination.name", "warehouse.name", "to_branch.name") ?? "فرع آخر"), stats, ctx);
       }
     }
   } else stats.notes.push("التحويلات غير متاحة في الحساب");
@@ -316,7 +474,9 @@ export async function syncStockDocs(branch: BranchRow, options: { days?: number 
       for (const o of rows) {
         if (String(o.business_date ?? "") < sinceDate) {
           older = true;
-          continue;
+          // مستند أقدم عُدّل حديثاً في فوديكس (كمية أو تاريخ فاتورة) يُعاد سحبه
+          const touched = when(pick(o, "updated_at"));
+          if (!touched || touched < since) continue;
         }
         // سطور الشراء: pivot.quantity = الكمية المستلمة، pivot.cost = تكلفة السطر كاملة
         const lines: DocLine[] = ((o.items ?? []) as Json[]).map((i) => {
@@ -329,10 +489,11 @@ export async function syncStockDocs(branch: BranchRow, options: { days?: number 
             ordered: q,
             received: q,
             cost: q ? round2(lineCost / q) : 0,
+            fid: String(i.id ?? ""),
           };
         });
         const creator = String(pick(o, "creator.name") ?? "");
-        await upsertDoc(branch, "purchase", { ...o, items: undefined, lines, total_cost: round2(lines.reduce((s, l) => s + l.received * l.cost, 0)) }, `${String(pick(o, "supplier.name_localized", "supplier.name") ?? "")}${creator ? ` — أدخله ${creator}` : ""}`, stats);
+        await upsertDoc(branch, "purchase", { ...o, items: undefined, lines, total_cost: round2(lines.reduce((s, l) => s + l.received * l.cost, 0)) }, `${String(pick(o, "supplier.name_localized", "supplier.name") ?? "")}${creator ? ` — أدخله ${creator}` : ""}`, stats, ctx);
       }
       const last = Number(body.meta?.last_page ?? 0);
       if (older || !rows.length || (last && page >= last)) break;
@@ -342,6 +503,7 @@ export async function syncStockDocs(branch: BranchRow, options: { days?: number 
     if (!(error instanceof FoodicsError && [400, 404, 422].includes(error.status))) throw error;
     stats.notes.push("حركات الشراء غير متاحة في الحساب");
   }
+  stats.posted += await postPendingDocs(branch, ctx);
   return stats;
 }
 
@@ -395,6 +557,16 @@ export async function confirmStockDoc(input: {
     })
     .where(eq(foodicsStockDocs.id, doc.id))
     .returning();
+
+  // الكمية الفعلية التي سجّلها المستلِم هي التي تدخل رصيد المخزون
+  if (saved) {
+    try {
+      const [branch] = await db.select({ id: branches.id, timezone: branches.timezone }).from(branches).where(eq(branches.id, doc.branchId));
+      if (branch) await postDocToStock(saved, await loadPostContext(branch));
+    } catch (error) {
+      console.error("[inventory] ترحيل الاستلام للمخزون:", error);
+    }
+  }
 
   if (disputed) {
     const text = diffs.map((d) => `${d.name}: فوديكس ${d.expected} ${d.unit} — الواصل فعلاً ${d.actual}`).join("، ");
@@ -484,6 +656,10 @@ export function docView(d: typeof foodicsStockDocs.$inferSelect, names: Map<numb
     party: d.party,
     state: d.state,
     foodicsStatus: d.foodicsStatus,
+    /** تاريخ العرض والمخزون: تاريخ الفاتورة، وإن لم يُكتب فتاريخ الإدخال في فوديكس */
+    date: stockDateOf(d),
+    invoiceDate: d.invoiceDate,
+    invoiceNumber: d.invoiceNumber,
     businessDate: d.businessDate,
     expectedAt: d.expectedAt,
     receivedAt: d.receivedAt,
