@@ -11,7 +11,7 @@
  *   - المسحوبات ↔ مشتريات الموردين (مشتريات فوديكس + استلام البضاعة غير النقدي).
  */
 
-import { and, asc, eq, gte, lte, ne } from "drizzle-orm";
+import { and, asc, eq, gte, lte, ne, sql } from "drizzle-orm";
 import { getDb } from "../db/index.js";
 import { bankRules, bankTransactions, foodicsStockDocs, purchaseReceipts } from "../db/schema.js";
 import { foodicsDaySales } from "./foodics.js";
@@ -37,7 +37,7 @@ export const BANK_CATEGORIES: Record<string, string> = {
 export type BankRowInput = { date: string; description: string; credit: number; debit: number; balance: number | null };
 
 const squash = (s: string) => s.replace(/\s+/g, " ").trim();
-const norm = (s: string) =>
+export const norm = (s: string) =>
   squash(s)
     .toLowerCase()
     .replace(/[إأآ]/g, "ا")
@@ -244,11 +244,14 @@ export async function reconcile(branchId: number, fromRaw: string, to: string) {
     };
   });
 
-  // ── المشتريات: فواتير الموردين ↔ التحويلات ──
+  // ── المشتريات: فواتير الموردين (بتاريخ الفاتورة) ↔ التحويلات ──
+  const docDate = sql<string>`coalesce(${foodicsStockDocs.invoiceDate}, ${foodicsStockDocs.businessDate})`;
   const stockDocs = await db
-    .select({ party: foodicsStockDocs.party, total: foodicsStockDocs.total, date: foodicsStockDocs.businessDate, reference: foodicsStockDocs.reference })
+    .select({ party: foodicsStockDocs.party, supplierName: foodicsStockDocs.supplierName, state: foodicsStockDocs.state, total: foodicsStockDocs.total, date: foodicsStockDocs.businessDate, reference: foodicsStockDocs.reference })
     .from(foodicsStockDocs)
-    .where(and(eq(foodicsStockDocs.branchId, branchId), eq(foodicsStockDocs.kind, "purchase"), gte(foodicsStockDocs.businessDate, from), lte(foodicsStockDocs.businessDate, to)));
+    .where(and(eq(foodicsStockDocs.branchId, branchId), eq(foodicsStockDocs.kind, "purchase"), gte(docDate, from), lte(docDate, to)))
+    // اسم المورد وحده: «المورد — أدخله فلان» كان يفصل المورد الواحد عن تحويلاته وعن نفسه
+    .then((rows) => rows.filter((r) => r.state !== "cancelled").map((r) => ({ ...r, party: (r.supplierName || r.party.split(" — أدخله ")[0]).trim() })));
   const receipts = await db
     .select({ party: purchaseReceipts.supplier, total: purchaseReceipts.invoiceTotal, paid: purchaseReceipts.paidAmount, method: purchaseReceipts.paymentMethod, date: purchaseReceipts.businessDate, reference: purchaseReceipts.invoiceNumber })
     .from(purchaseReceipts)

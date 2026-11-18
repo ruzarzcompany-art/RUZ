@@ -15,6 +15,14 @@ import { asDateOnly, asId, asNumber, asString } from "../validate.js";
 import { BANK_CATEGORIES, deleteTransactions, importBankRows, reconcile, saveRules, type BankRowInput } from "../bank.js";
 import { businessDateNow } from "../dayClose.js";
 import { loadBranch } from "./surveillance.js";
+import { syncBankTransfersSince } from "./finance.js";
+
+/** بعد أي تغيير في الكشف أو قواعده: يُحدَّث «المحوّل فعلاً» في تسويات الشبكات والتطبيقات. */
+const relink = (branchId: number) =>
+  syncBankTransfersSince(branchId).catch((error) => {
+    console.error("[bank] ربط الكشف بالتسويات:", error);
+    return null;
+  });
 
 export const bankRouter = Router();
 
@@ -57,12 +65,14 @@ bankRouter.post("/bank/import", ...canManage, async (req: AuthedRequest, res: Re
     after: { ...result, from: dates[0], to: dates[dates.length - 1], fileName: asString(body.fileName, 200) ?? "" },
     ipAddress: clientIp(req),
   });
+  const linked = await relink(branch.id);
   res.json({
     ok: true,
     ...result,
+    linked,
     from: dates[0],
     to: dates[dates.length - 1],
-    message: `أُضيفت ${result.inserted} حركة${result.skipped ? ` (وتُجوهلت ${result.skipped} مكررة رُفعت سابقاً)` : ""} من ${dates[0]} إلى ${dates[dates.length - 1]}.`,
+    message: `أُضيفت ${result.inserted} حركة${result.skipped ? ` (وتُجوهلت ${result.skipped} مكررة رُفعت سابقاً)` : ""} من ${dates[0]} إلى ${dates[dates.length - 1]}.${linked?.added ? ` وسُجّلت ${linked.added} دفعة تحويل آلياً في «الشبكات والتطبيقات».` : ""}`,
   });
 });
 
@@ -105,6 +115,7 @@ bankRouter.put("/bank/rules", ...canManage, async (req: AuthedRequest, res: Resp
     after: { items },
     ipAddress: clientIp(req),
   });
+  await relink(branch.id);
   res.json({ ok: true, saved, message: `ثُبّتت ${saved} جهة.` });
 });
 
@@ -125,5 +136,6 @@ bankRouter.delete("/bank/transactions", ...canManage, async (req: AuthedRequest,
     after: { from, to, removed },
     ipAddress: clientIp(req),
   });
+  await relink(branch.id);
   res.json({ ok: true, removed, message: `حُذفت ${removed} حركة من ${from} إلى ${to}.` });
 });
