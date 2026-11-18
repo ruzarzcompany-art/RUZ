@@ -75,6 +75,7 @@ export const ROUTES: Record<string, Route> = {
   // سرقات واشتباهات وخلل كبير → المالك
   drawer_no_sale: { first: "owner", escalate: false },
   order_no_invoice: { first: "owner", escalate: false },
+  table_no_invoice: { first: "owner", escalate: false, anyAge: true },
   repeated_pos: { first: "owner", escalate: false },
   warehouse_exit: { first: "owner", escalate: false },
   warehouse_off_hours: { first: "owner", escalate: false },

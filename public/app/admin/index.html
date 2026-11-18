@@ -1815,6 +1815,33 @@
         </details>
       </section>
 
+      <section class="card" id="var-card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">فروقات الجرد — ما خرج بلا فاتورة أو بلا تسجيل</h2>
+          <div class="row row--wrap">
+            <label class="field field--sm"><span class="field__label">من</span><input id="var-from" type="date" /></label>
+            <label class="field field--sm"><span class="field__label">إلى</span><input id="var-to" type="date" /></label>
+            <label class="field field--sm"><span class="field__label">العرض</span>
+              <select id="var-filter"><option value="short">النقص فقط</option><option value="real">كل الفروقات</option><option value="">الكل مع الجرد الافتتاحي</option></select>
+            </label>
+            <button id="var-load" class="btn btn--ghost btn--xs" type="button">عرض</button>
+          </div>
+        </div>
+        <div id="var-totals" class="fin-tiles"></div>
+        <div class="table-wrap">
+          <table class="table" id="var-table">
+            <thead><tr><th>تاريخ الجرد</th><th>الصنف</th><th>الرصيد الدفتري</th><th>المعدود</th><th>الفرق</th><th>قيمة الفرق</th><th>المستهلك منذ الجرد السابق</th><th>النقص من الاستهلاك</th><th>الجرد السابق</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="var-empty" class="empty" hidden>لا نقص في جرد هذه الفترة — أو لم يُسجَّل جرد بعد.</p>
+        <p class="hint">
+          الرصيد الدفتري = المشتريات (بتاريخ الفاتورة) − استهلاك الطلبات حسب وصفات فوديكس − الهدر المعتمد. فإذا كان المعدود أقل
+          فالفرق خرج بلا تسجيل: وجبة بلا فاتورة، أو هدر لم يُسجَّل، أو حصص أكبر من الوصفة. أول جرد لكل صنف «افتتاحي» يثبّت
+          الرصيد ولا يُعدّ نقصاً. «مبيعات تقريبية بلا فاتورة» = قيمة النقص ÷ نسبة تكلفة الطعام، وهي حدّ أعلى لا رقم مؤكد.
+        </p>
+      </section>
+
       </div>
 
       <div data-inv-tab="log" hidden>

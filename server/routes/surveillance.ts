@@ -261,6 +261,14 @@ export const ALERT_TYPES: Record<string, AlertTypeSpec> = {
     severity: 1,
     action: "عدّ الصنف في المستودع فوراً، ومطابقة فاتورة المورد، ومراجعة لقطات المستودع وقت الاستلام.",
   },
+  table_no_invoice: {
+    label: "جلسة على طاولة بلا فاتورة في فوديكس",
+    role: "gm",
+    urgent: true,
+    suspicion: true,
+    severity: 1,
+    action: "مراجعة مقطع الطاولة في وقت الجلسة: هل قُدّم طعام؟ ثم البحث في فواتير فوديكس لنفس الوقت وسؤال الكاشير والنادل.",
+  },
   waste_over_limit: {
     label: "هدر اليوم تجاوز النسبة المعتمدة من المبيعات",
     role: "gm",
