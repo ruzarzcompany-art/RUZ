@@ -261,6 +261,22 @@ export const ALERT_TYPES: Record<string, AlertTypeSpec> = {
     severity: 1,
     action: "عدّ الصنف في المستودع فوراً، ومطابقة فاتورة المورد، ومراجعة لقطات المستودع وقت الاستلام.",
   },
+  waste_over_limit: {
+    label: "هدر اليوم تجاوز النسبة المعتمدة من المبيعات",
+    role: "gm",
+    urgent: true,
+    suspicion: false,
+    severity: 2,
+    action: "مراجعة تقرير الهدر حسب الصنف والسبب والموظف، ومطابقته بلقطات المطبخ وكميات التحضير.",
+  },
+  waste_not_reviewed: {
+    label: "هدر مسجَّل لم يُعتمد ولم يُرفض",
+    role: "warehouse",
+    urgent: false,
+    suspicion: false,
+    severity: 3,
+    action: "فتح المخزون ← الهدر واعتماد تسجيلات اليوم أو رفضها.",
+  },
   price_change: {
     label: "تغيّر سعر شراء صنف بأكثر من 10٪ عن آخر شراء",
     role: "gm",

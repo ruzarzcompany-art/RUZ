@@ -489,9 +489,16 @@ async function notifyPendingClose() {
   }
 }
 
+/** أدوار شاشة المخزون في التطبيق: حركة المخزون كاملة، أو المستلِم فقط، أو موظف الهدر فقط. */
+function inventoryRoles() {
+  const has = (code) => state.permissions.includes(code);
+  const move = levelOf("inventory_movements") >= 2 && has("inventory.write");
+  return { move, receive: move || has("stock.receive"), waste: move || has("waste.record") || has("waste.approve") };
+}
+
 /** شارة على تبويب المخزون بعدد الاستلامات التي تنتظر تأكيد الموظف. */
 async function notifyPendingReceive() {
-  if (!state.allowedPanels.has("inventory")) return;
+  if (!state.allowedPanels.has("inventory") || !inventoryRoles().receive) return;
   const res = await api("/stock/mine");
   const tab = el("extras-nav").querySelector('[data-panel="inventory"]');
   if (!res.ok || !tab) return;
@@ -519,9 +526,26 @@ async function showPanel(key) {
   }
 
   if (key === "inventory") {
-    const module = await import("./self-inventory.js");
-    module.initSelfInventory();
-    await module.refreshSelfInventory();
+    // ثلاثة أدوار مستقلة تُحدَّد من «إدارة الصلاحيات»: حركة المخزون، المستلِم، موظف الهدر
+    const { move, receive, waste } = inventoryRoles();
+    el("self-inv-manual").hidden = !move;
+    for (const id of ["rcv-hint", "rcv-mine"]) el(id).hidden = !receive;
+    if (!receive) el("rcv-mine-empty").hidden = true;
+    el("waste-box").hidden = !waste;
+    if (move) {
+      const module = await import("./self-inventory.js");
+      module.initSelfInventory();
+      await module.refreshSelfInventory();
+    } else {
+      const { refreshSelfReceive } = await import("./self-receive.js");
+      if (receive) await refreshSelfReceive();
+      el("self-inv-refresh").onclick = () => void showPanel("inventory");
+    }
+    if (waste) {
+      const module = await import("./self-waste.js");
+      module.initSelfWaste();
+      await module.refreshSelfWaste();
+    }
   }
 }
 
@@ -615,9 +639,8 @@ async function loadProfile() {
   if (levelOf("cashier_self") >= 1 && state.permissions.includes("cashier.submit")) {
     state.allowedPanels.add("cashier");
   }
-  if (levelOf("inventory_movements") >= 2 && state.permissions.includes("inventory.write")) {
-    state.allowedPanels.add("inventory");
-  }
+  const roles = inventoryRoles();
+  if (roles.move || roles.receive || roles.waste) state.allowedPanels.add("inventory");
   if (!state.allowedPanels.has(state.panel)) state.panel = "punch";
   paintPanels();
   notifyPendingClose();

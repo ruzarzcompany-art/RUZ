@@ -1589,6 +1589,7 @@
           <button class="tab is-active" type="button" data-inv="stock">الأرصدة من فوديكس</button>
           <button class="tab" type="button" data-inv="receive">الاستلام اليومي</button>
           <button class="tab" type="button" data-inv="prices">تغيّر الأسعار</button>
+          <button class="tab" type="button" data-inv="waste">الهدر</button>
           <button class="tab" type="button" data-inv="count">الجرد اليومي</button>
           <button class="tab" type="button" data-inv="log">السجل</button>
         </div>
@@ -1710,6 +1711,50 @@
           «المشتري» هو من أدخل الشراء في فوديكس، و«المستلِم» من أكّد الاستلام في «سِجل»،
           و«المندوب» اسم جهة الاتصال وجوالها في بطاقة المورد بفوديكس (الموردون ← المورد ← اسم جهة الاتصال).
         </p>
+      </section>
+      </div>
+
+      <div data-inv-tab="waste" hidden>
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">الهدر — تسجيل الموظف ثم اعتماد المسؤول</h2>
+          <div class="row row--wrap">
+            <label class="field field--sm"><span class="field__label">من</span><input id="wst-from" type="date" /></label>
+            <label class="field field--sm"><span class="field__label">إلى</span><input id="wst-to" type="date" /></label>
+            <label class="field field--sm"><span class="field__label">الحالة</span>
+              <select id="wst-status"><option value="">الكل</option><option value="pending">بانتظار الاعتماد</option><option value="approved">معتمد</option><option value="rejected">مرفوض</option></select>
+            </label>
+            <button id="wst-load" class="btn btn--ghost btn--xs" type="button">عرض</button>
+            <button id="wst-print" class="btn btn--ghost btn--xs" type="button">طباعة التقرير</button>
+          </div>
+        </div>
+        <details class="howto" open>
+          <summary><strong>آلية الهدر (4 خطوات)</strong></summary>
+          <ol class="hint">
+            <li><strong>موظف الهدر:</strong> يفتح تطبيق «سِجل» ← المخزون ← «تسجيل الهدر»، يختار الصنف والكمية والسبب لحظة حدوث الهدر.</li>
+            <li><strong>المعتمِد:</strong> يراجع التسجيلات هنا قبل نهاية اليوم: «اعتماد» (ويصحّح الكمية إن لزم) أو «رفض» مع السبب.</li>
+            <li><strong>المخزون:</strong> المعتمد فقط يُخصم من رصيد الصنف بسعر آخر شراء، ويظهر في «السجل» حركة «هدر».</li>
+            <li><strong>الرقابة:</strong> هدر لم يُراجَع حتى نهاية يومه يصل تنبيهه لمدير الفرع، وإذا تجاوز هدر اليوم الحد أدناه من مبيعاته يصل تنبيهه للمالك.</li>
+          </ol>
+          <p class="hint">تحديد الأشخاص: الإعدادات ← إدارة الصلاحيات ← «المخزون والمشتريات» ← بند «الهدر» (تسجيل / اعتماد) وبند «استلام المشتريات (المستلِم)».</p>
+        </details>
+        <div id="wst-limit-box" class="row row--wrap" hidden>
+          <label class="field field--sm"><span class="field__label">حد الهدر المقبول (٪ من مبيعات اليوم)</span><input id="wst-limit" type="number" min="0.1" max="100" step="0.1" /></label>
+          <button id="wst-limit-save" class="btn btn--ghost btn--xs" type="button">حفظ الحد</button>
+        </div>
+        <div id="wst-totals" class="fin-tiles"></div>
+        <div class="table-wrap">
+          <table class="table" id="wst-table">
+            <thead><tr><th>التاريخ والوقت</th><th>الصنف</th><th>الكمية</th><th>القيمة</th><th>السبب</th><th>المحطة</th><th>سجّله</th><th>ملاحظات</th><th>الحالة</th><th>المراجعة</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="wst-empty" class="empty" hidden>لا هدر مسجَّل في هذه الفترة.</p>
+        <div class="row row--wrap">
+          <div class="table-wrap"><table class="table" id="wst-by-reason"><thead><tr><th>حسب السبب</th><th>العدد</th><th>القيمة</th></tr></thead><tbody></tbody></table></div>
+          <div class="table-wrap"><table class="table" id="wst-by-item"><thead><tr><th>حسب الصنف</th><th>العدد</th><th>القيمة</th></tr></thead><tbody></tbody></table></div>
+          <div class="table-wrap"><table class="table" id="wst-by-employee"><thead><tr><th>حسب الموظف</th><th>العدد</th><th>القيمة</th></tr></thead><tbody></tbody></table></div>
+        </div>
       </section>
       </div>
 

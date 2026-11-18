@@ -57,6 +57,12 @@ export const PERMISSIONS = {
   inventoryWrite: "inventory.write",
   /** إدارة أصناف المخزون نفسها (لا الحركات فقط) */
   inventoryItemsManage: "inventory.items_manage",
+  /** المستلِم: يؤكّد وصول مشتريات فوديكس من تطبيقه (بلا بقية حركات المخزون) */
+  stockReceive: "stock.receive",
+  /** موظف الهدر: يسجّل الهدر من تطبيقه لحظة حدوثه */
+  wasteRecord: "waste.record",
+  /** اعتماد الهدر أو رفضه — المعتمد وحده يُخصم من المخزون */
+  wasteApprove: "waste.approve",
   /** لوحة الإعدادات الشاملة: الكيانات الأساسية وهوية المطبوعات */
   settingsManage: "settings.manage",
   /** طباعة/إصدار النماذج الرسمية من حزمة المستندات */
@@ -165,6 +171,9 @@ export const PERMISSION_CATALOG: Array<{ code: string; description: string }> = 
   { code: PERMISSIONS.inventoryRead, description: "عرض المخزون وحركاته" },
   { code: PERMISSIONS.inventoryWrite, description: "تسجيل حركة مخزون (إدخال/إخراج/جرد)" },
   { code: PERMISSIONS.inventoryItemsManage, description: "إدارة أصناف المخزون" },
+  { code: PERMISSIONS.stockReceive, description: "تأكيد استلام مشتريات فوديكس (مطابق / يوجد فرق)" },
+  { code: PERMISSIONS.wasteRecord, description: "تسجيل الهدر من تطبيق الموظف" },
+  { code: PERMISSIONS.wasteApprove, description: "اعتماد الهدر أو رفضه وخصمه من المخزون" },
   {
     code: PERMISSIONS.settingsManage,
     description: "لوحة الإعدادات: الكيانات الأساسية وهوية المطبوعات",
@@ -321,6 +330,24 @@ export const SECTION_CATALOG: Array<{
     code: PERMISSIONS.inventoryItemsManage,
     label: "إدارة أصناف المخزون",
     hint: "إضافة وتعديل الأصناف نفسها",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.stockReceive,
+    label: "استلام المشتريات",
+    hint: "تأكيد وصول مشتريات فوديكس من التطبيق",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.wasteRecord,
+    label: "تسجيل الهدر",
+    hint: "تسجيل الهدر من التطبيق لحظة حدوثه",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.wasteApprove,
+    label: "اعتماد الهدر",
+    hint: "اعتماد الهدر أو رفضه وخصمه من المخزون",
     group: "صلاحيات التنفيذ",
   },
   {
@@ -751,6 +778,23 @@ export const MODULE_CATALOG: AccessModule[] = [
       { level: 1, codes: [P.inventoryRead, P.sectionInventory] },
       { level: 2, codes: [P.inventoryWrite], hint: "تسجيل حركة إدخال/إخراج/جرد" },
       { level: 3, codes: [P.inventoryItemsManage], hint: "تصحيح الحركات المسجّلة" },
+    ],
+  },
+  {
+    key: "stock_receiving",
+    label: "استلام المشتريات (المستلِم)",
+    hint: "من يؤكّد وصول مشتريات فوديكس من تطبيقه: «مطابق» أو «يوجد فرق»",
+    group: "المخزون والمشتريات",
+    levels: [{ level: 2, codes: [P.stockReceive], hint: "تأكيد الاستلام من التطبيق" }],
+  },
+  {
+    key: "waste",
+    label: "الهدر (موظف الهدر والمعتمِد)",
+    hint: "تسجيل الهدر من التطبيق، واعتماده ليُخصم من المخزون",
+    group: "المخزون والمشتريات",
+    levels: [
+      { level: 2, codes: [P.wasteRecord], hint: "تسجيل الهدر من التطبيق" },
+      { level: 4, codes: [P.wasteRecord, P.wasteApprove], hint: "اعتماد الهدر أو رفضه" },
     ],
   },
   {
