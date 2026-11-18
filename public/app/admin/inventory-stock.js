@@ -99,7 +99,7 @@ async function syncNow() {
   const notes = res.docs.notes?.length ? ` ملاحظات: ${res.docs.notes.join("، ")}.` : "";
   setAlert(
     el("stk-alert"),
-    `تم: ${res.items.items} صنف (${res.items.stocks} برصيد)، و${res.docs.docs} مستند شراء/تحويل منها ${res.docs.received} مستلم في فوديكس، وأُضيفت/حُدّثت ${res.docs.posted ?? 0} حركة شراء في مخزون «سِجل»${res.docs.priced ? `، وحُدّث سعر ${res.docs.priced} صنف من آخر فاتورة شراء` : ""}${res.consumption?.days ? `، وسُحب استهلاك ${res.consumption.days} يوم (${res.consumption.movements} حركة)${res.consumption.remaining ? ` وبقي ${res.consumption.remaining} يوم يُستكمل تلقائياً` : ""}` : ""}.${notes}`,
+    `تم: ${res.items.items} صنف (${res.items.stocks} برصيد)، و${res.docs.docs} مستند شراء/تحويل منها ${res.docs.received} مستلم في فوديكس، وأُضيفت/حُدّثت ${res.docs.posted ?? 0} حركة شراء في مخزون «سِجل»${res.docs.priced ? `، وحُدّث سعر ${res.docs.priced} صنف من آخر فاتورة شراء` : ""}${res.consumption?.days ? `، وسُحب استهلاك ${res.consumption.days} يوم (${res.consumption.movements} حركة)${res.consumption.remaining ? ` وبقي ${res.consumption.remaining} يوم يُستكمل تلقائياً` : ""}` : ""}${res.consumption?.production ? `، وحُدّثت ${res.consumption.production} حركة إنتاج` : ""}.${notes}`,
     "ok",
   );
   await Promise.all([loadItems(), state.tab === "receive" ? loadDocs() : null]);
