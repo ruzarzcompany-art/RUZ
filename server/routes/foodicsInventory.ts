@@ -26,6 +26,7 @@ import {
   docView,
   itemsWithStock,
   probeFoodics,
+  syncConsumption,
   syncInventoryItems,
   syncStockDocs,
   testInventory,
@@ -210,7 +211,8 @@ stockRouter.post("/stock/sync", ...canManage, async (req: AuthedRequest, res: Re
   try {
     const items = await syncInventoryItems(branch);
     const docs = await syncStockDocs(branch, { days: body.full === true ? 90 : undefined });
-    res.json({ ok: true, items, docs });
+    const consumption = await syncConsumption(branch, 8_000);
+    res.json({ ok: true, items, docs, consumption });
   } catch (error) {
     fail(res, error);
   }

@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import { and, asc, desc, eq, gte, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { getDb } from "../../db/index.js";
 import {
   branches,
@@ -111,7 +111,9 @@ export async function computeBalances(branchId: number): Promise<
     })
     .from(inventoryMovements)
     .where(eq(inventoryMovements.branchId, branchId))
-    .orderBy(asc(inventoryMovements.businessDate), asc(inventoryMovements.id))
+    // الجرد رصيدُ نهاية يومه: يُطبَّق بعد كل حركات اليوم نفسه (مشتريات بتاريخ الفاتورة
+    // واستهلاك فوديكس اليومي قد تُسجَّل بعد الجرد زمنياً وهي سابقة له فعلياً)
+    .orderBy(asc(inventoryMovements.businessDate), sql`case when ${inventoryMovements.movementType} = 'count' then 1 else 0 end`, asc(inventoryMovements.id))
     .limit(BALANCE_SCAN_LIMIT);
 
   const balances = new Map<
