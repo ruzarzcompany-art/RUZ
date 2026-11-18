@@ -23,6 +23,7 @@ import {
 import { refreshFoodicsOrders, refreshFoodicsTab } from "./foodics.js";
 import { refreshControlTab } from "./control.js";
 import { refreshLiveTab, stopLive } from "./live.js";
+import { enhanceTables } from "./table-tools.js";
 
 const state = {
   meta: null,
@@ -1306,6 +1307,8 @@ export function initSurveillanceModule() {
 
 export async function refreshSurveillancePanel() {
   wire();
+  // كل جداول القسم: 5 / 10 / 100 سطر مع زر طباعة لكل جدول
+  enhanceTables(document.getElementById("panel-surveillance"));
   if (!state.meta && !(await loadMeta())) return;
   await refreshAll();
   renderConnect();
