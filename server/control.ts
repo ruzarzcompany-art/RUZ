@@ -118,7 +118,7 @@ export const ROUTES: Record<string, Route> = {
 
 const MAX_EVENT_AGE_MS = 6 * 3600_000;
 const RATE_WINDOW_MS = 10 * 60_000;
-const RATE_MAX_PER_RECIPIENT = 15;
+const RATE_MAX_PER_RECIPIENT = 6;
 
 export const FEEDBACK_CATEGORIES: Record<string, string> = {
   call_staff: "أحتاج موظفاً",
@@ -711,7 +711,9 @@ async function sendTier(input: {
 function ackWindowMinutes(tier: Tier, route: Route, settings: ControlSettings): number | null {
   if (!route.escalate) return null;
   if (tier === "staff") return route.order ? settings.orderStaffAckMinutes : settings.staffAckMinutes;
-  if (tier === "manager") return settings.managerAckMinutes;
+  // تنبيهات الخدمة (طاولة، انتظار، طابور…) تتوقف عند المدير ولا تُصعَّد للمالك:
+  // المالك يصله الكبير فقط، والخدمة تظهر له في ملف نهاية اليوم.
+  if (tier === "manager") return route.first === "staff" ? null : settings.managerAckMinutes;
   return null;
 }
 
