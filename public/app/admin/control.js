@@ -225,8 +225,21 @@ function renderReviews() {
     r.comment || "(بلا تعليق)",
     r.hasReply ? "تم الرد" : "بلا رد",
   ]);
+  const list = state.data.reviews;
+  const range = state.data.reviewsRange;
+  const rated = list.filter((r) => r.rating > 0);
+  const avg = rated.length ? Math.round((rated.reduce((s, r) => s + r.rating, 0) / rated.length) * 10) / 10 : null;
+  const bad = rated.filter((r) => r.rating <= max).length;
+  el("ct-rv-summary").textContent = [
+    range ? `التقييمات من ${range.from} إلى ${range.to}` : "أحدث التقييمات المسحوبة",
+    `${list.length} تقييم`,
+    avg !== null ? `المتوسط ${avg} ★` : "",
+    bad ? `${bad} سيئ (${max} نجوم أو أقل)` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
   el("ct-reviews").replaceChildren(
-    table(["التاريخ", "التقييم", "العميل", "التعليق", "الرد"], rows, "لا تقييمات مسحوبة بعد."),
+    table(["التاريخ", "التقييم", "العميل", "التعليق", "الرد"], rows, range ? "لا تقييمات في هذه الفترة." : "لا تقييمات مسحوبة بعد."),
   );
 }
 
@@ -257,7 +270,10 @@ function renderRoutes() {
 /* ── الإجراءات ─────────────────────────────────────────────────── */
 
 async function load() {
-  const res = await api(`/control/overview?branchId=${state.branchId}&date=${state.date}`);
+  const from = el("ct-rv-from")?.value ?? "";
+  const to = el("ct-rv-to")?.value ?? "";
+  const range = from && to ? `&reviewsFrom=${from}&reviewsTo=${to}` : "";
+  const res = await api(`/control/overview?branchId=${state.branchId}&date=${state.date}${range}`);
   if (!res.ok) {
     note(res.error ?? "تعذّر تحميل بيانات التنبيه والتصعيد", "error");
     return;
@@ -678,6 +694,28 @@ function wire() {
     ),
   );
   el("ct-qr-print").addEventListener("click", printQr);
+  // فترة التقييمات
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const setRange = (from, to) => {
+    el("ct-rv-from").value = from;
+    el("ct-rv-to").value = to;
+    load();
+  };
+  el("ct-rv-show").addEventListener("click", () => {
+    if (!el("ct-rv-from").value || !el("ct-rv-to").value) return note("اختر تاريخ البداية والنهاية للتقييمات.", "warn");
+    load();
+  });
+  el("ct-rv-week").addEventListener("click", () => {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 6);
+    setRange(iso(start), iso(end));
+  });
+  el("ct-rv-month").addEventListener("click", () => {
+    const now = new Date();
+    setRange(iso(new Date(now.getFullYear(), now.getMonth(), 1)), iso(now));
+  });
+  el("ct-rv-all").addEventListener("click", () => setRange("", ""));
   wireZones();
 }
 
