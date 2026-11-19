@@ -60,6 +60,9 @@ import {
   sendWhatsapp,
   submitFeedback,
   syncGoogleReviews,
+  verifyReportSignature,
+  violationsReportHtml,
+  violationsReportUrl,
   whatsappConfig,
   type Tier,
 } from "../control.js";
@@ -442,6 +445,34 @@ controlRouter.post("/control/ack", async (req: Request, res: Response) => {
   });
   if (!result.ok) return bad(res, result.error ?? "تعذّر التأكيد");
   res.json({ ok: true, already: result.already });
+});
+
+/* ── ملف مخالفات اليوم (رابط موقّع يُرسل للمالك على واتساب) ───── */
+
+controlRouter.get("/control/report-file", async (req: Request, res: Response) => {
+  const branchId = asId(req.query.b);
+  const date = asDateOnly(req.query.d);
+  if (branchId === null || !date || !verifyReportSignature(branchId, date, String(req.query.s ?? ""))) {
+    res.status(404).type("text/plain; charset=utf-8").send("الرابط غير صالح");
+    return;
+  }
+  const branch = await loadBranch(branchId);
+  if (!branch) {
+    res.status(404).type("text/plain; charset=utf-8").send("الفرع غير موجود");
+    return;
+  }
+  const html = await violationsReportHtml(branch, date);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("X-Robots-Tag", "noindex");
+  res.type("text/html; charset=utf-8").send(html);
+});
+
+/** للإدارة: رابط ملف مخالفات يوم محدد (يُفتح من الشاشة). */
+controlRouter.get("/control/report-link", ...canRead, async (req: AuthedRequest, res: Response) => {
+  const branch = await loadBranch(branchIdOf(req, req.query.branchId));
+  if (!branch) return bad(res, "اختر الفرع");
+  const date = asDateOnly(req.query.date) ?? isoDateInZone(new Date(), safeTimeZone(branch.timezone));
+  res.json({ ok: true, url: violationsReportUrl(branch.id, date) });
 });
 
 /* ── شكوى الطاولة (عام، بحدود معدّل) ─────────────────────────── */

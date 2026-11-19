@@ -1287,6 +1287,10 @@ function wire() {
   el("rp-prev").addEventListener("click", () => shift(-1));
   el("rp-next").addEventListener("click", () => shift(1));
   el("rp-today").addEventListener("click", () => setDay(todayIso()));
+  el("sv-violations-file").addEventListener("click", async () => {
+    const res = await api(`/control/report-link?branchId=${branchId()}&date=${el("sv-date").value || todayIso()}`);
+    if (res.ok) window.open(res.url, "_blank", "noopener");
+  });
   el("sv-date").addEventListener("change", syncReportDate);
   syncReportDate();
   for (const id of [

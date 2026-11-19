@@ -28,6 +28,7 @@ import {
   controlSettings,
   controlTableSessions,
   customerFeedback,
+  employees,
   googleReviews,
   surveillanceAlerts,
   surveillanceCameras,
@@ -38,6 +39,7 @@ import { foodicsDaySales, foodicsStatus } from "./foodics.js";
 import {
   ALERT_TYPES,
   LABELS,
+  alertFramePayload,
   buildDailyReport,
   createAlert,
   dayRange,
@@ -285,6 +287,31 @@ export async function sendWhatsapp(phone: string, text: string): Promise<{ ok: b
   }
 }
 
+/**
+ * صورة مع تعليق عبر واتساب (UltraMsg يقبل الصورة base64 مباشرة). المزوّدات
+ * الأخرى لا تدعم إرسال صورة حرّة هنا، فيُرسل التعليق نصاً مع رابط الصفحة.
+ */
+export async function sendWhatsappImage(phone: string, imageDataUrl: string, caption: string, fallbackLink = ""): Promise<{ ok: boolean; error: string }> {
+  const config = whatsappConfig();
+  if (!config.configured) return { ok: false, error: "واتساب غير مضبوط" };
+  if (config.provider !== "ultramsg") {
+    return sendWhatsapp(phone, `${caption}${fallbackLink ? `\n📷 الصورة: ${fallbackLink}` : ""}`);
+  }
+  try {
+    const base64 = imageDataUrl.replace(/^data:[^,]+,/, "");
+    const response = await fetch(`https://api.ultramsg.com/${config.instance}/messages/image`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      signal: AbortSignal.timeout(15_000),
+      body: new URLSearchParams({ token: config.token, to: `+${phone}`, image: base64, caption: caption.slice(0, 1000) }),
+    });
+    if (!response.ok) return { ok: false, error: `رمز ${response.status}` };
+    return { ok: true, error: "" };
+  } catch (error) {
+    return { ok: false, error: `تعذّر إرسال الصورة: ${error instanceof Error ? error.message : error}`.slice(0, 300) };
+  }
+}
+
 /* ── قائمة إرسال جهاز المطعم ─────────────────────────────────── */
 
 const OUTBOX_MAX_AGE_MS = 20 * 60_000;
@@ -362,6 +389,179 @@ export function parseAckToken(token: string): { dispatchId: number; recipientId:
   const provided = Buffer.from(match[3]);
   if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) return null;
   return { dispatchId: Number(match[1]), recipientId: Number(match[2]) };
+}
+
+/* ── الحالات الكبيرة وملف مخالفات اليوم ─────────────────────── */
+
+/**
+ * الحالات الكبيرة: تصل المالك فوراً، ثم تتبعها صورة الحالة على واتساب ما إن
+ * تُربط اللقطة بالتنبيه. كل ما عداها (مخالفات العمال الصغيرة والخدمة) يُجمع في
+ * ملف مخالفات اليوم الذي يُرسل مع التقرير الليلي.
+ */
+export const MAJOR_TYPES = new Set([
+  "drawer_no_sale",
+  "order_no_invoice",
+  "warehouse_exit",
+  "warehouse_off_hours",
+  "waste_gap",
+  "cash_difference",
+  "sales_gap",
+  "repeated_pos",
+  "stock_mismatch",
+  "receipt_mismatch",
+]);
+
+export function reportSignature(branchId: number, date: string): string {
+  return sign(`report:${branchId}:${date}`);
+}
+
+export function verifyReportSignature(branchId: number, date: string, provided: string): boolean {
+  const expected = Buffer.from(reportSignature(branchId, date));
+  const given = Buffer.from(String(provided ?? ""));
+  return expected.length === given.length && timingSafeEqual(expected, given);
+}
+
+export function violationsReportUrl(branchId: number, date: string): string {
+  return `${publicBaseUrl()}/api/control/report-file?b=${branchId}&d=${date}&s=${reportSignature(branchId, date)}`;
+}
+
+const MAX_REPORT_IMAGES = 40;
+
+/** ملف مخالفات اليوم: صفحة واحدة للطباعة بكل الحالات مرتّبة، مع صور أهمها. */
+export async function violationsReportHtml(branch: BranchRow, date: string): Promise<string> {
+  const db = getDb();
+  const tz = safeTimeZone(branch.timezone);
+  const { start, end } = dayRange(date, tz);
+  const alerts = await db
+    .select()
+    .from(surveillanceAlerts)
+    .where(and(eq(surveillanceAlerts.branchId, branch.id), gte(surveillanceAlerts.occurredAt, start), lt(surveillanceAlerts.occurredAt, end)))
+    .orderBy(asc(surveillanceAlerts.occurredAt));
+  const shown = alerts.filter((a) => a.alertType !== "camera_moved" && a.alertType !== "camera_down");
+  const ids = [...new Set(shown.flatMap((a) => a.employeeIds ?? []))];
+  const people = ids.length ? await db.select({ id: employees.id, name: employees.fullName }).from(employees).where(inArray(employees.id, ids)) : [];
+  const nameOf = new Map(people.map((p) => [p.id, p.name]));
+  const esc = (v: unknown) => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+  const label = (t: string) => ALERT_TYPES[t]?.label ?? t;
+
+  const major = shown.filter((a) => MAJOR_TYPES.has(a.alertType));
+  const staffTypes = new Set(["staff_phone", "staff_gathering", "station_left", "hygiene", "waste_observed", "fridge_door_open", "other"]);
+  const staff = shown.filter((a) => staffTypes.has(a.alertType));
+  const service = shown.filter((a) => !MAJOR_TYPES.has(a.alertType) && !staffTypes.has(a.alertType));
+
+  // صور: الكبيرة أولاً ثم مخالفات العمال، بحدّ أعلى حتى يبقى الملف خفيفاً
+  const images = new Map<number, string>();
+  for (const a of [...major, ...staff]) {
+    if (images.size >= MAX_REPORT_IMAGES) break;
+    const payload = await alertFramePayload(a.id).catch(() => null);
+    if (payload?.image) images.set(a.id, payload.image);
+  }
+
+  // لكل موظف: عدد مخالفاته وأنواعها
+  const perEmployee = new Map<string, Map<string, number>>();
+  for (const a of [...major, ...staff]) {
+    const names = (a.employeeIds ?? []).map((id) => nameOf.get(id)).filter(Boolean) as string[];
+    for (const n of names.length ? names : ["غير محدد"]) {
+      const m = perEmployee.get(n) ?? new Map<string, number>();
+      m.set(label(a.alertType), (m.get(label(a.alertType)) ?? 0) + 1);
+      perEmployee.set(n, m);
+    }
+  }
+  const countBy = (list: typeof shown) => {
+    const m = new Map<string, number>();
+    for (const a of list) m.set(label(a.alertType), (m.get(label(a.alertType)) ?? 0) + 1);
+    return [...m.entries()].sort((x, y) => y[1] - x[1]);
+  };
+
+  const row = (a: (typeof shown)[number]) => {
+    const names = (a.employeeIds ?? []).map((id) => nameOf.get(id)).filter(Boolean).join("، ");
+    const img = images.get(a.id);
+    return `<tr><td>${esc(hhmm(a.occurredAt, branch.timezone))}</td><td><b>${esc(label(a.alertType))}</b>${a.isSuspicion ? '<br><small class="sus">اشتباه — يُراجع المقطع</small>' : ""}</td><td>${esc(a.location)}</td><td>${esc(names || a.peopleNote.split("|")[0] || "—")}</td><td>${esc(a.details)}</td><td>${img ? `<img src="${img}" alt="">` : ""}</td></tr>`;
+  };
+  const table = (title: string, list: typeof shown, empty: string) =>
+    `<h2>${esc(title)} <small>(${list.length})</small></h2>${
+      list.length
+        ? `<table><thead><tr><th>الوقت</th><th>الحالة</th><th>المكان</th><th>الموظف</th><th>التفاصيل</th><th>الصورة</th></tr></thead><tbody>${list.map(row).join("")}</tbody></table>`
+        : `<p class="ok">${esc(empty)}</p>`
+    }`;
+  const chips = (list: Array<[string, number]>) => list.map(([k, v]) => `<span class="chip">${esc(k)}: ${v}</span>`).join(" ");
+
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>مخالفات يوم ${esc(date)} — ${esc(branch.name)}</title>
+<style>body{font-family:Tahoma,Arial,sans-serif;margin:16px;color:#111;background:#fff}h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:22px 0 8px;border-bottom:2px solid #333;padding-bottom:4px}
+small{color:#666;font-weight:normal}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border:1px solid #bbb;padding:6px;text-align:right;vertical-align:top}th{background:#eee}
+td img{width:220px;max-width:40vw;border-radius:6px}.chip{display:inline-block;background:#f2f2f2;border:1px solid #ccc;border-radius:12px;padding:2px 10px;margin:2px;font-size:13px}
+.major h2{color:#b00020;border-color:#b00020}.ok{color:#2e7d32}.sus{color:#b00020}.emp td:first-child{font-weight:bold;white-space:nowrap}@media print{td img{width:160px}}</style></head><body>
+<h1>ملف مخالفات يوم ${esc(date)} — ${esc(branch.name)}</h1>
+<p>كبيرة: <b>${major.length}</b> · مخالفات العمال: <b>${staff.length}</b> · الخدمة والطاولات: <b>${service.length}</b></p>
+<p>${chips(countBy(shown))}</p>
+<div class="major">${table("الحالات الكبيرة (سرقة / هدر / فروقات)", major, "لا حالات كبيرة اليوم.")}</div>
+<h2>المخالفات حسب الموظف</h2>${
+    perEmployee.size
+      ? `<table class="emp"><thead><tr><th>الموظف</th><th>المخالفات</th></tr></thead><tbody>${[...perEmployee.entries()]
+          .map(([n, m]) => `<tr><td>${esc(n)}</td><td>${chips([...m.entries()])}</td></tr>`)
+          .join("")}</tbody></table>`
+      : '<p class="ok">لا مخالفات مسجّلة على الموظفين.</p>'
+  }
+${table("مخالفات العمال", staff, "لا مخالفات للعمال اليوم.")}
+${table("الخدمة والطاولات", service, "لا ملاحظات خدمة اليوم.")}
+<p><small>الأسماء = من كان على رأس العمل في المكان وقتها (للمراجعة، لا تعرّف على الوجه). لا يُتّخذ إجراء قبل مراجعة المقطع. صدر ${esc(new Date().toISOString().slice(0, 16).replace("T", " "))} UTC.</small></p>
+</body></html>`;
+}
+
+/** يرسل صورة الحالة الكبيرة للمالك حين تُربط اللقطة بالتنبيه (بعد إرسال النص بلحظات). */
+export async function sendPendingImages(limit = 10): Promise<number> {
+  const db = getDb();
+  const since = new Date(Date.now() - 15 * 60_000);
+  const rows = await db
+    .select({ dispatch: controlDispatches, alert: surveillanceAlerts })
+    .from(controlDispatches)
+    .innerJoin(surveillanceAlerts, eq(surveillanceAlerts.id, controlDispatches.alertId))
+    .where(and(gte(controlDispatches.createdAt, since), inArray(surveillanceAlerts.alertType, [...MAJOR_TYPES])))
+    .orderBy(desc(controlDispatches.createdAt))
+    .limit(30);
+  let sent = 0;
+  for (const { dispatch, alert } of rows) {
+    if (sent >= limit) break;
+    const [done] = await db
+      .select({ id: controlMessages.id })
+      .from(controlMessages)
+      .where(and(eq(controlMessages.dispatchId, dispatch.id), eq(controlMessages.kind, "image")))
+      .limit(1);
+    if (done) continue;
+    const payload = await alertFramePayload(alert.id).catch(() => null);
+    if (!payload?.image) continue;
+    const [branch] = await db.select().from(branches).where(eq(branches.id, alert.branchId));
+    if (!branch) continue;
+    const owners = await eligibleRecipients(alert.branchId, "owner", "", new Date());
+    const caption = [
+      `📷 صورة الحالة — ${ALERT_TYPES[alert.alertType]?.label ?? alert.alertType}`,
+      `📍 ${alert.location || branch.name} · 🕒 ${hhmm(alert.occurredAt, branch.timezone)}`,
+      alert.details.slice(0, 300),
+      alert.isSuspicion ? "اشتباه يحتاج مراجعة المقطع وليس حكماً نهائياً." : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    for (const owner of owners) {
+      const result = await sendWhatsappImage(owner.phone, payload.image, caption);
+      await db.insert(controlMessages).values({
+        dispatchId: dispatch.id,
+        branchId: alert.branchId,
+        recipientId: owner.id,
+        tier: "owner",
+        kind: "image",
+        phone: owner.phone,
+        status: result.ok ? "sent" : "failed",
+        error: result.error,
+      });
+      if (result.ok) sent += 1;
+    }
+    if (!owners.length) {
+      // لا مالك مسجّل: نعلّم الإرسال حتى لا يُعاد كل دقيقة
+      await db.insert(controlMessages).values({ dispatchId: dispatch.id, branchId: alert.branchId, tier: "owner", kind: "image", phone: "", status: "skipped", error: "لا مالك" });
+    }
+  }
+  return sent;
 }
 
 /* ── اختيار المستلمين وإرسال مستوى ───────────────────────────── */
@@ -1168,7 +1368,7 @@ export async function generateBrief(branch: BranchRow, date: string, options: { 
   let sent = 0;
   if (options.send) {
     const owners = await eligibleRecipients(branch.id, "owner", "", new Date());
-    const body = `📊 تقرير اليوم — ${branch.name} — ${date}${score !== null ? ` — التقييم ${score}/10` : ""}\n${text}\nالتفاصيل: ${publicBaseUrl()}/app/admin/`;
+    const body = `📊 تقرير اليوم — ${branch.name} — ${date}${score !== null ? ` — التقييم ${score}/10` : ""}\n${text}\n\n📁 ملف مخالفات اليوم بالصور: ${violationsReportUrl(branch.id, date)}`;
     for (const owner of owners) {
       const result = await sendWhatsapp(owner.phone, body);
       if (result.ok) sent += 1;
@@ -1203,6 +1403,9 @@ export async function runControlTick(budgetMs = 22_000) {
   const escalation = await escalateDue();
   result.escalated = escalation.escalated;
   result.closed = escalation.closed;
+  await sendPendingImages().catch((error) =>
+    console.error("[control] فشل إرسال صور الحالات الكبيرة:", error instanceof Error ? error.message : error),
+  );
   await checkEdgeOffline().catch((error) =>
     console.error("[control] فشل فحص جهاز التحليل:", error instanceof Error ? error.message : error),
   );
