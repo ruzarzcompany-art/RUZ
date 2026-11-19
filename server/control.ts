@@ -1252,8 +1252,16 @@ export async function runControlTick(budgetMs = 22_000) {
 
 /* ── نظرة عامة للشاشة ────────────────────────────────────────── */
 
-export async function controlOverview(branch: BranchRow, date: string) {
+export async function controlOverview(branch: BranchRow, date: string, reviewRange?: { from: string; to: string }) {
   const db = getDb();
+  // التقييمات: آخر 25 افتراضياً، أو كل ما نُشر بين تاريخين يختارهما المالك
+  const reviewWhere = reviewRange
+    ? and(
+        eq(googleReviews.branchId, branch.id),
+        gte(googleReviews.reviewedAt, dayRange(reviewRange.from, safeTimeZone(branch.timezone)).start),
+        lt(googleReviews.reviewedAt, dayRange(reviewRange.to, safeTimeZone(branch.timezone)).end),
+      )
+    : eq(googleReviews.branchId, branch.id);
   const tz = safeTimeZone(branch.timezone);
   const { start, end } = dayRange(date, tz);
   const [settings, recipients, dispatches, reviews, feedback, brief] = await Promise.all([
@@ -1266,7 +1274,7 @@ export async function controlOverview(branch: BranchRow, date: string) {
       .where(and(eq(controlDispatches.branchId, branch.id), gte(controlDispatches.createdAt, start), lt(controlDispatches.createdAt, end)))
       .orderBy(desc(controlDispatches.createdAt))
       .limit(200),
-    db.select().from(googleReviews).where(eq(googleReviews.branchId, branch.id)).orderBy(desc(googleReviews.reviewedAt)).limit(25),
+    db.select().from(googleReviews).where(reviewWhere).orderBy(desc(googleReviews.reviewedAt)).limit(reviewRange ? 500 : 25),
     db
       .select()
       .from(customerFeedback)
