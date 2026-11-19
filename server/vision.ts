@@ -136,7 +136,7 @@ export async function fetchSnapshot(
 /** الملاحظات التي يبحث عنها النموذج في كل منطقة. */
 const ZONE_FINDINGS: Record<string, string[]> = {
   dining: ["customer_waiting_unserved", "dirty_table", "staff_phone", "staff_gathering", "customer_dispute", "hygiene_violation"],
-  entrance: ["customer_waiting_unserved", "long_queue", "customer_dispute", "staff_gathering"],
+  entrance: ["customer_waiting_unserved", "long_queue", "customer_dispute", "staff_gathering", "goods_carried_out"],
   kitchen: ["hygiene_violation", "staff_phone", "staff_gathering", "station_unattended", "food_waste", "fridge_door_open"],
   cashier: ["drawer_open_unattended", "long_queue", "staff_phone", "station_unattended", "customer_waiting_unserved", "customer_dispute"],
   warehouse: ["person_in_storage", "goods_carried_out", "food_waste"],
@@ -162,7 +162,7 @@ const FINDING_GUIDE: Record<string, string> = {
   fridge_door_open:
     "a fridge, freezer or walk-in cold room door left open (ajar or fully open) with nobody actively loading or unloading it",
   goods_carried_out:
-    "a person carrying boxes, bags, crates or stock items out of the storage area, back door or into a vehicle",
+    "an EMPLOYEE (uniform / apron / staff) carrying restaurant stock out of the restaurant: cartons, crates, raw-ingredient sacks, rice/oil/chicken boxes, gas cylinders, big trays or full black bags — out of the storage area, the back door, the front door or into a vehicle. Do NOT report customers leaving with normal takeaway bags, delivery drivers collecting sealed orders, or staff taking out the rubbish bin to the usual bin spot",
   dirty_table:
     "a dining table with NO customers seated at it that still has used plates, cups, leftovers or rubbish on it (not yet cleared). Mention which table by position. Do not report a table where customers are still sitting",
   long_queue:
