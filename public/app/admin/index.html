@@ -2882,6 +2882,16 @@
 
       <!-- التقرير اليومي -->
       <section class="card" data-sv-section="report" hidden>
+        <div class="report-datebar">
+          <button id="rp-prev" class="btn btn--ghost btn--sm" type="button" title="اليوم السابق">→ اليوم السابق</button>
+          <label class="field field--sm">
+            <span class="field__label">تاريخ التقرير</span>
+            <input id="rp-date" type="date" />
+          </label>
+          <button id="rp-next" class="btn btn--ghost btn--sm" type="button" title="اليوم التالي">اليوم التالي ←</button>
+          <button id="rp-today" class="btn btn--ghost btn--xs" type="button">اليوم</button>
+          <strong id="rp-date-label" class="report-datebar__label"></strong>
+        </div>
         <div class="row row--wrap">
           <button id="sv-report-generate" class="btn btn--primary btn--sm" type="button" data-sv-manage>
             إصدار التقرير وحفظه
@@ -3141,9 +3151,16 @@
 
       <section class="card" data-sv-section="ct-reviews" hidden>
         <h3 class="card__title card__title--sm">تقييمات قوقل</h3>
-        <div class="row row--wrap" data-sv-manage>
-          <button id="ct-reviews-sync" class="btn btn--ghost btn--sm" type="button">سحب التقييمات الآن</button>
+        <div class="row row--wrap">
+          <label class="field field--sm"><span class="field__label">من</span><input id="ct-rv-from" type="date" /></label>
+          <label class="field field--sm"><span class="field__label">إلى</span><input id="ct-rv-to" type="date" /></label>
+          <button id="ct-rv-show" class="btn btn--ghost btn--xs" type="button">عرض</button>
+          <button id="ct-rv-week" class="btn btn--ghost btn--xs" type="button">آخر 7 أيام</button>
+          <button id="ct-rv-month" class="btn btn--ghost btn--xs" type="button">هذا الشهر</button>
+          <button id="ct-rv-all" class="btn btn--ghost btn--xs" type="button">الأحدث</button>
+          <button id="ct-reviews-sync" class="btn btn--ghost btn--sm" type="button" data-sv-manage>سحب التقييمات الآن</button>
         </div>
+        <p id="ct-rv-summary" class="hint"></p>
         <div id="ct-reviews"></div>
 
         <h3 class="card__title card__title--sm">شكاوى الطاولات (QR)</h3>

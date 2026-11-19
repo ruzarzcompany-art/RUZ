@@ -2424,3 +2424,19 @@ select option {
   gap: 8px;
   font-size: 0.9rem;
 }
+
+/* شريط تاريخ التقرير والتقييمات */
+.report-datebar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+}
+.report-datebar__label {
+  font-size: 1.05rem;
+  margin-inline-start: auto;
+  align-self: center;
+}

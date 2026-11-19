@@ -1209,6 +1209,14 @@ const TAB_SECTIONS = {
   people: ["ct-recipients", "ct-settings", "ct-routes"],
   report: ["report", "ct-brief", "ct-reviews"],
 };
+/** يعرض تاريخ التقرير المختار نصاً واضحاً: «الأربعاء 18 نوفمبر 2026». */
+function syncReportDate() {
+  const value = el("sv-date").value || todayIso();
+  el("rp-date").value = value;
+  const d = new Date(`${value}T12:00:00`);
+  el("rp-date-label").textContent = `تقرير يوم ${new Intl.DateTimeFormat("ar-SA-u-ca-gregory-nu-latn", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(d)}`;
+}
+
 const MORE_TABS = new Set(["new", "orders", "waste", "limits", "connect", "fxorders"]);
 
 function setMoreOpen(open) {
@@ -1263,6 +1271,24 @@ function wire() {
     refreshAll();
   });
   el("sv-refresh").addEventListener("click", refreshAll);
+  // شريط تاريخ التقرير: يتبع تاريخ الشاشة ويغيّره، مع اليوم السابق والتالي
+  const setDay = (value) => {
+    if (!value) return;
+    el("sv-date").value = value;
+    el("sv-date").dispatchEvent(new Event("change"));
+    syncReportDate();
+  };
+  const shift = (days) => {
+    const d = new Date(`${el("sv-date").value || todayIso()}T12:00:00`);
+    d.setDate(d.getDate() + days);
+    setDay(d.toISOString().slice(0, 10));
+  };
+  el("rp-date").addEventListener("change", () => setDay(el("rp-date").value));
+  el("rp-prev").addEventListener("click", () => shift(-1));
+  el("rp-next").addEventListener("click", () => shift(1));
+  el("rp-today").addEventListener("click", () => setDay(todayIso()));
+  el("sv-date").addEventListener("change", syncReportDate);
+  syncReportDate();
   for (const id of [
     "sv-alerts-from",
     "sv-alerts-to",

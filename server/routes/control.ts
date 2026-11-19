@@ -101,7 +101,10 @@ controlRouter.get("/control/overview", ...canRead, async (req: AuthedRequest, re
   const branch = await loadBranch(branchIdOf(req, req.query.branchId));
   if (!branch) return bad(res, "اختر الفرع");
   const date = asDateOnly(req.query.date) ?? isoDateInZone(new Date(), safeTimeZone(branch.timezone));
-  res.json({ ok: true, ...(await controlOverview(branch, date)) });
+  const from = asDateOnly(req.query.reviewsFrom);
+  const to = asDateOnly(req.query.reviewsTo);
+  const range = from && to ? (from <= to ? { from, to } : { from: to, to: from }) : undefined;
+  res.json({ ok: true, ...(await controlOverview(branch, date, range)), reviewsRange: range ?? null });
 });
 
 /** شاشة المراقبة المباشرة: يُستدعى كل بضع ثوانٍ ما دامت الشاشة مفتوحة. */
