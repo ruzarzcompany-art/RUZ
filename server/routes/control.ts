@@ -78,6 +78,7 @@ import {
   zonesForBranch,
 } from "../edge.js";
 import { PERMISSIONS, requireModuleLevel, requirePermission } from "../rbac.js";
+import { syncIfDirty } from "../quietSync.js";
 import { isoDateInZone, safeTimeZone } from "../time.js";
 import { asBool, asDateOnly, asEnum, asId, asNumber, asString } from "../validate.js";
 import { ALERT_TYPES, LABELS, alertFramePayload, loadBranch, webhookAuthorized } from "./surveillance.js";
@@ -599,8 +600,10 @@ controlRouter.post("/control/edge/events", async (req: Request, res: Response) =
   const body = (req.body ?? {}) as Record<string, unknown>;
   const branch = await edgeBranch(req, res, body.branchCode);
   if (!branch) return;
-  await touchEdge(branch.id, body.status);
   const events = Array.isArray(body.events) ? body.events.slice(0, 20) : [];
+  // حدث فعلي بعد نوم ليلي: تُنقل أولاً حالة الجهاز وواتساب المسجّلة وقت النوم
+  if (events.length > 0) await syncIfDirty();
+  await touchEdge(branch.id, body.status);
   const results = [];
   for (const event of events) {
     try {

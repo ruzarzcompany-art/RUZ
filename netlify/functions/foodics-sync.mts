@@ -2,12 +2,15 @@ import type { Config } from "@netlify/functions";
 import { runFoodicsSync } from "../../server/foodics.js";
 import { runDayCloseTick } from "../../server/dayClose.js";
 import { runInventoryTick } from "../../server/foodicsInventory.js";
+import { shouldRunScheduled } from "../../server/quiet.js";
 
 /**
  * مزامنة فوديكس الدورية: تسحب الفواتير والهدر لكل فرع مربوط، وتطابقها مع
  * الكاميرات وتقفيل الكاشير والجرد. لا تعمل ما لم يُضبط مفتاح فوديكس.
  */
 export default async (): Promise<void> => {
+  // النوم الليلي: خارج ساعات العمل لا تُلمس قاعدة البيانات (انظر server/quiet.ts)
+  if (!(await shouldRunScheduled("foodics-sync"))) return;
   try {
     const { branches } = await runFoodicsSync();
     if (branches) console.log(`[foodics] زُومنت ${branches} فرع`);

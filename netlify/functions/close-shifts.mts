@@ -1,5 +1,6 @@
 import type { Config } from "@netlify/functions";
 import { closeStaleShifts } from "../../server/shifts.js";
+import { shouldRunScheduled } from "../../server/quiet.js";
 
 /**
  * إقفال الورديات المفتوحة التي تجاوزت الساعة 4:00 فجراً بتوقيت الفرع.
@@ -10,6 +11,8 @@ import { closeStaleShifts } from "../../server/shifts.js";
  * المعاينة التي لا تُشغّل الدوال المجدولة.
  */
 export default async (): Promise<void> => {
+  // النوم الليلي: خارج ساعات العمل لا تُلمس قاعدة البيانات (انظر server/quiet.ts)
+  if (!(await shouldRunScheduled("close-shifts"))) return;
   try {
     const closed = await closeStaleShifts();
     if (closed.length > 0) {

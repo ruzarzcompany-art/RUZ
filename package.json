@@ -8,7 +8,8 @@
     "dev": "netlify dev",
     "db:generate": "drizzle-kit generate",
     "typecheck": "tsc --noEmit",
-    "test:finance": "node --experimental-strip-types tools/finance-selftest.ts"
+    "test:finance": "node --experimental-strip-types tools/finance-selftest.ts",
+    "test:night-sleep": "esbuild tools/night-sleep-selftest.ts --bundle --platform=node --format=esm --log-level=error | node --input-type=module"
   },
   "repository": {
     "type": "git",

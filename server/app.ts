@@ -41,6 +41,7 @@ import { dayCloseRouter } from "./routes/dayClose.js";
 import { stockRouter } from "./routes/foodicsInventory.js";
 import { bankRouter } from "./routes/bank.js";
 import { wasteRouter } from "./routes/waste.js";
+import { quietMiddleware } from "./quiet.js";
 import { ensureSeeded } from "./seed.js";
 import {
   getAutoCloseHour,
@@ -82,6 +83,12 @@ export function createApp() {
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, service: "restaurant-hr", serverTime: new Date().toISOString() });
   });
+
+  /**
+   * النوم الليلي: خارج ساعات العمل يُرد على اتصالات جهاز المطعم الروتينية دون
+   * لمس قاعدة البيانات لتنام وتتوقف تكلفتها. يجب أن يسبق ensureSeeded.
+   */
+  app.use("/api", quietMiddleware);
 
   /**
    * يضمن جاهزية البيانات الأساسية (الأدوار والصلاحيات والفرع الافتراضي)
