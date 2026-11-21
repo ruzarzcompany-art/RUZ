@@ -1138,6 +1138,37 @@
           </p>
         </section>
 
+        <section class="card" id="cb-card">
+          <div class="card__head">
+            <h2 class="card__title card__title--sm">النقد الموجود وصرفه</h2>
+            <span id="cb-since" class="hint"></span>
+          </div>
+          <div id="cb-tiles" class="fin-tiles"></div>
+          <form id="cb-form" class="row row--wrap" hidden>
+            <label class="field field--sm"><span class="field__label">تاريخ الصرف</span><input id="cb-date" type="date" required /></label>
+            <label class="field field--sm"><span class="field__label">التوجيه (إلى أين صُرف)</span><input id="cb-label" type="text" maxlength="200" list="cb-labels" autocomplete="off" placeholder="إيجار المحل، سكن العمال، أو اكتب وجهة أخرى" required /></label>
+            <label class="field field--sm"><span class="field__label">المبلغ (ريال)</span><input id="cb-amount" type="number" min="0.01" step="0.01" required /></label>
+            <label class="field field--sm"><span class="field__label">ملاحظة (اختياري)</span><input id="cb-notes" type="text" maxlength="500" /></label>
+            <button class="btn btn--primary btn--sm" type="submit">صرف من النقد</button>
+          </form>
+          <datalist id="cb-labels"></datalist>
+          <div id="cb-bylabel" class="row row--wrap"></div>
+          <div class="table-wrap">
+            <table class="table" id="cb-table">
+              <thead>
+                <tr><th>التاريخ</th><th>التوجيه</th><th>المبلغ</th><th>ملاحظة</th><th>سجّله</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="cb-empty" class="empty" hidden>لم يُصرف شيء من النقد بعد.</p>
+          <p class="hint">
+            النقد الموجود = النقد الخارج من الدرج كل يوم (المعدود ناقص العهدة) ناقص ما صُرف هنا. اليوم
+            الذي لم يؤكّده الكاشير يُحسب بالنقد المتوقّع تقديراً حتى يُؤكَّد. مصاريف الدرج اليومية مخصومة
+            من نقد يومها فلا تُكتب هنا مرة ثانية.
+          </p>
+        </section>
+
         <section class="card" id="dc-detail" hidden>
           <div class="card__head">
             <h3 class="card__title card__title--sm" id="dc-detail-title">تفاصيل اليوم</h3>
