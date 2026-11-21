@@ -140,8 +140,8 @@ function categoryList() {
 /** أصناف التصنيف المختار في نموذج تسجيل الحركة («» تعني كل الأصناف). */
 function itemsOfSelectedCategory() {
   const chosen = el("inventory-category").value;
-  if (!chosen) return state.items;
-  return state.items.filter((item) => categoryKey(item) === chosen);
+  if (!chosen) return pickableItems();
+  return pickableItems().filter((item) => categoryKey(item) === chosen);
 }
 
 function optionNode(value, text) {
@@ -187,14 +187,22 @@ function fillFormItemPicker() {
   picker.value = stillThere ? previous : (picker.options[0]?.value ?? "");
 }
 
-/** قائمة أصناف فلتر الحركات — كل الأصناف كما كانت. */
+/**
+ * الأصناف التي تظهر في قوائم الاختيار: الصنف الموقوف (المحذوف في فوديكس) لا
+ * يظهر حتى لا يتكرر الاسم مرتين، إلا إذا بقي له رصيد أو حركة تحتاج مراجعة.
+ */
+function pickableItems() {
+  return state.items.filter((item) => item.isActive !== false || Number(item.balance) !== 0 || item.lastMovementDate);
+}
+
+/** قائمة أصناف فلتر الحركات — الأصناف النشطة باسم واحد لكل صنف. */
 function fillFilterItemPicker() {
   const picker = el("inventory-filter-item");
   const previous = picker.value;
   picker.textContent = "";
   picker.append(optionNode("", "كل الأصناف"));
 
-  for (const item of state.items) {
+  for (const item of pickableItems()) {
     picker.append(optionNode(String(item.id), `${item.code} — ${item.name} (${item.unit})`));
   }
 
@@ -211,7 +219,7 @@ function fillProducedItemPicker() {
   picker.textContent = "";
   picker.append(optionNode("", "اختر المنتج النهائي"));
 
-  for (const item of state.items) {
+  for (const item of pickableItems()) {
     if (String(item.id) === rawId) continue;
     picker.append(optionNode(String(item.id), `${item.code} — ${item.name} (${item.unit})`));
   }
