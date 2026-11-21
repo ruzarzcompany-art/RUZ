@@ -160,6 +160,7 @@ async function cashBox(branchId: number, startDate: string | null, today: string
   for (const r of rows) byLabel.set(r.e.description, (byLabel.get(r.e.description) ?? 0) + (Number(r.e.amount) || 0));
   return {
     from: startDate,
+    to: today,
     days: days.length,
     pendingDays,
     cashSales: r2(cashSales),
@@ -382,7 +383,7 @@ dayCloseRouter.get("/dayclose", ...canRead, async (req: AuthedRequest, res: Resp
     closeHour: DAY_CLOSE_HOUR,
     openingFloat: await currentFloat(branch.id),
     expenseLabels: await expenseLabels(branch.id),
-    cashBox: await cashBox(branch.id, startDate, today),
+    cashBox: await cashBox(branch.id, startDate, to > today ? today : to),
     totals: {
       days: list.length,
       totalSales: sum("totalSales"),

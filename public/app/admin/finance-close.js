@@ -424,7 +424,7 @@ export async function loadDayCloses() {
 function renderCashBox(cb) {
   el("cb-card").hidden = !cb;
   if (!cb) return;
-  el("cb-since").textContent = cb.from ? `من بداية الحسابات ${cb.from} حتى اليوم` : "كل الأيام حتى اليوم";
+  el("cb-since").textContent = `${cb.from ? `من بداية الحسابات ${cb.from}` : "كل الأيام"} حتى ${cb.to} (نفس تاريخ «إلى» في الأعلى)`;
   el("cb-tiles").replaceChildren(
     tile("مبيعات النقد", money(cb.cashSales), "", `${cb.days} يوم`),
     tile("الرجيع النقدي", money(cb.cashRefunds), cb.cashRefunds > 0 ? "warn" : ""),
