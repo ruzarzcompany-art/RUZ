@@ -28,8 +28,20 @@ function figureRow(label, value, strong) {
   return node("div", { className: `dc-row${strong ? " dc-row--strong" : ""}` }, node("span", { text: label }), node("span", { text: value }));
 }
 
+/** قائمة اقتراحات ببنود المصاريف السابقة: يختار الكاشير البند بدل كتابته من جديد. */
+const LABELS_ID = "dc-expense-labels";
+function setExpenseLabels(labels) {
+  let list = document.getElementById(LABELS_ID);
+  if (!list) {
+    list = document.createElement("datalist");
+    list.id = LABELS_ID;
+    document.body.append(list);
+  }
+  list.replaceChildren(...(labels ?? []).map((l) => node("option", { value: l })));
+}
+
 function expenseRow(list, item = { label: "", amount: "" }) {
-  const label = node("input", { type: "text", placeholder: "البيان (غاز، دجاج، لبن ...)", maxlength: "120" });
+  const label = node("input", { type: "text", placeholder: "البيان — اختر بنداً سابقاً أو اكتب جديداً", maxlength: "120", list: LABELS_ID, autocomplete: "off" });
   label.value = item.label;
   const amount = node("input", { type: "number", min: "0", step: "0.01", inputmode: "decimal", placeholder: "المبلغ" });
   amount.value = item.amount;
@@ -187,6 +199,7 @@ export async function refreshSelfCashier() {
     return;
   }
   state.data = res;
+  setExpenseLabels(res.expenseLabels);
   renderLive(res);
   const pending = res.pending ?? [];
   badge.textContent = pending.length ? `${pending.length} بانتظار تأكيدك` : "لا شيء معلّق";

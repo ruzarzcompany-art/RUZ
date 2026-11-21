@@ -117,6 +117,79 @@ function listTable(title, items) {
   return wrap;
 }
 
+/** قائمة اقتراحات ببنود مصاريف الدرج السابقة (تأتي من الخادم مع التقفيلات). */
+const LABELS_ID = "dc-expense-labels";
+function setExpenseLabels(labels) {
+  let list = document.getElementById(LABELS_ID);
+  if (!list) {
+    list = document.createElement("datalist");
+    list.id = LABELS_ID;
+    document.body.append(list);
+  }
+  list.replaceChildren(
+    ...(labels ?? []).map((l) => {
+      const o = document.createElement("option");
+      o.value = l;
+      return o;
+    }),
+  );
+}
+
+/**
+ * محرّر مصاريف الدرج: صفوف (بيان + مبلغ) مع زر «+ مصروف». البيان يقترح البنود
+ * السابقة. read() تُرجع المصاريف، أو null إن كان فيها صف ناقص (مع تنبيه).
+ */
+function expenseEditor(lines = []) {
+  const list = document.createElement("div");
+  list.className = "dc-expenses";
+  const add = (e = { label: "", amount: "" }) => {
+    const rowEl = document.createElement("div");
+    rowEl.className = "row row--wrap";
+    rowEl.dataset.expense = "1";
+    const label = document.createElement("input");
+    label.type = "text";
+    label.maxLength = 120;
+    label.placeholder = "البيان — اختر بنداً سابقاً أو اكتب جديداً";
+    label.setAttribute("list", LABELS_ID);
+    label.autocomplete = "off";
+    label.value = e.label;
+    const amount = document.createElement("input");
+    amount.type = "number";
+    amount.min = "0";
+    amount.step = "0.01";
+    amount.placeholder = "المبلغ";
+    amount.value = e.amount === null || e.amount === undefined ? "" : String(e.amount);
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "btn btn--ghost btn--xs";
+    del.textContent = "حذف";
+    del.onclick = () => rowEl.remove();
+    rowEl.append(label, amount, del);
+    list.append(rowEl);
+    return label;
+  };
+  for (const e of lines ?? []) add(e);
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "btn btn--ghost btn--xs";
+  addBtn.textContent = "+ مصروف";
+  addBtn.onclick = () => add().focus();
+  const read = () => {
+    const expenses = [...list.querySelectorAll("[data-expense]")]
+      .map((rowEl) => {
+        const [l, a] = rowEl.querySelectorAll("input");
+        return { label: l.value.trim(), amount: Number(a.value || 0) };
+      })
+      .filter((e) => e.label || e.amount);
+    if (expenses.some((e) => !e.label || !(e.amount > 0))) {
+      setAlert(el("fh-alert"), "كل مصروف يحتاج بياناً ومبلغاً أكبر من صفر.", "error");
+      return null;
+    }
+    return expenses;
+  };
+  return { list, addBtn, read };
+}
+
 function showDetail(r) {
   el("dc-detail").hidden = false;
   el("dc-detail-title").textContent = `تقفيل يوم ${r.businessDate} — ${r.statusLabel}`;
@@ -149,7 +222,22 @@ function showDetail(r) {
     .filter(Boolean)
     .join(" · ");
 
-  const parts = [tiles, info, listTable("الشبكة (من فوديكس)", r.network), listTable("تطبيقات التوصيل (من فوديكس)", r.delivery), listTable("مصاريف الدرج", r.expenseLines)];
+  const parts = [tiles, info, listTable("الشبكة (من فوديكس)", r.network), listTable("تطبيقات التوصيل (من فوديكس)", r.delivery)];
+  // اليوم المعلّق: المدير يضيف مصاريف الدرج هنا (من فواتير الكاشير) ثم يؤكّد بالنيابة
+  const pendingExpenses = r.awaitingCash && state.can("cashier.review") ? expenseEditor(r.expenseLines) : null;
+  if (pendingExpenses) {
+    const wrap = document.createElement("div");
+    const h = document.createElement("h4");
+    h.className = "card__title card__title--xs";
+    h.textContent = "مصاريف الدرج";
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "أضف كل مصروف دُفع من الدرج حسب فواتير الكاشير، ثم اكتب النقد المعدود واضغط «تأكيد بالنيابة» — تُخصم المصاريف من النقد المتوقّع.";
+    wrap.append(h, hint, pendingExpenses.list, pendingExpenses.addBtn);
+    parts.push(wrap);
+  } else {
+    parts.push(listTable("مصاريف الدرج", r.expenseLines));
+  }
 
   if (state.can("cashier.review")) {
     const actions = document.createElement("div");
@@ -198,10 +286,12 @@ function showDetail(r) {
         counted,
         mk("تأكيد بالنيابة", "btn btn--ghost btn--xs", async (b) => {
           if (counted.value === "") return setAlert(el("fh-alert"), "اكتب النقد المعدود.", "error");
+          const expenses = pendingExpenses ? pendingExpenses.read() : r.expenseLines;
+          if (!expenses) return;
           setBusy(b, true);
           const res = await api(`/dayclose/${r.id}/confirm`, {
             method: "POST",
-            body: { countedCash: Number(counted.value), expenses: r.expenseLines, notes: note.value.trim() || "أكّده المدير بالنيابة" },
+            body: { countedCash: Number(counted.value), expenses, notes: note.value.trim() || "أكّده المدير بالنيابة" },
           });
           setBusy(b, false);
           setAlert(el("fh-alert"), res.ok ? res.message : res.error, res.ok ? "ok" : "error");
@@ -263,32 +353,7 @@ function editForm(r) {
   const expTitle = document.createElement("p");
   expTitle.className = "hint";
   expTitle.textContent = "مصاريف الدرج:";
-  const expList = document.createElement("div");
-  const addExpense = (e = { label: "", amount: "" }) => {
-    const rowEl = document.createElement("div");
-    rowEl.className = "row row--wrap";
-    const label = document.createElement("input");
-    label.type = "text";
-    label.maxLength = 120;
-    label.placeholder = "البيان";
-    label.value = e.label;
-    const amount = num(e.amount);
-    amount.placeholder = "المبلغ";
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "btn btn--ghost btn--xs";
-    del.textContent = "حذف";
-    del.onclick = () => rowEl.remove();
-    rowEl.append(label, amount, del);
-    rowEl.dataset.expense = "1";
-    expList.append(rowEl);
-  };
-  for (const e of r.expenseLines) addExpense(e);
-  const addBtn = document.createElement("button");
-  addBtn.type = "button";
-  addBtn.className = "btn btn--ghost btn--xs";
-  addBtn.textContent = "+ مصروف";
-  addBtn.onclick = () => addExpense();
+  const editor = expenseEditor(r.expenseLines);
 
   const save = document.createElement("button");
   save.type = "button";
@@ -297,12 +362,8 @@ function editForm(r) {
   save.onclick = async () => {
     if (counted.value === "") return setAlert(el("fh-alert"), "اكتب النقد المعدود.", "error");
     if (!reason.value.trim()) return setAlert(el("fh-alert"), "اكتب سبب التعديل.", "error");
-    const expenses = [...expList.querySelectorAll("[data-expense]")]
-      .map((n) => {
-        const [l, a] = n.querySelectorAll("input");
-        return { label: l.value.trim(), amount: Number(a.value || 0) };
-      })
-      .filter((e) => e.label || e.amount);
+    const expenses = editor.read();
+    if (!expenses) return;
     setBusy(save, true);
     const res = await api(`/dayclose/${r.id}/edit`, {
       method: "PATCH",
@@ -320,7 +381,7 @@ function editForm(r) {
   const hint = document.createElement("p");
   hint.className = "hint";
   hint.textContent = "يُعاد حساب النقد المتوقّع وفرق الصندوق فوراً، وتبقى حالة اليوم كما هي، ويُسجَّل التعديل وسببه في سجل التدقيق.";
-  box.append(grid, expTitle, expList, addBtn, hint, save);
+  box.append(grid, expTitle, editor.list, editor.addBtn, hint, save);
   return box;
 }
 
@@ -353,6 +414,7 @@ export async function loadDayCloses() {
     tile("بانتظار تأكيد الكاشير", String(t.awaiting), t.awaiting ? "bad" : "good"),
   );
   state.rows = res.closings;
+  setExpenseLabels(res.expenseLabels);
   el("dc-table-empty").hidden = res.closings.length > 0;
   pager.render(res.closings, renderRow);
 }
