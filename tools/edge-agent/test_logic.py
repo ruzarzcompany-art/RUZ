@@ -2,6 +2,7 @@
 
 from logic import (
     DoorCounter,
+    FrameHistory,
     TableConfig,
     TableTracker,
     assign_to_tables,
@@ -197,6 +198,20 @@ def test_door_counter():
         y = 0.49 if i % 2 else 0.51
         door.update(100 + i * 0.2, [(0.47, y - 0.2, 0.53, y)])
     assert door.entries + door.exits <= 4
+
+
+def test_frame_history_keeps_spaced_earlier_frames():
+    history = FrameHistory(spacing=3.0, keep=3)
+    for i in range(40):  # إطاران في الثانية لمدة 20 ثانية
+        history.push(100 + i * 0.5, f"f{i}")
+    now = 100 + 39 * 0.5
+    earlier = history.earlier(now, count=2)
+    assert len(earlier) == 2
+    assert earlier[0][0] < earlier[1][0] <= now - 1.5
+    assert earlier[1][0] - earlier[0][0] >= 3.0
+    # الإطارات القديمة جداً لا تُرفق (انقطع البث ثم عاد)
+    assert history.earlier(now + 120) == []
+    assert FrameHistory().earlier(5.0) == []
 
 
 if __name__ == "__main__":

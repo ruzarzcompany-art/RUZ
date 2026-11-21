@@ -38,6 +38,7 @@ import cv2  # noqa: E402
 
 from logic import (  # noqa: E402
     DoorCounter,
+    FrameHistory,
     TableConfig,
     TableTracker,
     assign_to_tables,
@@ -255,7 +256,7 @@ class CameraState:
                 tracker.update(now, boxes)
         return events
 
-    def attach_image(self, event: dict, frame) -> None:
+    def attach_image(self, event: dict, frame, earlier: list | None = None, now: float | None = None) -> None:
         if not event.pop("wantImage", False):
             return
         zone = self.zones.get(event["zoneId"])
@@ -263,6 +264,11 @@ class CameraState:
             event["image"] = encode_jpeg(crop_zone(frame, zone["points"]), 900, 85)
         else:
             event["image"] = encode_jpeg(frame, 960, 75)
+            # تسلسل الدليل: لقطات قبل الحدث بثوانٍ (أصغر حجماً) ليُرى ما سبق لحظة التنبيه
+            if earlier and now is not None:
+                event["before"] = [
+                    {"image": encode_jpeg(old, 800, 65), "secondsBefore": round(now - at, 1)} for at, old in earlier
+                ]
 
     def live(self, now: float) -> list[dict]:
         """حالة كل منطقة الآن — تُرسل مع النبض لشاشة المراقبة المباشرة."""
@@ -440,6 +446,7 @@ class Agent:
         last_preview: dict[str, float] = {}
         last_footfall = time.time()
         interval = 1.0 / self.fps
+        history: dict[str, FrameHistory] = {}
         while True:
             tick = time.time()
             off_hours = self.off_hours(tick)
@@ -447,6 +454,9 @@ class Agent:
                 frame = camera.latest()
                 if frame is None:
                     continue
+                past = history.setdefault(number, FrameHistory())
+                earlier = past.earlier(tick)
+                past.push(tick, frame)
                 live = self.is_live()
                 if tick - last_preview.get(number, 0) >= (LIVE_PREVIEW_SECONDS if live else PREVIEW_SECONDS):
                     last_preview[number] = tick
@@ -460,7 +470,7 @@ class Agent:
                     log.error("فشل الكشف على الكاميرا %s: %s", number, error)
                     continue
                 for event in state.update(tick, boxes, off_hours):
-                    state.attach_image(event, frame)
+                    state.attach_image(event, frame, earlier, tick)
                     self.enqueue(number, event)
             if tick - last_footfall >= FOOTFALL_SECONDS:
                 last_footfall = tick
