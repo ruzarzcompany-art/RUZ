@@ -2414,7 +2414,6 @@
             <button class="tab" type="button" id="sv-more" aria-expanded="false">المزيد ▾</button>
           </div>
           <div class="tabs tabs--more" id="sv-more-tabs" role="tablist" hidden>
-            <button class="tab" type="button" data-sv="new" data-sv-write>تسجيل حالة يدوياً</button>
             <button class="tab" type="button" data-sv="orders">الطلبات والكاشير</button>
             <button class="tab" type="button" data-sv="limits">الحدود المعتمدة</button>
             <button class="tab" type="button" data-sv="fxorders">فواتير فوديكس</button>
@@ -2431,6 +2430,7 @@
           <button id="sv-frame-close" class="btn btn--ghost btn--xs" type="button">إغلاق</button>
         </div>
         <img id="sv-frame-img" alt="لقطة الكاميرا" style="max-width:100%;border-radius:8px" hidden />
+        <div id="sv-frame-strip" class="sv-shots sv-shots--viewer"></div>
         <p id="sv-frame-text" class="hint"></p>
       </section>
 
@@ -2537,67 +2537,6 @@
           <div class="row row--wrap">
             <button id="sv-review-submit" class="btn btn--primary btn--sm" type="submit">حفظ المراجعة</button>
             <button id="sv-review-cancel" class="btn btn--ghost btn--sm" type="button">إلغاء</button>
-          </div>
-        </form>
-      </section>
-
-      <!-- تسجيل حالة -->
-      <section class="card" data-sv-section="new" hidden>
-        <form id="sv-alert-form" class="form-grid">
-          <label class="field field--sm">
-            <span class="field__label">الدور</span>
-            <select id="sv-alert-role">
-              <option value="gm">المدير العام</option>
-              <option value="warehouse">مدير المستودعات</option>
-              <option value="camera">مراقب الكاميرات</option>
-            </select>
-          </label>
-          <label class="field field--sm field--wide">
-            <span class="field__label">نوع الحالة</span>
-            <select id="sv-alert-type" required></select>
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">التاريخ والوقت (بالثانية)</span>
-            <input id="sv-alert-time" type="datetime-local" step="1" required />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">الكاميرا</span>
-            <select id="sv-alert-camera"></select>
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">الموقع</span>
-            <input id="sv-alert-location" type="text" placeholder="يُؤخذ من الكاميرا إن تُرك فارغاً" />
-          </label>
-          <label class="field field--sm">
-            <span class="field__label">درجة الثقة</span>
-            <select id="sv-alert-confidence">
-              <option value="high">عالية</option>
-              <option value="medium" selected>متوسطة</option>
-              <option value="low">منخفضة — تُحال لمراجعة بشرية</option>
-            </select>
-          </label>
-          <label class="field field--sm field--wide">
-            <span class="field__label">الموظفون الظاهرون (اختيار متعدد)</span>
-            <select id="sv-alert-employees" multiple size="5"></select>
-          </label>
-          <label class="field field--sm field--wide">
-            <span class="field__label">وصف من لم يُتعرّف عليه</span>
-            <input id="sv-alert-people" type="text" placeholder="مثال: شخص بزي المطبخ، وجهه غير ظاهر" />
-          </label>
-          <label class="field field--sm field--wide">
-            <span class="field__label">رابط أو مرجع المقطع</span>
-            <input id="sv-alert-clip" type="text" placeholder="يُولَّد تلقائياً: رقم الكاميرا + التاريخ + الوقت" />
-          </label>
-          <label class="field field--sm field--wide">
-            <span class="field__label">التفاصيل</span>
-            <input id="sv-alert-details" type="text" />
-          </label>
-          <label class="field field--sm field--wide">
-            <span class="field__label">الإجراء المقترح</span>
-            <input id="sv-alert-action" type="text" placeholder="يُقترح تلقائياً حسب النوع إن تُرك فارغاً" />
-          </label>
-          <div class="row row--wrap">
-            <button id="sv-alert-submit" class="btn btn--primary btn--sm" type="submit">تسجيل الحالة</button>
           </div>
         </form>
       </section>

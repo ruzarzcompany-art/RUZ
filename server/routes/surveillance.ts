@@ -21,7 +21,7 @@
 
 import { timingSafeEqual } from "node:crypto";
 import { Router, type Request, type Response } from "express";
-import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
 import { getDb } from "../../db/index.js";
 import {
   attendanceLogs,
@@ -968,6 +968,61 @@ function timeOfDay(at: Date | null, timeZone: string): string {
   return `${pad(p.hour)}:${pad(p.minute)}:${pad(p.second)}`;
 }
 
+/** أقصى عدد صور دليل تُحفظ وتُعرض للحالة الواحدة (تسلسل: قبل ← لحظة الحدث). */
+export const MAX_EVIDENCE_FRAMES = 4;
+
+/**
+ * عدد صور الدليل المحفوظة لكل تنبيه في فترة — تُحسب من اللقطات المرتبطة التي
+ * لها صورة فعلاً. اللقطة تُلتقط قرب وقت التنبيه، فيكفي هامش ساعة حول الفترة.
+ */
+export async function evidenceCounts(branchId: number, start: Date, end: Date): Promise<Map<number, number>> {
+  const db = getDb();
+  const frames = await db
+    .select({ alertIds: surveillanceFrames.alertIds })
+    .from(surveillanceFrames)
+    .where(
+      and(
+        eq(surveillanceFrames.branchId, branchId),
+        gte(surveillanceFrames.capturedAt, new Date(start.getTime() - 3600_000)),
+        lt(surveillanceFrames.capturedAt, new Date(end.getTime() + 3600_000)),
+        ne(surveillanceFrames.imageKey, ""),
+        sql`cardinality(${surveillanceFrames.alertIds}) > 0`,
+      ),
+    );
+  const counts = new Map<number, number>();
+  for (const frame of frames) {
+    for (const id of frame.alertIds ?? []) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** أنواع مخالفات العمال التي تُوثَّق بالصور في التقرير. */
+const STAFF_VIOLATION_TYPES = new Set([
+  "staff_phone",
+  "station_left",
+  "staff_gathering",
+  "hygiene",
+  "waste_observed",
+  "fridge_door_open",
+  "customer_complaint",
+]);
+
+/** حالات الرقابة الثلاثية: الكاميرات + فوديكس + الجرد. */
+const TRIPLE_CONTROL_TYPES = new Set([
+  "drawer_no_sale",
+  "order_no_invoice",
+  "table_no_invoice",
+  "repeated_pos",
+  "warehouse_exit",
+  "warehouse_off_hours",
+  "stock_mismatch",
+  "sales_gap",
+  "cash_difference",
+  "receipt_mismatch",
+  "waste_gap",
+  "waste_over_limit",
+]);
+
 export async function buildDailyReport(branch: BranchRow, date: string) {
   const db = getDb();
   const tz = safeTimeZone(branch.timezone);
@@ -1183,8 +1238,11 @@ export async function buildDailyReport(branch: BranchRow, date: string) {
   const personName = new Map(people.map((p) => [p.id, `${p.name} (${p.code})`]));
   const cameraNumber = new Map(cameras.map((c) => [c.id, c.cameraNumber]));
 
+  const evidence = await evidenceCounts(branch.id, start, end);
   const alertView = (a: (typeof alerts)[number]) => ({
     id: a.id,
+    evidence: evidence.get(a.id) ?? 0,
+    auto: a.source !== "manual",
     type: ALERT_TYPES[a.alertType]?.label ?? a.alertType,
     severity: LABELS.severity[a.severity as 1 | 2 | 3] ?? "متوسطة",
     time: timeOfDay(a.occurredAt, tz),
@@ -1204,6 +1262,32 @@ export async function buildDailyReport(branch: BranchRow, date: string) {
 
   const suspicions = alerts.filter((a) => a.isSuspicion).map(alertView);
   const customerIssues = alerts.filter((a) => CUSTOMER_TYPES.includes(a.alertType)).map(alertView);
+  const byTime = (x: (typeof alerts)[number], y: (typeof alerts)[number]) =>
+    x.occurredAt.getTime() - y.occurredAt.getTime();
+  const staffAlerts = alerts.filter((a) => STAFF_VIOLATION_TYPES.has(a.alertType)).sort(byTime);
+  const staffViolations = staffAlerts.map(alertView);
+  const tripleControl = alerts.filter((a) => TRIPLE_CONTROL_TYPES.has(a.alertType)).sort(byTime).map(alertView);
+  // لكل موظف: مخالفاته مع أرقامها، ليُعرض ملفه بالصور
+  const perEmployee = new Map<string, { count: number; types: Map<string, number>; alertIds: number[] }>();
+  for (const a of staffAlerts) {
+    const names = (a.employeeIds ?? []).map((id) => personName.get(id) ?? `#${id}`);
+    const label = ALERT_TYPES[a.alertType]?.label ?? a.alertType;
+    for (const name of names.length ? names : ["غير محدد"]) {
+      const entry = perEmployee.get(name) ?? { count: 0, types: new Map<string, number>(), alertIds: [] };
+      entry.count += 1;
+      entry.types.set(label, (entry.types.get(label) ?? 0) + 1);
+      entry.alertIds.push(a.id);
+      perEmployee.set(name, entry);
+    }
+  }
+  const violationsByEmployee = [...perEmployee.entries()]
+    .map(([name, entry]) => ({
+      name,
+      count: entry.count,
+      types: [...entry.types.entries()].map(([label, count]) => ({ label, count })),
+      alertIds: entry.alertIds,
+    }))
+    .sort((x, y) => y.count - x.count || x.name.localeCompare(y.name, "ar"));
 
   /* ٦) أداء الموظفين */
   const violationTypes = new Set([
@@ -1345,6 +1429,9 @@ export async function buildDailyReport(branch: BranchRow, date: string) {
     waste: wasteRows,
     suspicions,
     customerIssues,
+    staffViolations,
+    violationsByEmployee,
+    tripleControl,
     staff: staff.map(({ suspicionCount: _ignored, ...row }) => row),
     cameras: cameraRows.map(({ broken: _broken, ...row }) => row),
     counts: {
@@ -1695,6 +1782,7 @@ surveillanceRouter.get("/surveillance/alerts", ...canRead, async (req: AuthedReq
     .orderBy(desc(surveillanceAlerts.occurredAt))
     .limit(500);
 
+  const evidence = await evidenceCounts(branch.id, start, end);
   res.json({
     ok: true,
     from,
@@ -1703,6 +1791,7 @@ surveillanceRouter.get("/surveillance/alerts", ...canRead, async (req: AuthedReq
       ...row.alert,
       cameraNumber: row.cameraNumber,
       reviewerName: row.reviewerName,
+      evidenceCount: evidence.get(row.alert.id) ?? 0,
     })),
   });
 });
@@ -2368,6 +2457,29 @@ export async function alertFramePayload(alertId: number) {
   return frameImagePayload(frame);
 }
 
+/** كل صور الدليل المرتبطة بتنبيه، مرتبة زمنياً (قبل الحدث ← لحظته). */
+export async function alertFramesPayload(alertId: number, limit = MAX_EVIDENCE_FRAMES) {
+  const db = getDb();
+  const frames = await db
+    .select()
+    .from(surveillanceFrames)
+    .where(and(sql`${alertId} = ANY(${surveillanceFrames.alertIds})`, ne(surveillanceFrames.imageKey, "")))
+    .orderBy(desc(surveillanceFrames.capturedAt))
+    .limit(Math.min(Math.max(limit, 1), MAX_EVIDENCE_FRAMES));
+  const out: Array<{ id: number; capturedAt: Date; image: string }> = [];
+  for (const frame of frames.reverse()) {
+    const image = await loadImage(frame.imageKey).catch(() => null);
+    if (image) {
+      out.push({
+        id: frame.id,
+        capturedAt: frame.capturedAt,
+        image: `data:${image.contentType};base64,${image.data.toString("base64")}`,
+      });
+    }
+  }
+  return out;
+}
+
 async function frameImagePayload(frame: typeof surveillanceFrames.$inferSelect | undefined) {
   if (!frame) return null;
   const image = frame.imageKey ? await loadImage(frame.imageKey) : null;
@@ -2428,6 +2540,17 @@ surveillanceRouter.get("/surveillance/alerts/:id/frame", ...canRead, async (req:
     return;
   }
   res.json({ ok: true, ...payload });
+});
+
+/** صور الدليل كلها لتنبيه واحد — للتقرير المصوّر وعارض الصور. */
+surveillanceRouter.get("/surveillance/alerts/:id/frames", ...canRead, async (req: AuthedRequest, res: Response) => {
+  const id = asId(req.params.id);
+  if (id === null) {
+    res.status(400).json({ ok: false, error: "رقم التنبيه غير صحيح" });
+    return;
+  }
+  res.setHeader("Cache-Control", "private, max-age=300");
+  res.json({ ok: true, frames: await alertFramesPayload(id) });
 });
 
 /* ── جهاز الربط داخل المطعم ── */
