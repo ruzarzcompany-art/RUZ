@@ -317,6 +317,24 @@ async function saveEvidence(input: {
   await db.update(surveillanceFrames).set({ imageKey }).where(eq(surveillanceFrames.id, frame.id));
 }
 
+/** أقصى عدد لقطات «قبل الحدث» تُقبل من الجهاز مع الحدث الواحد. */
+const MAX_BEFORE_SHOTS = 2;
+
+/** لقطات ما قبل الحدث كما يرسلها الجهاز: `[{ image, secondsBefore }]`، الأقدم أولاً. */
+export function earlierShots(value: unknown, at: Date): Array<{ image: Buffer; at: Date }> {
+  if (!Array.isArray(value)) return [];
+  const shots: Array<{ image: Buffer; at: Date }> = [];
+  for (const item of value.slice(0, MAX_BEFORE_SHOTS)) {
+    if (!item || typeof item !== "object") continue;
+    const entry = item as Record<string, unknown>;
+    const image = decodeImage(entry.image);
+    const seconds = Number(entry.secondsBefore);
+    if (!image || !Number.isFinite(seconds) || seconds <= 0 || seconds > 120) continue;
+    shots.push({ image, at: new Date(at.getTime() - Math.round(seconds * 1000)) });
+  }
+  return shots.sort((a, b) => a.at.getTime() - b.at.getTime());
+}
+
 function when(value: unknown, fallback = new Date()): Date {
   const date = typeof value === "string" || typeof value === "number" ? new Date(value) : fallback;
   // لا يُقبل وقت في المستقبل أو أقدم من يوم (ساعة الجهاز غير مضبوطة)
@@ -477,9 +495,13 @@ export async function ingestEdgeEvent(branch: BranchRow, raw: Record<string, unk
     sourceRef: ref,
   });
   if (!result.duplicate && image) {
-    await saveEvidence({ branch, camera, image, at, alertId: result.id, people, note: details }).catch((error) =>
-      console.error("[edge] تعذّر حفظ لقطة الدليل:", error instanceof Error ? error.message : error),
-    );
+    // تسلسل الدليل: لقطات قبل الحدث بثوانٍ (إن أرسلها الجهاز) ثم لقطة لحظة الحدث
+    const shots = [...earlierShots(raw.before, at), { image, at }];
+    for (const shot of shots) {
+      await saveEvidence({ branch, camera, image: shot.image, at: shot.at, alertId: result.id, people, note: details }).catch((error) =>
+        console.error("[edge] تعذّر حفظ لقطة الدليل:", error instanceof Error ? error.message : error),
+      );
+    }
   }
   return { ok: true, type, raised: !result.duplicate, alertId: result.id, verdict };
 }

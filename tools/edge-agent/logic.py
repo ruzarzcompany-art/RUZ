@@ -477,3 +477,28 @@ def is_off_hours(minute_of_day: int, open_time: str, close_time: str) -> bool:
     if open_m < close_m:
         return minute_of_day < open_m or minute_of_day >= close_m
     return close_m <= minute_of_day < open_m
+
+
+# ── تسلسل الدليل ─────────────────────────────────────────────────────
+
+
+class FrameHistory:
+    """يحتفظ بإطارات قليلة متباعدة من الثواني الأخيرة لكل كاميرا.
+
+    عند وقوع حدث تُرفق معه لقطات «قبل الحدث» فيصير الدليل تسلسلاً قصيراً
+    (ما قبل ← لحظة الحدث) بدل صورة واحدة — بلا تسجيل فيديو ولا تخزين دائم.
+    """
+
+    def __init__(self, spacing: float = 3.0, keep: int = 3):
+        self.spacing = spacing
+        self.items: deque = deque(maxlen=keep)
+
+    def push(self, now: float, frame) -> None:
+        if not self.items or now - self.items[-1][0] >= self.spacing:
+            self.items.append((now, frame))
+
+    def earlier(self, now: float, count: int = 2, min_age: float = 1.5, max_age: float = 30.0) -> list:
+        """أحدث `count` إطارات عمرها بين min_age وmax_age ثانية، الأقدم أولاً."""
+        picked = [(at, frame) for at, frame in self.items if min_age <= now - at <= max_age]
+        return picked[-count:] if count > 0 else []
+

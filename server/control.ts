@@ -39,7 +39,9 @@ import { foodicsDaySales, foodicsStatus } from "./foodics.js";
 import {
   ALERT_TYPES,
   LABELS,
+  MAX_EVIDENCE_FRAMES,
   alertFramePayload,
+  alertFramesPayload,
   buildDailyReport,
   createAlert,
   dayRange,
@@ -425,7 +427,7 @@ export function violationsReportUrl(branchId: number, date: string): string {
   return `${publicBaseUrl()}/api/control/report-file?b=${branchId}&d=${date}&s=${reportSignature(branchId, date)}`;
 }
 
-const MAX_REPORT_IMAGES = 40;
+const MAX_REPORT_IMAGES = 60;
 
 /** ملف مخالفات اليوم: صفحة واحدة للطباعة بكل الحالات مرتّبة، مع صور أهمها. */
 export async function violationsReportHtml(branch: BranchRow, date: string): Promise<string> {
@@ -450,11 +452,19 @@ export async function violationsReportHtml(branch: BranchRow, date: string): Pro
   const service = shown.filter((a) => !MAJOR_TYPES.has(a.alertType) && !staffTypes.has(a.alertType));
 
   // صور: الكبيرة أولاً ثم مخالفات العمال، بحدّ أعلى حتى يبقى الملف خفيفاً
-  const images = new Map<number, string>();
-  for (const a of [...major, ...staff]) {
-    if (images.size >= MAX_REPORT_IMAGES) break;
-    const payload = await alertFramePayload(a.id).catch(() => null);
-    if (payload?.image) images.set(a.id, payload.image);
+  // الكبيرة ومخالفات العمال بتسلسلها كاملاً (قبل ← لحظة الحدث)، والخدمة بصورة واحدة.
+  const images = new Map<number, string[]>();
+  let imageCount = 0;
+  for (const [list, perAlert] of [[major, MAX_EVIDENCE_FRAMES], [staff, MAX_EVIDENCE_FRAMES], [service, 1]] as const) {
+    for (const a of list) {
+      if (imageCount >= MAX_REPORT_IMAGES) break;
+      const frames = await alertFramesPayload(a.id, perAlert).catch(() => []);
+      const kept = frames.slice(-Math.min(perAlert, MAX_REPORT_IMAGES - imageCount)).map((f) => f.image);
+      if (kept.length) {
+        images.set(a.id, kept);
+        imageCount += kept.length;
+      }
+    }
   }
 
   // لكل موظف: عدد مخالفاته وأنواعها
@@ -475,8 +485,8 @@ export async function violationsReportHtml(branch: BranchRow, date: string): Pro
 
   const row = (a: (typeof shown)[number]) => {
     const names = (a.employeeIds ?? []).map((id) => nameOf.get(id)).filter(Boolean).join("، ");
-    const img = images.get(a.id);
-    return `<tr><td>${esc(hhmm(a.occurredAt, branch.timezone))}</td><td><b>${esc(label(a.alertType))}</b>${a.isSuspicion ? '<br><small class="sus">اشتباه — يُراجع المقطع</small>' : ""}</td><td>${esc(a.location)}</td><td>${esc(names || a.peopleNote.split("|")[0] || "—")}</td><td>${esc(a.details)}</td><td>${img ? `<img src="${img}" alt="">` : ""}</td></tr>`;
+    const imgs = images.get(a.id) ?? [];
+    return `<tr><td>${esc(hhmm(a.occurredAt, branch.timezone))}</td><td><b>${esc(label(a.alertType))}</b>${a.isSuspicion ? '<br><small class="sus">اشتباه — يُراجع المقطع</small>' : ""}</td><td>${esc(a.location)}</td><td>${esc(names || a.peopleNote.split("|")[0] || "—")}</td><td>${esc(a.details)}</td><td class="shots">${imgs.map((src) => `<img src="${src}" alt="">`).join("")}</td></tr>`;
   };
   const table = (title: string, list: typeof shown, empty: string) =>
     `<h2>${esc(title)} <small>(${list.length})</small></h2>${
@@ -490,7 +500,7 @@ export async function violationsReportHtml(branch: BranchRow, date: string): Pro
 <title>مخالفات يوم ${esc(date)} — ${esc(branch.name)}</title>
 <style>body{font-family:Tahoma,Arial,sans-serif;margin:16px;color:#111;background:#fff}h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:22px 0 8px;border-bottom:2px solid #333;padding-bottom:4px}
 small{color:#666;font-weight:normal}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border:1px solid #bbb;padding:6px;text-align:right;vertical-align:top}th{background:#eee}
-td img{width:220px;max-width:40vw;border-radius:6px}.chip{display:inline-block;background:#f2f2f2;border:1px solid #ccc;border-radius:12px;padding:2px 10px;margin:2px;font-size:13px}
+td img{width:220px;max-width:40vw;border-radius:6px}.shots img{display:block;margin-bottom:4px}tr{break-inside:avoid}.chip{display:inline-block;background:#f2f2f2;border:1px solid #ccc;border-radius:12px;padding:2px 10px;margin:2px;font-size:13px}
 .major h2{color:#b00020;border-color:#b00020}.ok{color:#2e7d32}.sus{color:#b00020}.emp td:first-child{font-weight:bold;white-space:nowrap}@media print{td img{width:160px}}</style></head><body>
 <h1>ملف مخالفات يوم ${esc(date)} — ${esc(branch.name)}</h1>
 <p>كبيرة: <b>${major.length}</b> · مخالفات العمال: <b>${staff.length}</b> · الخدمة والطاولات: <b>${service.length}</b></p>

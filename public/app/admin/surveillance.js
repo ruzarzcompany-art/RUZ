@@ -141,13 +141,11 @@ async function loadMeta() {
   if (meta.branchId) el("sv-branch").value = String(meta.branchId);
 
   const people = employeeOptions();
-  fillSelect("sv-alert-employees", people);
   fillSelect("sv-order-employee", people, { placeholder: "—" });
   fillSelect("sv-pos-employee", people, { placeholder: "—" });
   fillSelect("sv-waste-employee", people, { placeholder: "—" });
   fillSelect("sv-camera-zone", Object.entries(labels().zones ?? {}));
   fillSelect("sv-waste-reason", Object.entries(labels().wasteReasons ?? {}));
-  fillAlertTypes();
 
   const items = el("sv-items-list");
   items.textContent = "";
@@ -215,15 +213,6 @@ function fillCameraFilter(cameras) {
   if ([...select.options].some((o) => o.value === current)) select.value = current;
 }
 
-function fillAlertTypes() {
-  const role = el("sv-alert-role").value;
-  const types = (state.meta?.alertTypes ?? []).filter((t) => t.role === role || t.key === "other");
-  fillSelect(
-    "sv-alert-type",
-    types.map((t) => [t.key, `${t.urgent ? "⚠ " : ""}${t.label}`]),
-  );
-}
-
 function applyAccess() {
   for (const node of document.querySelectorAll("#panel-surveillance [data-sv-write]")) {
     node.hidden = !state.access.canWrite;
@@ -237,7 +226,7 @@ async function loadCameras() {
   const res = await api(`/surveillance/cameras?branchId=${branchId()}`);
   state.cameras = res.ok ? res.cameras : [];
   const options = cameraOptions();
-  for (const id of ["sv-alert-camera", "sv-order-camera", "sv-pos-camera", "sv-waste-camera"]) {
+  for (const id of ["sv-order-camera", "sv-pos-camera", "sv-waste-camera"]) {
     fillSelect(id, options, { placeholder: "—" });
   }
   fillCameraFilter(state.cameras);
@@ -314,7 +303,13 @@ async function refreshAlerts() {
 
     const actions = document.createElement("div");
     actions.className = "row row--wrap";
-    if (alert.source === "auto" && alert.clipRef.includes("لقطة #")) {
+    if (alert.evidenceCount > 0) {
+      actions.append(
+        button(`الصور (${alert.evidenceCount})`, {
+          onClick: () => showEvidence(alert.id, spec?.label ?? alert.alertType),
+        }),
+      );
+    } else if (alert.source === "auto" && alert.clipRef.includes("لقطة #")) {
       actions.append(
         button("اللقطة", {
           onClick: () => showFrame(`/surveillance/alerts/${alert.id}/frame`, spec?.label ?? alert.alertType),
@@ -376,47 +371,6 @@ async function submitReview(event) {
   el("sv-review-form").hidden = true;
   result("حُفظت نتيجة المراجعة.", "ok");
   await refreshAll();
-}
-
-async function submitAlert(event) {
-  event.preventDefault();
-  const submit = el("sv-alert-submit");
-  setBusy(submit, true);
-  const employeeIds = [...el("sv-alert-employees").selectedOptions].map((o) => Number(o.value));
-  const res = await api("/surveillance/alerts", {
-    method: "POST",
-    body: {
-      branchId: branchId(),
-      role: el("sv-alert-role").value,
-      alertType: el("sv-alert-type").value,
-      occurredAt: isoFrom("sv-alert-time"),
-      cameraId: el("sv-alert-camera").value || null,
-      location: el("sv-alert-location").value,
-      confidence: el("sv-alert-confidence").value,
-      employeeIds,
-      peopleNote: el("sv-alert-people").value,
-      clipRef: el("sv-alert-clip").value,
-      details: el("sv-alert-details").value,
-      suggestedAction: el("sv-alert-action").value,
-    },
-  });
-  setBusy(submit, false);
-  if (!res.ok) {
-    result(res.error, "error");
-    return;
-  }
-  for (const id of ["sv-alert-location", "sv-alert-people", "sv-alert-clip", "sv-alert-details", "sv-alert-action"]) {
-    el(id).value = "";
-  }
-  el("sv-alert-employees").selectedIndex = -1;
-  el("sv-alert-time").value = toLocalInputValue();
-  result(
-    el("sv-alert-confidence").value === "low"
-      ? "سُجّلت الحالة وأُحيلت لمراجعة بشرية لأن الثقة منخفضة."
-      : "سُجّلت الحالة.",
-    "ok",
-  );
-  await renderSummary();
 }
 
 /* ── الطلبات وأحداث الكاشير ───────────────────────────────────── */
@@ -830,6 +784,7 @@ async function showFrame(path, title) {
     result(res.error, "error");
     return;
   }
+  el("sv-frame-strip").textContent = "";
   el("sv-frame-title").textContent = title;
   el("sv-frame-img").hidden = !res.image;
   if (res.image) el("sv-frame-img").src = res.image;
@@ -841,12 +796,107 @@ async function showFrame(path, title) {
   el("sv-frame-viewer").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+/* ── صور الدليل: تسلسل الحالة (قبل الحدث ← لحظته) ─────────────── */
+
+const evidenceCache = new Map();
+let evidenceActive = 0;
+const evidenceQueue = [];
+
+/** يحمّل صور تنبيه واحد مرة واحدة، بثلاثة طلبات متزامنة على الأكثر. */
+function evidenceFrames(alertId) {
+  if (!evidenceCache.has(alertId)) {
+    evidenceCache.set(
+      alertId,
+      new Promise((resolve) => {
+        const run = async () => {
+          evidenceActive += 1;
+          const res = await api(`/surveillance/alerts/${alertId}/frames`).catch(() => null);
+          evidenceActive -= 1;
+          evidenceQueue.shift()?.();
+          resolve(res?.ok ? res.frames : []);
+        };
+        if (evidenceActive < 3) run();
+        else evidenceQueue.push(run);
+      }),
+    );
+  }
+  return evidenceCache.get(alertId);
+}
+
+function shotTime(value) {
+  return new Intl.DateTimeFormat("ar-SA-u-ca-gregory-nu-latn", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
+}
+
+function shotFigure(frame, index, total, title) {
+  const figure = document.createElement("figure");
+  figure.className = "sv-shot";
+  const img = document.createElement("img");
+  img.src = frame.image;
+  img.alt = title;
+  img.loading = "lazy";
+  img.addEventListener("click", () => openShot(frame.image, title));
+  const caption = document.createElement("figcaption");
+  const step = total > 1 ? (index === total - 1 ? "لحظة الحدث" : "قبل الحدث") : "لقطة الحدث";
+  caption.textContent = `${step} — ${shotTime(frame.capturedAt)}`;
+  figure.append(img, caption);
+  return figure;
+}
+
+function openShot(image, title) {
+  el("sv-frame-strip").textContent = "";
+  el("sv-frame-title").textContent = title;
+  el("sv-frame-img").src = image;
+  el("sv-frame-img").hidden = false;
+  el("sv-frame-text").textContent = "";
+  el("sv-frame-viewer").hidden = false;
+  el("sv-frame-viewer").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/** شريط صور حالة واحدة — يُملأ حين تصل الصور، ويعيد وعداً ينتهي بانتهاء التحميل. */
+function shotStrip(alertId, title, known) {
+  const strip = document.createElement("div");
+  strip.className = "sv-shots";
+  if (known === 0) {
+    strip.classList.add("sv-shots--none");
+    strip.textContent = "بلا صورة — حالة من الأرقام (فوديكس / الجرد) أو لم تُحفظ لها لقطة";
+    return { strip, done: Promise.resolve() };
+  }
+  strip.textContent = "تحميل الصور…";
+  const done = evidenceFrames(alertId).then((frames) => {
+    strip.textContent = "";
+    if (!frames.length) {
+      strip.classList.add("sv-shots--none");
+      strip.textContent = "بلا صورة محفوظة";
+      return;
+    }
+    frames.forEach((frame, index) => strip.append(shotFigure(frame, index, frames.length, title)));
+  });
+  return { strip, done };
+}
+
+async function showEvidence(alertId, title) {
+  const frames = await evidenceFrames(alertId);
+  if (!frames.length) {
+    result("لا توجد صور محفوظة لهذه الحالة.", "error");
+    return;
+  }
+  el("sv-frame-title").textContent = `${title} — ${frames.length} صورة`;
+  el("sv-frame-img").hidden = true;
+  el("sv-frame-text").textContent = "";
+  const strip = el("sv-frame-strip");
+  strip.textContent = "";
+  frames.forEach((frame, index) => strip.append(shotFigure(frame, index, frames.length, title)));
+  el("sv-frame-viewer").hidden = false;
+  el("sv-frame-viewer").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 async function showFrames(camera) {
   const res = await api(`/surveillance/frames?cameraId=${camera.id}&limit=20`);
   if (!res.ok) {
     result(res.error, "error");
     return;
   }
+  el("sv-frame-strip").textContent = "";
   el("sv-frame-title").textContent = `آخر لقطات ${camera.cameraNumber}`;
   el("sv-frame-img").hidden = true;
   const text = el("sv-frame-text");
@@ -1016,8 +1066,48 @@ function table(headers, rows, emptyText) {
   return wrap;
 }
 
+/** بطاقات الحالات بالصور: لكل حالة وقتها ومكانها وموظفوها وتفاصيلها وصورها. */
+function caseCards(rows, emptyText, pending) {
+  if (!rows.length) return paragraph(emptyText);
+  const grid = document.createElement("div");
+  grid.className = "sv-cases";
+  for (const a of rows) {
+    const card = document.createElement("article");
+    card.className = "sv-case";
+    const head = document.createElement("div");
+    head.className = "sv-case__head";
+    const title = document.createElement("strong");
+    title.textContent = a.type;
+    const time = document.createElement("span");
+    time.textContent = a.time;
+    head.append(title, time);
+    const meta = document.createElement("p");
+    meta.className = "sv-case__meta";
+    meta.textContent = [
+      `الخطورة: ${a.severity}`,
+      `الكاميرا: ${a.camera} — ${a.location}`,
+      `الموظفون: ${a.employees}`,
+      `الثقة: ${a.confidence}`,
+      `المراجعة: ${a.status}`,
+    ].join(" · ");
+    card.append(head, meta);
+    if (a.details) {
+      const details = paragraph(a.details);
+      details.className = "sv-case__details";
+      card.append(details);
+    }
+    const { strip, done } = shotStrip(a.id, `${a.type} — ${a.time}`, a.evidence);
+    pending.push(done);
+    card.append(strip);
+    grid.append(card);
+  }
+  return grid;
+}
+
 function renderReport(report) {
   state.report = report;
+  const pending = [];
+  state.reportShots = pending;
   const root = el("sv-report");
   root.textContent = "";
   if (!report) return;
@@ -1078,18 +1168,34 @@ function renderReport(report) {
     ),
   );
 
-  const alertRows = (rows) =>
-    rows.map((a) => [a.severity, a.type, a.time, `${a.camera} — ${a.location}`, a.employees, a.confidence, a.clipRef, a.status]);
-  const alertHeaders = ["الخطورة", "الحالة", "الوقت", "الكاميرا والموقع", "الموظفون", "الثقة", "المقطع", "المراجعة"];
+  // الاشتباه + الرقابة الثلاثية (الكاميرات + فوديكس + الجرد) في قسم واحد بلا تكرار
+  const seen = new Set();
+  const controlCases = [...report.suspicions, ...(report.tripleControl ?? [])].filter((a) => {
+    if (seen.has(a.id)) return false;
+    seen.add(a.id);
+    return true;
+  });
+  const s4 = section(`٤. حالات الاشتباه والرقابة الثلاثية بالصور (${controlCases.length})`);
+  s4.append(caseCards(controlCases, "لا توجد حالات اشتباه ولا فروقات في الرقابة الثلاثية.", pending));
 
-  const s4 = section("٤. حالات الاشتباه (مرتبة حسب الخطورة)");
-  s4.append(table(alertHeaders, alertRows(report.suspicions), "لا توجد حالات اشتباه."));
+  const staffCases = report.staffViolations ?? [];
+  const s5 = section(`٥. مخالفات العمال بالصور (${staffCases.length})`);
+  if ((report.violationsByEmployee ?? []).length) {
+    s5.append(
+      table(
+        ["الموظف", "عدد المخالفات", "الأنواع"],
+        report.violationsByEmployee.map((m) => [m.name, m.count, m.types.map((t) => `${t.label} (${t.count})`).join("، ")]),
+        "",
+      ),
+    );
+  }
+  s5.append(caseCards(staffCases, "لا مخالفات مرصودة على العمال اليوم.", pending));
 
-  const s5 = section("٥. مشاكل العملاء");
-  s5.append(table(alertHeaders, alertRows(report.customerIssues), "لا توجد مشاكل عملاء مرصودة."));
+  const s6 = section(`٦. مشاكل العملاء والخدمة بالصور (${report.customerIssues.length})`);
+  s6.append(caseCards(report.customerIssues, "لا توجد مشاكل عملاء مرصودة.", pending));
 
-  const s6 = section("٦. أداء الموظفين");
-  s6.append(
+  const s7 = section("٧. أداء الموظفين");
+  s7.append(
     table(
       ["الموظف", "المسمى", "الحضور", "الانصراف", "الالتزام", "الإنتاجية", "الملاحظات"],
       report.staff.map((m) => [m.name, m.jobTitle, m.checkIn, m.checkOut, m.commitment, m.productivity, m.notes]),
@@ -1097,8 +1203,8 @@ function renderReport(report) {
     ),
   );
 
-  const s7 = section("٧. حالة الكاميرات");
-  s7.append(
+  const s8 = section("٨. حالة الكاميرات");
+  s8.append(
     table(
       ["الرقم", "الاسم", "المنطقة", "الحالة", "تسجّل", "فُحصت اليوم", "مشاكل اليوم", "النقاط العمياء"],
       report.cameras.map((c) => [c.number, c.name, c.zone, c.status, c.recording, c.checkedToday, c.issuesToday, c.blindSpots]),
@@ -1106,18 +1212,18 @@ function renderReport(report) {
     ),
   );
 
-  const s8 = section("٨. ثلاث توصيات لليوم التالي");
+  const s9 = section("٩. ثلاث توصيات لليوم التالي");
   const list = document.createElement("ol");
   for (const r of report.recommendations) {
     const li = document.createElement("li");
     li.textContent = r;
     list.append(li);
   }
-  s8.append(list);
+  s9.append(list);
 
   const note = paragraph(report.disclaimer);
   note.className = "hint";
-  root.append(s1, s2, s3, s4, s5, s6, s7, s8, note);
+  root.append(s1, s2, s3, s4, s5, s6, s7, s8, s9, note);
 }
 
 async function loadReport({ live = false } = {}) {
@@ -1159,10 +1265,14 @@ function escapeHtml(text) {
   return node.innerHTML;
 }
 
-function printReport() {
+async function printReport() {
   if (!state.report) return;
   const win = window.open("", "_blank");
   if (!win) return;
+  // تُنتظر صور الحالات حتى تُطبع مع التقرير
+  win.document.write('<p dir="rtl" style="font-family:Tahoma,sans-serif">جارٍ تجهيز الصور للطباعة…</p>');
+  await Promise.all(state.reportShots ?? []);
+  win.document.open();
   win.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8" />
 <title>التقرير اليومي — ${escapeHtml(state.report.branch.name)} — ${escapeHtml(state.report.date)}</title>
 <style>
@@ -1170,6 +1280,10 @@ body{font-family:"IBM Plex Sans Arabic",Tahoma,sans-serif;color:#111;margin:24px
 h3{margin:18px 0 6px;font-size:15px;border-bottom:1px solid #999;padding-bottom:4px}
 table{width:100%;border-collapse:collapse;margin:6px 0}th,td{border:1px solid #bbb;padding:4px 6px;text-align:right;vertical-align:top}
 th{background:#eee}.hint{color:#555;font-size:12px;margin-top:16px}
+.sv-cases{display:block}.sv-case{border:1px solid #999;border-radius:6px;padding:8px;margin:8px 0;break-inside:avoid}
+.sv-case__head{display:flex;justify-content:space-between;font-size:14px}.sv-case__meta{margin:4px 0;color:#333}.sv-case__details{margin:4px 0}
+.sv-shots{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}.sv-shot{margin:0;width:31%}.sv-shot img{width:100%;border:1px solid #999;border-radius:4px}
+.sv-shot figcaption{font-size:11px;color:#444;text-align:center}.sv-shots--none{color:#777;font-size:12px}
 </style></head><body>${el("sv-report").innerHTML}</body></html>`);
   win.document.close();
   win.focus();
@@ -1190,7 +1304,6 @@ async function removeRecord(kind, id, after) {
 const TAB_LOADERS = {
   live: () => refreshLiveTab(branchId()),
   alerts: refreshAlerts,
-  new: async () => {},
   orders: refreshOrders,
   waste: refreshWaste,
   cameras: async () => renderCameras(),
@@ -1217,7 +1330,7 @@ function syncReportDate() {
   el("rp-date-label").textContent = `تقرير يوم ${new Intl.DateTimeFormat("ar-SA-u-ca-gregory-nu-latn", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(d)}`;
 }
 
-const MORE_TABS = new Set(["new", "orders", "waste", "limits", "connect", "fxorders"]);
+const MORE_TABS = new Set(["orders", "waste", "limits", "connect", "fxorders"]);
 
 function setMoreOpen(open) {
   el("sv-more-tabs").hidden = !open;
@@ -1251,7 +1364,7 @@ function wire() {
   state.wired = true;
 
   el("sv-date").value = todayIso();
-  for (const id of ["sv-alert-time", "sv-order-registered", "sv-pos-time", "sv-waste-time"]) {
+  for (const id of ["sv-order-registered", "sv-pos-time", "sv-waste-time"]) {
     el(id).value = toLocalInputValue();
   }
 
@@ -1305,13 +1418,11 @@ function wire() {
   ]) {
     el(id).addEventListener("change", refreshAlerts);
   }
-  el("sv-alert-role").addEventListener("change", fillAlertTypes);
   el("sv-review-form").addEventListener("submit", submitReview);
   el("sv-review-cancel").addEventListener("click", () => {
     state.reviewId = null;
     el("sv-review-form").hidden = true;
   });
-  el("sv-alert-form").addEventListener("submit", submitAlert);
   el("sv-order-form").addEventListener("submit", submitOrder);
   el("sv-pos-form").addEventListener("submit", submitPos);
   el("sv-waste-form").addEventListener("submit", submitWaste);
