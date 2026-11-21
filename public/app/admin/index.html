@@ -1877,11 +1877,14 @@
 
       <div data-inv-tab="log" hidden>
       <p id="inventory-result" class="alert" role="status" hidden></p>
-      <!-- أُخفيت بطاقة أرصدة «سِجل» الداخلية بطلب المالك: الاعتماد على «الأرصدة من فوديكس». البيانات محفوظة. -->
-      <section class="card" hidden>
+      <section class="card">
         <div class="card__head">
-          <h2 class="card__title card__title--sm">أرصدة «سِجل» الداخلية (حسب الحركات والجرد)</h2>
+          <h2 class="card__title card__title--sm">الأرصدة حسب حركات فوديكس</h2>
         </div>
+        <p class="hint">
+          فوديكس لا يرسل رصيد الأصناف عبر الربط، فالرصيد هنا محسوب من حركاته المسحوبة: المشتريات − استهلاك الطلبات
+          − الهدر المعتمد، ويُصحَّح بالجرد. الرصيد السالب معناه أن الصنف بلا رصيد افتتاحي أو بلا جرد بعد.
+        </p>
 
         <p id="inventory-summary" class="row row--wrap"></p>
 
