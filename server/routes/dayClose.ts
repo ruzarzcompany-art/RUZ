@@ -10,7 +10,7 @@
  */
 
 import { Router, type Response } from "express";
-import { and, asc, desc, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { getDb } from "../../db/index.js";
 import { cashierClosingLines, cashierClosings, employees } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
@@ -87,6 +87,24 @@ async function withLines(rows: Array<typeof cashierClosings.$inferSelect>) {
   });
 }
 
+/**
+ * بنود مصاريف الدرج السابقة لهذا الفرع (الأكثر تكراراً أولاً) — تُعرض قائمةَ
+ * اقتراحات عند إضافة مصروف حتى يُكتب البيان بنفس الاسم كل مرة ويسهل تجميعه
+ * ومطابقته بالفواتير.
+ */
+async function expenseLabels(branchId: number): Promise<string[]> {
+  const db = getDb();
+  const rows = await db
+    .select({ label: cashierClosingLines.label, uses: sql<number>`count(*)::int` })
+    .from(cashierClosingLines)
+    .innerJoin(cashierClosings, eq(cashierClosings.id, cashierClosingLines.closingId))
+    .where(and(eq(cashierClosings.branchId, branchId), eq(cashierClosingLines.category, "expense")))
+    .groupBy(cashierClosingLines.label)
+    .orderBy(desc(sql`count(*)`), asc(cashierClosingLines.label))
+    .limit(60);
+  return rows.map((r) => r.label.trim()).filter(Boolean);
+}
+
 /* ── الكاشير ──────────────────────────────────────────────────── */
 
 dayCloseRouter.get("/dayclose/mine", requireAuth, requirePermission(PERMISSIONS.cashierSubmit), async (req: AuthedRequest, res: Response) => {
@@ -126,6 +144,7 @@ dayCloseRouter.get("/dayclose/mine", requireAuth, requirePermission(PERMISSIONS.
     closeHour: DAY_CLOSE_HOUR,
     pending: await withLines(pending),
     todayClosing: todayRow ? (await withLines([todayRow]))[0] : null,
+    expenseLabels: await expenseLabels(branch.id),
     live: { total: live.total, cash: live.cash, card: live.card + live.foodicsPay, delivery: live.deliveryApps, invoices: live.invoices },
   });
 });
@@ -284,6 +303,7 @@ dayCloseRouter.get("/dayclose", ...canRead, async (req: AuthedRequest, res: Resp
     to,
     closeHour: DAY_CLOSE_HOUR,
     openingFloat: await currentFloat(branch.id),
+    expenseLabels: await expenseLabels(branch.id),
     totals: {
       days: list.length,
       totalSales: sum("totalSales"),
