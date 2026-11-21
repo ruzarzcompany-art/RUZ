@@ -12,7 +12,7 @@
 import { Router, type Response } from "express";
 import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { getDb } from "../../db/index.js";
-import { cashierClosingLines, cashierClosings, employees } from "../../db/schema.js";
+import { cashExpenses, cashierClosingLines, cashierClosings, employees } from "../../db/schema.js";
 import { requireAuth, type AuthedRequest } from "../auth.js";
 import { clientIp, recordAudit } from "../audit.js";
 import { PERMISSIONS, hasAnyPermission, requireAnyPermission, requirePermission } from "../rbac.js";
@@ -103,6 +103,84 @@ async function expenseLabels(branchId: number): Promise<string[]> {
     .orderBy(desc(sql`count(*)`), asc(cashierClosingLines.label))
     .limit(60);
   return rows.map((r) => r.label.trim()).filter(Boolean);
+}
+
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+/** وجهات الصرف الثابتة المقترحة دائماً في «صرف من النقد». */
+const SPEND_PRESETS = ["إيجار المحل", "سكن العمال"];
+
+/**
+ * «النقد الموجود»: كل النقد الذي خرج من الدرج منذ بداية الحسابات، مطروحاً منه
+ * ما صُرف من النقد (إيجار المحل، سكن العمال ...).
+ *
+ *   صافي النقد بدون الرجيع = مبيعات النقد − المرتجعات النقدية
+ *   نقد اليوم الخارج من الدرج = المعدود − العهدة   (اليوم المؤكَّد)
+ *                              = المتوقّع − العهدة  (اليوم المعلّق، تقديراً)
+ *   النقد الموجود = مجموع نقد الأيام − المصروف من النقد
+ *
+ * المصروف من النقد يُحفظ في سجل المصاريف النقدية (cash_expenses) نفسه.
+ */
+async function cashBox(branchId: number, startDate: string | null, today: string) {
+  const db = getDb();
+  const from = startDate ?? "2000-01-01";
+  const days = await db
+    .select()
+    .from(cashierClosings)
+    .where(and(eq(cashierClosings.branchId, branchId), gte(cashierClosings.businessDate, from), lte(cashierClosings.businessDate, today)));
+  let cashSales = 0;
+  let cashRefunds = 0;
+  let drawerExpenses = 0;
+  let difference = 0;
+  let collected = 0;
+  let pendingDays = 0;
+  for (const d of days) {
+    const open = OPEN_STATUSES.includes(d.status);
+    cashSales += d.cashSales;
+    drawerExpenses += d.expenses;
+    // المتوقّع = العهدة + النقد − مصاريف الدرج − المرتجعات النقدية
+    cashRefunds += Math.max(0, d.openingFloat + d.cashSales - d.expenses - d.expectedCash);
+    if (open) {
+      pendingDays += 1;
+      collected += d.expectedCash - d.openingFloat;
+    } else {
+      difference += d.difference;
+      collected += d.countedCash - d.openingFloat;
+    }
+  }
+  const rows = await db
+    .select({ e: cashExpenses, by: employees.fullName })
+    .from(cashExpenses)
+    .leftJoin(employees, eq(cashExpenses.createdByEmployeeId, employees.id))
+    .where(and(eq(cashExpenses.branchId, branchId), gte(cashExpenses.businessDate, from), lte(cashExpenses.businessDate, today)))
+    .orderBy(desc(cashExpenses.businessDate), desc(cashExpenses.id))
+    .limit(500);
+  const spent = rows.reduce((s, r) => s + (Number(r.e.amount) || 0), 0);
+  const byLabel = new Map<string, number>();
+  for (const r of rows) byLabel.set(r.e.description, (byLabel.get(r.e.description) ?? 0) + (Number(r.e.amount) || 0));
+  return {
+    from: startDate,
+    days: days.length,
+    pendingDays,
+    cashSales: r2(cashSales),
+    cashRefunds: r2(cashRefunds),
+    netCash: r2(cashSales - cashRefunds),
+    drawerExpenses: r2(drawerExpenses),
+    difference: r2(difference),
+    collected: r2(collected),
+    spent: r2(spent),
+    onHand: r2(collected - spent),
+    byLabel: [...byLabel.entries()].map(([label, amount]) => ({ label, amount: r2(amount) })).sort((a, b) => b.amount - a.amount),
+    labels: [...new Set([...SPEND_PRESETS, ...rows.map((r) => r.e.description.trim()).filter(Boolean)])],
+    spending: rows.map((r) => ({
+      id: r.e.id,
+      businessDate: r.e.businessDate,
+      description: r.e.description,
+      amount: Number(r.e.amount) || 0,
+      notes: r.e.notes,
+      createdBy: r.by ?? "",
+    })),
+  };
 }
 
 /* ── الكاشير ──────────────────────────────────────────────────── */
@@ -304,6 +382,7 @@ dayCloseRouter.get("/dayclose", ...canRead, async (req: AuthedRequest, res: Resp
     closeHour: DAY_CLOSE_HOUR,
     openingFloat: await currentFloat(branch.id),
     expenseLabels: await expenseLabels(branch.id),
+    cashBox: await cashBox(branch.id, startDate, today),
     totals: {
       days: list.length,
       totalSales: sum("totalSales"),

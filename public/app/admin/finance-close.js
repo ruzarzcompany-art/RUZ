@@ -415,8 +415,83 @@ export async function loadDayCloses() {
   );
   state.rows = res.closings;
   setExpenseLabels(res.expenseLabels);
+  renderCashBox(res.cashBox);
   el("dc-table-empty").hidden = res.closings.length > 0;
   pager.render(res.closings, renderRow);
+}
+
+/** بطاقة «النقد الموجود وصرفه»: الرصيد النقدي منذ بداية الحسابات وما صُرف منه. */
+function renderCashBox(cb) {
+  el("cb-card").hidden = !cb;
+  if (!cb) return;
+  el("cb-since").textContent = cb.from ? `من بداية الحسابات ${cb.from} حتى اليوم` : "كل الأيام حتى اليوم";
+  el("cb-tiles").replaceChildren(
+    tile("مبيعات النقد", money(cb.cashSales), "", `${cb.days} يوم`),
+    tile("الرجيع النقدي", money(cb.cashRefunds), cb.cashRefunds > 0 ? "warn" : ""),
+    tile("النقد بدون الرجيع", money(cb.netCash), "good", "مبيعات النقد ناقص الرجيع"),
+    tile("مصاريف الدرج", money(cb.drawerExpenses)),
+    tile("فرق الصندوق", money(cb.difference), cb.difference < 0 ? "bad" : cb.difference > 0 ? "warn" : ""),
+    tile("المصروف من النقد", money(cb.spent)),
+    tile("النقد الموجود الآن", money(cb.onHand), cb.onHand < 0 ? "bad" : "good", cb.pendingDays ? `${cb.pendingDays} يوم لم يُؤكَّد — محسوب تقديراً` : "بعد كل المصاريف"),
+  );
+  const options = (cb.labels ?? []).map((l) => {
+    const o = document.createElement("option");
+    o.value = l;
+    return o;
+  });
+  el("cb-labels").replaceChildren(...options);
+  el("cb-bylabel").replaceChildren(
+    ...(cb.byLabel ?? []).map((b) => badge(`${b.label}: ${formatMoney(b.amount)}`, "")),
+  );
+  if (!el("cb-date").value) el("cb-date").value = todayIso();
+  const canWrite = state.can("cash_expenses.write");
+  el("cb-form").hidden = !canWrite;
+  const body = el("cb-table").tBodies[0];
+  body.replaceChildren(
+    ...(cb.spending ?? []).map((x) => {
+      const tr = document.createElement("tr");
+      for (const v of [x.businessDate, x.description, formatMoney(x.amount), x.notes || "—", x.createdBy || "—"]) tr.insertCell().textContent = v;
+      const act = tr.insertCell();
+      if (canWrite) {
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "btn btn--ghost btn--xs";
+        del.textContent = "حذف";
+        del.addEventListener("click", async () => {
+          if (!window.confirm(`حذف صرف «${x.description}» بمبلغ ${formatMoney(x.amount)}؟ يعود المبلغ إلى النقد الموجود.`)) return;
+          setBusy(del, true);
+          const res = await api(`/finance/expenses/${x.id}`, { method: "DELETE", body: { reason: "حذف من بطاقة النقد الموجود" } });
+          setBusy(del, false);
+          setAlert(el("fh-alert"), res.ok ? "حُذف الصرف وعاد المبلغ إلى النقد الموجود." : res.error, res.ok ? "ok" : "error");
+          if (res.ok) await loadDayCloses();
+        });
+        act.append(del);
+      }
+      return tr;
+    }),
+  );
+  el("cb-empty").hidden = (cb.spending ?? []).length > 0;
+}
+
+async function spendCash(event) {
+  event.preventDefault();
+  const button = event.target.querySelector("button");
+  const label = el("cb-label").value.trim();
+  const amount = Number(el("cb-amount").value);
+  if (!label || !(amount > 0)) return setAlert(el("fh-alert"), "اكتب التوجيه والمبلغ.", "error");
+  setBusy(button, true);
+  const res = await api("/finance/expenses", {
+    method: "POST",
+    body: { branchId: branchId(), businessDate: el("cb-date").value, description: label, amount, kind: "expense", notes: el("cb-notes").value.trim() },
+  });
+  setBusy(button, false);
+  setAlert(el("fh-alert"), res.ok ? `سُجّل صرف ${formatMoney(amount)} إلى «${label}» وخُصم من النقد الموجود.` : res.error, res.ok ? "ok" : "error");
+  if (res.ok) {
+    el("cb-label").value = "";
+    el("cb-amount").value = "";
+    el("cb-notes").value = "";
+    await loadDayCloses();
+  }
 }
 
 async function rebuild(event) {
@@ -524,6 +599,7 @@ export function initFinancePanel({ can, openMain }) {
   for (const node of document.querySelectorAll("[data-dc-manage]")) node.hidden = !can("cashier.review");
   el("dc-rebuild-form").addEventListener("submit", rebuild);
   el("dc-float-form").addEventListener("submit", saveFloat);
+  el("cb-form").addEventListener("submit", spendCash);
   el("dc-start-form").addEventListener("submit", saveStartDate);
   initBankPanel({ can, branchId });
   el("dc-float-from").value = todayIso();
