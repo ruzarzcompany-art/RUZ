@@ -460,15 +460,17 @@ export async function linkReceipts(branchId: number): Promise<number> {
 
   let linked = 0;
   for (const receipt of open) {
-    // الأقرب إجمالاً بين المستندات التي تحمل الرقم نفسه؛ والتطابق بالأرقام وحدها
-    // (بلا البادئة الحرفية) لا يُقبل إلا إذا تقارب الإجماليان
+    // الأقرب إجمالاً بين المستندات التي تحمل الرقم نفسه. التطابق بالأرقام وحدها
+    // (المحاسب كتب الرقم بلا بادئته الحرفية) يُقبل إن تقارب التاريخان أو الإجماليان
+    const receiptDate = receipt.invoiceDate ?? receipt.businessDate;
+    const nearDate = (date: string | null) => date !== null && Math.abs(new Date(`${date}T12:00:00Z`).getTime() - new Date(`${receiptDate}T12:00:00Z`).getTime()) <= 3 * 86_400_000;
     const closeTotals = (total: number) =>
-      !(receipt.invoiceTotal > 0) || !(total > 0) || Math.abs(total - receipt.invoiceTotal) <= Math.max(2, receipt.invoiceTotal * 0.03);
+      receipt.invoiceTotal > 0 && total > 0 && [1, 1.15, 1 / 1.15].some((target) => Math.abs(total / receipt.invoiceTotal - target) <= 0.03);
     const doc = docs
       .filter((d) => {
         if (taken.has(d.id)) return false;
         const match = sameInvoiceNumber(d.invoiceNumber, receipt.invoiceNumber);
-        return match === "exact" || (match === "digits" && receipt.invoiceTotal > 0 && d.total > 0 && closeTotals(d.total));
+        return match === "exact" || (match === "digits" && (nearDate(d.invoiceDate ?? d.businessDate) || closeTotals(d.total)));
       })
       .sort((x, y) => Math.abs(x.total - receipt.invoiceTotal) - Math.abs(y.total - receipt.invoiceTotal))[0];
     if (!doc) continue;
@@ -476,25 +478,67 @@ export async function linkReceipts(branchId: number): Promise<number> {
     await db.update(supplierReceipts).set({ foodicsDocId: doc.id, foodicsLinkedAt: new Date() }).where(eq(supplierReceipts.id, receipt.id));
     linked++;
 
-    // استلام فوديكس ما زال ينتظر التأكيد: يُؤكَّد بما عدّه المستلِم فعلاً
-    if (doc.confirmStatus !== "awaiting" || !receipt.receivedByEmployeeId) continue;
+    // المطابقة الكاملة: كل صنف في الاستلام مقابل سطره في فاتورة فوديكس، والعكس، والإجمالي
     const docLines = JSON.parse(doc.itemsJson || "[]") as DocLine[];
+    const awaiting = doc.confirmStatus === "awaiting" && Boolean(receipt.receivedByEmployeeId);
+    const used = new Set<DocLine>();
     const diffs: Array<{ sku: string; name: string; actual: number }> = [];
+    const issues: string[] = [];
     for (const line of parseLines(receipt.linesJson)) {
+      const label = line.itemName || line.name;
       const code = line.itemId ? codes.get(line.itemId) ?? "" : "";
-      const match = docLines.find((d) => (code && d.sku === code) || d.name === line.itemName || d.name === line.name);
-      if (!match) continue;
+      const match = docLines.find((d) => !used.has(d) && ((code && d.sku === code) || d.name === line.itemName || d.name === line.name));
+      if (!match) {
+        if (line.actualQty > 0) issues.push(`${label}: استُلم ${line.actualQty} ${line.unit} وليس في فاتورة فوديكس`);
+        continue;
+      }
+      used.add(match);
       const expected = match.received || match.ordered;
-      if (round3(line.actualQty) !== round3(expected)) diffs.push({ sku: match.sku, name: match.name, actual: line.actualQty });
+      if (round3(line.actualQty) === round3(expected)) continue;
+      diffs.push({ sku: match.sku, name: match.name, actual: line.actualQty });
+      // فرق الكمية يبلّغه تأكيد استلام فوديكس نفسه؛ هنا فقط إن كان المستند مؤكَّداً من قبل
+      if (!awaiting) issues.push(`${match.name}: فوديكس ${expected} ${match.unit} — الواصل فعلاً ${line.actualQty}`);
     }
-    await confirmStockDoc({
-      docId: doc.id,
-      employeeId: receipt.receivedByEmployeeId,
-      branchId,
-      canManage: false,
-      diffs,
-      note: `من استلام المورد المصوَّر رقم ${receipt.id}`,
-    }).catch((error) => console.error("[supplier-receipt] تأكيد استلام فوديكس:", error));
+    for (const d of docLines) {
+      const quantity = d.received || d.ordered;
+      if (!used.has(d) && quantity > 0) issues.push(`${d.name}: في فوديكس ${quantity} ${d.unit} ولم يُسجَّل في الاستلام`);
+    }
+    // فرق الإجمالي — ما لم يفسّره احتساب ضريبة القيمة المضافة (15٪) في أحد الطرفين
+    if (receipt.invoiceTotal > 0 && doc.total > 0) {
+      const ratio = doc.total / receipt.invoiceTotal;
+      const near = (target: number) => Math.abs(ratio - target) <= 0.03;
+      if (Math.abs(doc.total - receipt.invoiceTotal) > 2 && !near(1) && !near(1.15) && !near(1 / 1.15)) {
+        issues.push(`الإجمالي: الفاتورة المصوَّرة ${receipt.invoiceTotal} ريال — فوديكس ${doc.total} ريال`);
+      }
+    }
+
+    // استلام فوديكس ما زال ينتظر التأكيد: يُؤكَّد بما عدّه المستلِم فعلاً (وفرق الكمية يصل المالك منه)
+    if (awaiting) {
+      await confirmStockDoc({
+        docId: doc.id,
+        employeeId: receipt.receivedByEmployeeId!,
+        branchId,
+        canManage: false,
+        diffs,
+        note: `من استلام المورد المصوَّر رقم ${receipt.id}`,
+      }).catch((error) => console.error("[supplier-receipt] تأكيد استلام فوديكس:", error));
+    }
+
+    if (issues.length) {
+      await createAlert({
+        branchId,
+        alertType: "receipt_mismatch",
+        occurredAt: new Date(),
+        location: "المستودع",
+        employeeIds: receipt.receivedByEmployeeId ? [receipt.receivedByEmployeeId] : [],
+        confidence: "high",
+        details:
+          `مطابقة فاتورة فوديكس رقم ${doc.reference}${doc.party ? ` (${doc.party})` : ""}${doc.enteredBy ? ` — أدخلها ${doc.enteredBy}` : ""} ` +
+          `مع استلام المورد المصوَّر رقم ${receipt.id} (فاتورة ${receipt.invoiceNumber}): ${issues.join("، ")}.`.slice(0, 1500),
+        source: "auto",
+        sourceRef: `supplier-receipt-match:${receipt.id}`,
+      }).catch((error) => console.error("[supplier-receipt] تنبيه المطابقة:", error));
+    }
   }
   return linked;
 }
