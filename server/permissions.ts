@@ -61,6 +61,10 @@ export const PERMISSIONS = {
   inventoryItemsManage: "inventory.items_manage",
   /** المستلِم: يؤكّد وصول مشتريات فوديكس من تطبيقه (بلا بقية حركات المخزون) */
   stockReceive: "stock.receive",
+  /** المستلِم بالتصوير: يصوّر فاتورة المورد ويطابق الكميات الواصلة (من التطبيق أو من شاشة الدخول بالوجه) */
+  supplierReceive: "supplier_receipt.receive",
+  /** المشرف: يعتمد استلام المورد المصوَّر أو يرفضه */
+  supplierReceiptApprove: "supplier_receipt.approve",
   /** موظف الهدر: يسجّل الهدر من تطبيقه لحظة حدوثه */
   wasteRecord: "waste.record",
   /** اعتماد الهدر أو رفضه — المعتمد وحده يُخصم من المخزون */
@@ -178,6 +182,8 @@ export const PERMISSION_CATALOG: Array<{ code: string; description: string }> = 
   { code: PERMISSIONS.inventoryWrite, description: "تسجيل حركة مخزون (إدخال/إخراج/جرد)" },
   { code: PERMISSIONS.inventoryItemsManage, description: "إدارة أصناف المخزون" },
   { code: PERMISSIONS.stockReceive, description: "تأكيد استلام مشتريات فوديكس (مطابق / يوجد فرق)" },
+  { code: PERMISSIONS.supplierReceive, description: "استلام من مورد بتصوير الفاتورة ومطابقة الكميات" },
+  { code: PERMISSIONS.supplierReceiptApprove, description: "اعتماد استلام المورد المصوَّر أو رفضه" },
   { code: PERMISSIONS.wasteRecord, description: "تسجيل الهدر من تطبيق الموظف" },
   { code: PERMISSIONS.wasteApprove, description: "اعتماد الهدر أو رفضه وخصمه من المخزون" },
   {
@@ -348,6 +354,18 @@ export const SECTION_CATALOG: Array<{
     code: PERMISSIONS.stockReceive,
     label: "استلام المشتريات",
     hint: "تأكيد وصول مشتريات فوديكس من التطبيق",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.supplierReceive,
+    label: "استلام من مورد بتصوير الفاتورة",
+    hint: "تصوير فاتورة المورد ومطابقة الكميات الواصلة",
+    group: "صلاحيات التنفيذ",
+  },
+  {
+    code: PERMISSIONS.supplierReceiptApprove,
+    label: "اعتماد استلام المورد",
+    hint: "اعتماد الاستلام المصوَّر أو رفضه",
     group: "صلاحيات التنفيذ",
   },
   {
@@ -808,9 +826,20 @@ export const MODULE_CATALOG: AccessModule[] = [
   {
     key: "stock_receiving",
     label: "استلام المشتريات (المستلِم)",
-    hint: "من يؤكّد وصول مشتريات فوديكس من تطبيقه: «مطابق» أو «يوجد فرق»",
+    hint: "المخوَّلون بالاستلام: تأكيد مشتريات فوديكس، و«استلام من مورد» بتصوير الفاتورة (من التطبيق أو من شاشة الدخول بالوجه)، والمشرف الذي يعتمده",
     group: "المخزون والمشتريات",
-    levels: [{ level: 2, codes: [P.stockReceive], hint: "تأكيد الاستلام من التطبيق" }],
+    levels: [
+      {
+        level: 2,
+        codes: [P.stockReceive, P.supplierReceive],
+        hint: "مستلِم: تأكيد الاستلام وتصوير فاتورة المورد ومطابقة الكميات",
+      },
+      {
+        level: 4,
+        codes: [P.stockReceive, P.supplierReceive, P.supplierReceiptApprove],
+        hint: "مشرف: اعتماد استلام المورد المصوَّر أو رفضه",
+      },
+    ],
   },
   {
     key: "waste",

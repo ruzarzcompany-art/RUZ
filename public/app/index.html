@@ -78,6 +78,10 @@
                                 التحضير / الانصراف السريع
                   </button>
 
+        <button id="receive-open" class="btn btn--ghost btn--sm" type="button">
+          استلام من مورد
+        </button>
+
       </form>
 
       <!-- ── استعادة كلمة المرور ─────────────────────────────── -->
@@ -188,6 +192,50 @@
                           </form>
 
               </section>
+
+      <!-- ── استلام من مورد (بالوجه ثم تصوير الفاتورة، بلا تسجيل دخول) ── -->
+      <section id="receive-card" class="card card--form" hidden>
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">استلام من مورد</h2>
+          <button id="receive-close" class="btn btn--ghost btn--xs" type="button">رجوع للدخول</button>
+        </div>
+
+        <div id="receive-identify">
+          <p class="hint">
+            للمخوَّلين بالاستلام فقط: اضغط «بدء» للتعرّف على وجهك، ثم صوّر فاتورة المورد وطابق الكميات
+            الواصلة فعلاً.
+          </p>
+
+          <div class="face__stage">
+            <video id="receive-video" class="face__video" playsinline muted></video>
+          </div>
+
+          <button id="receive-start" class="btn btn--primary btn--sm" type="button">
+            <span class="btn__label">بدء — التعرّف على الوجه</span>
+            <span class="btn__spinner" aria-hidden="true"></span>
+          </button>
+
+          <p id="receive-status" class="hint">—</p>
+
+          <form id="receive-pin-form" class="form-grid" novalidate hidden>
+            <p class="hint field--wide">تعذّرت مطابقة الوجه مرّتين. أدخل رقمك الوظيفي ورمز PIN للمتابعة.</p>
+            <label class="field field--sm">
+              <span class="field__label">الرقم الوظيفي</span>
+              <input id="receive-pin-code" type="text" inputmode="numeric" dir="ltr" placeholder="EMP-1001" />
+            </label>
+            <label class="field field--sm">
+              <span class="field__label">رمز PIN</span>
+              <input id="receive-pin-value" type="password" inputmode="numeric" dir="ltr" maxlength="12" />
+            </label>
+            <button id="receive-pin-submit" class="btn btn--primary btn--sm" type="submit">تأكيد</button>
+          </form>
+        </div>
+
+        <p id="receive-result" class="alert" role="status" hidden></p>
+        <p id="receive-who" class="hint" hidden></p>
+        <!-- تُبنى من supplier-receive.js بعد التعرّف على المستلِم -->
+        <div id="receive-flow" hidden></div>
+      </section>
     </main>
 
     <!-- ── شاشة تسجيل الحضور ─────────────────────────────────────── -->
@@ -427,6 +475,18 @@
         <p id="rcv-alert" class="alert" role="status" hidden></p>
         <div id="rcv-mine"></div>
         <p id="rcv-mine-empty" class="empty" hidden>لا استلام بانتظار تأكيدك الآن.</p>
+
+        <section id="sup-rcv-box" hidden>
+          <h3 class="card__title card__title--sm">استلام من مورد — تصوير الفاتورة</h3>
+          <!-- تُبنى من supplier-receive.js: التصوير ثم مطابقة الكميات ثم الإرسال للمشرف -->
+          <div id="sup-rcv-flow"></div>
+        </section>
+
+        <section id="sup-review-box" hidden>
+          <h3 class="card__title card__title--sm">استلامات المورد بانتظار اعتمادك</h3>
+          <!-- تُبنى من supplier-review.js: صورة الفاتورة والكميات ثم اعتماد أو رفض -->
+          <div id="sup-review-flow"></div>
+        </section>
 
         <section id="waste-box" hidden>
           <h3 class="card__title card__title--sm">تسجيل الهدر</h3>

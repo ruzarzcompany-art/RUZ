@@ -82,7 +82,11 @@ function showLogin(message) {
   el("screen-punch").hidden = true;
   el("screen-login").hidden = false;
   el("reset-card").hidden = true;
+  el("receive-card").hidden = true;
   el("login-form").hidden = false;
+  // شاشتا استلام المورد تُبنيان من جديد للمستخدم التالي
+  state.supplierReceive = null;
+  state.supplierReview = null;
   if (message) setAlert(el("login-error"), message, "error");
 }
 
@@ -493,16 +497,32 @@ async function notifyPendingClose() {
 function inventoryRoles() {
   const has = (code) => state.permissions.includes(code);
   const move = levelOf("inventory_movements") >= 2 && has("inventory.write");
-  return { move, receive: move || has("stock.receive"), waste: move || has("waste.record") || has("waste.approve") };
+  return {
+    move,
+    receive: move || has("stock.receive"),
+    waste: move || has("waste.record") || has("waste.approve"),
+    photo: move || has("supplier_receipt.receive"),
+    approve: has("supplier_receipt.approve") || has("inventory.items_manage"),
+  };
 }
 
 /** شارة على تبويب المخزون بعدد الاستلامات التي تنتظر تأكيد الموظف. */
 async function notifyPendingReceive() {
-  if (!state.allowedPanels.has("inventory") || !inventoryRoles().receive) return;
-  const res = await api("/stock/mine");
+  const roles = inventoryRoles();
+  if (!state.allowedPanels.has("inventory") || !(roles.receive || roles.approve)) return;
   const tab = el("extras-nav").querySelector('[data-panel="inventory"]');
-  if (!res.ok || !tab) return;
-  const waiting = (res.docs ?? []).filter((d) => d.state === "received").length;
+  if (!tab) return;
+  let waiting = 0;
+  if (roles.receive) {
+    const res = await api("/stock/mine");
+    if (res.ok) waiting += (res.docs ?? []).filter((d) => d.state === "received").length;
+  }
+  // المشرف: استلامات المورد المصوَّرة التي تنتظر اعتماده
+  if (roles.approve) {
+    const since = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    const res = await api(`/supplier-receipts?status=pending&from=${since}`);
+    if (res.ok) waiting += res.totals?.pending ?? 0;
+  }
   if (!tab.dataset.label) tab.dataset.label = tab.textContent;
   tab.textContent = waiting ? `${tab.dataset.label} (${waiting})` : tab.dataset.label;
   tab.classList.toggle("tab--attention", waiting > 0);
@@ -527,7 +547,23 @@ async function showPanel(key) {
 
   if (key === "inventory") {
     // ثلاثة أدوار مستقلة تُحدَّد من «إدارة الصلاحيات»: حركة المخزون، المستلِم، موظف الهدر
-    const { move, receive, waste } = inventoryRoles();
+    const { move, receive, waste, photo, approve } = inventoryRoles();
+    el("sup-rcv-box").hidden = !photo;
+    if (photo) {
+      if (!state.supplierReceive) {
+        const { mountSupplierReceive } = await import("./supplier-receive.js");
+        state.supplierReceive = mountSupplierReceive(el("sup-rcv-flow"));
+      }
+      await state.supplierReceive.refresh();
+    }
+    el("sup-review-box").hidden = !approve;
+    if (approve) {
+      if (!state.supplierReview) {
+        const { mountSupplierReview } = await import("./supplier-review.js");
+        state.supplierReview = mountSupplierReview(el("sup-review-flow"), { compact: true });
+      }
+      await state.supplierReview.refresh();
+    }
     el("self-inv-manual").hidden = !move;
     for (const id of ["rcv-hint", "rcv-mine"]) el(id).hidden = !receive;
     if (!receive) el("rcv-mine-empty").hidden = true;
@@ -640,7 +676,7 @@ async function loadProfile() {
     state.allowedPanels.add("cashier");
   }
   const roles = inventoryRoles();
-  if (roles.move || roles.receive || roles.waste) state.allowedPanels.add("inventory");
+  if (roles.move || roles.receive || roles.waste || roles.photo || roles.approve) state.allowedPanels.add("inventory");
   if (!state.allowedPanels.has(state.panel)) state.panel = "punch";
   paintPanels();
   notifyPendingClose();
@@ -698,6 +734,7 @@ el("login-form").addEventListener("submit", async (event) => {
 
 function showResetCard(show) {
   el("reset-card").hidden = !show;
+  el("receive-card").hidden = true;
   el("login-form").hidden = show;
 
   if (!show) return;
@@ -1032,6 +1069,7 @@ function showKioskCard(show) {
     el("kiosk-card").hidden = !show;
     el("login-form").hidden = show;
     el("reset-card").hidden = true;
+    el("receive-card").hidden = true;
 
     if (!show) return;
 
@@ -1044,6 +1082,132 @@ function showKioskCard(show) {
     el("kiosk-pin-code").value = "";
     el("kiosk-pin-value").value = "";
 }
+
+/* ── استلام من مورد من شاشة الدخول (وجه ← تصوير الفاتورة ← مطابقة) ── */
+
+const receiveState = { attempts: 0, busy: false };
+
+function showReceiveCard(show) {
+  el("receive-card").hidden = !show;
+  el("login-form").hidden = show;
+  el("reset-card").hidden = true;
+  el("kiosk-card").hidden = true;
+  if (!show) return;
+
+  receiveState.attempts = 0;
+  receiveState.busy = false;
+  el("receive-identify").hidden = false;
+  el("receive-start").hidden = false;
+  el("receive-pin-form").hidden = true;
+  el("receive-flow").hidden = true;
+  el("receive-flow").replaceChildren();
+  el("receive-who").hidden = true;
+  setAlert(el("receive-result"), "");
+  el("receive-status").textContent = "—";
+  el("receive-pin-code").value = "";
+  el("receive-pin-value").value = "";
+}
+
+/** بعد التعرّف على المستلِم: تُفتح شاشة تصوير الفاتورة بتذكرته القصيرة. */
+async function openReceiveFlow(response) {
+  const { mountSupplierReceive } = await import("./supplier-receive.js");
+  el("receive-identify").hidden = true;
+  el("receive-who").textContent = `المستلِم: ${response.employee.fullName} — ${response.branchName}`;
+  el("receive-who").hidden = false;
+  setAlert(el("receive-result"), "");
+  const flow = el("receive-flow");
+  flow.hidden = false;
+  const view = mountSupplierReceive(flow, {
+    ticket: response.ticket,
+    // جهاز مشترك: بعد الإرسال تُغلق شاشة المستلِم ويعود التعرّف على الوجه للتالي
+    onSubmitted: (result) => {
+      showReceiveCard(true);
+      setAlert(el("receive-result"), result.message, "ok");
+    },
+    onExpired: (message) => {
+      showReceiveCard(true);
+      setAlert(el("receive-result"), message ?? "انتهت مهلة الاستلام. ابدأ من جديد.", "error");
+    },
+  });
+  await view.refresh();
+  // تُفتح كاميرا التصوير مباشرة إن سمح المتصفح، وإلا يضغط المستلِم «صوّر الفاتورة»
+  try {
+    view.openCamera();
+  } catch {
+    /* يكفي الزر */
+  }
+}
+
+async function startReceive(button, identity) {
+  if (receiveState.busy) return;
+  receiveState.busy = true;
+  setBusy(button, true);
+  setAlert(el("receive-result"), "");
+
+  const failedMatch = (message) => {
+    receiveState.attempts += 1;
+    setAlert(el("receive-result"), message, "error");
+    if (receiveState.attempts >= 2) {
+      el("receive-start").hidden = true;
+      el("receive-pin-form").hidden = false;
+    }
+  };
+
+  try {
+    let body = identity;
+    if (!body) {
+      el("receive-status").textContent = "جارٍ فتح الكاميرا ومطابقة وجهك…";
+      try {
+        const capture = await captureFaceDescriptor(el("receive-video"), (text) => {
+          el("receive-status").textContent = text;
+        });
+        body = { descriptor: capture.descriptor };
+      } catch (error) {
+        failedMatch(error.message);
+        return;
+      }
+    }
+
+    el("receive-status").textContent = "جارٍ تحديد موقعك…";
+    const position = await requestPosition();
+
+    el("receive-status").textContent = "جارٍ التحقق من صلاحية الاستلام…";
+    const response = await api("/kiosk/receive/start", {
+      method: "POST",
+      body: { ...body, latitude: position.coords.latitude, longitude: position.coords.longitude },
+    });
+
+    if (response.ok) {
+      await openReceiveFlow(response);
+      return;
+    }
+    if (response.matched === false) {
+      failedMatch(response.error);
+      return;
+    }
+    setAlert(el("receive-result"), response.error ?? "تعذّر بدء الاستلام", "error");
+  } catch (error) {
+    setAlert(el("receive-result"), error.message, "error");
+  } finally {
+    el("receive-status").textContent = "—";
+    setBusy(button, false);
+    receiveState.busy = false;
+  }
+}
+
+el("receive-open").addEventListener("click", () => {
+  setAlert(el("login-error"), "");
+  showReceiveCard(true);
+});
+el("receive-close").addEventListener("click", () => showReceiveCard(false));
+el("receive-start").addEventListener("click", () => startReceive(el("receive-start"), null));
+el("receive-pin-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  startReceive(el("receive-pin-submit"), {
+    employeeCode: el("receive-pin-code").value.trim(),
+    pin: el("receive-pin-value").value.trim(),
+  });
+});
 
 /* ── الإقلاع ───────────────────────────────────────────────── */
 

@@ -91,6 +91,7 @@ export const ROUTES: Record<string, Route> = {
   waste_over_limit: { first: "owner", escalate: false, anyAge: true },
   waste_not_reviewed: { first: "manager", escalate: true, anyAge: true, zone: "kitchen" },
   receipt_not_confirmed: { first: "manager", escalate: true, anyAge: true, zone: "warehouse" },
+  receipt_pending_approval: { first: "manager", escalate: true, anyAge: true, zone: "warehouse" },
   // تقفيل اليوم → مدير الفرع ثم المالك إن لم يؤكّد الاستلام
   cashier_not_closed: { first: "manager", escalate: true, anyAge: true, zone: "cashier" },
   stock_mismatch: { first: "owner", escalate: false, anyAge: true },
