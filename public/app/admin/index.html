@@ -1619,6 +1619,7 @@
         <div class="tabs" id="inv-tabs" role="tablist">
           <button class="tab is-active" type="button" data-inv="stock">الأرصدة من فوديكس</button>
           <button class="tab" type="button" data-inv="receive">الاستلام اليومي</button>
+          <button class="tab" type="button" data-inv="invoices">استلام المورد</button>
           <button class="tab" type="button" data-inv="prices">تغيّر الأسعار</button>
           <button class="tab" type="button" data-inv="waste">الهدر</button>
           <button class="tab" type="button" data-inv="count">الجرد اليومي</button>
@@ -1742,6 +1743,31 @@
           «المشتري» هو من أدخل الشراء في فوديكس، و«المستلِم» من أكّد الاستلام في «سِجل»،
           و«المندوب» اسم جهة الاتصال وجوالها في بطاقة المورد بفوديكس (الموردون ← المورد ← اسم جهة الاتصال).
         </p>
+      </section>
+      </div>
+
+      <div data-inv-tab="invoices" hidden>
+      <section class="card">
+        <div class="card__head">
+          <h2 class="card__title card__title--sm">استلام من مورد — تصوير الفاتورة ثم اعتماد المشرف</h2>
+        </div>
+        <details class="howto" open>
+          <summary><strong>آلية استلام المورد (4 خطوات)</strong></summary>
+          <ol class="hint">
+            <li><strong>المستلِم:</strong> من شاشة دخول «سِجل» يضغط «استلام من مورد» فيُتعرَّف على وجهه (بلا تسجيل دخول)، أو من تطبيقه ← المخزون، ثم يصوّر الفاتورة.</li>
+            <li><strong>القراءة الآلية:</strong> تُقرأ الفاتورة وتظهر أصنافها جاهزة؛ المستلِم يعدّ كل صنف ويضغط «تأكيد»، ويكتب الواصل فعلاً إن اختلف.</li>
+            <li><strong>المشرف:</strong> يبقى الاستلام معلّقاً حتى يعتمده المشرف هنا أو من تطبيقه (يصله تنبيه)، بعد مطابقة الصورة بالكميات.</li>
+            <li><strong>المحاسب:</strong> المعتمد يبقى «بانتظار رفع المحاسب» إلى أن تُرفع الفاتورة في فوديكس بالرقم نفسه، فتُربط آلياً ويُؤكَّد استلامها بالكميات التي عدّها المستلِم — ورصيد المخزون يدخل من فوديكس وحده فلا تُحسب الفاتورة مرتين.</li>
+          </ol>
+          <p class="hint">تحديد الأشخاص: الإعدادات ← إدارة الصلاحيات ← «المخزون والمشتريات» ← بند «استلام المشتريات (المستلِم)»: الدرجة 2 للمستلِم، والدرجة 4 للمشرف المعتمِد.</p>
+        </details>
+        <details id="sup-admin-capture-box" class="form-grid" hidden>
+          <summary><strong>تصوير فاتورة واستلامها من هنا</strong></summary>
+          <!-- تُبنى من supplier-receive.js -->
+          <div id="sup-admin-capture"></div>
+        </details>
+        <!-- تُبنى من supplier-review.js: الفلاتر والبطاقات والاعتماد -->
+        <div id="sup-admin-review"></div>
       </section>
       </div>
 

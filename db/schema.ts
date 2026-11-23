@@ -2555,3 +2555,58 @@ export const foodicsConsumptionDays = pgTable(
   },
   (table) => [uniqueIndex("foodics_consumption_days_key_idx").on(table.branchId, table.businessDate)],
 );
+
+/* ══ استلام من مورد بتصوير الفاتورة ═══════════════════════════════
+ * المستلِم يصوّر فاتورة المورد (من تطبيقه، أو من شاشة الدخول بعد التعرّف على
+ * وجهه)، فيقرأها النموذج ويجهّز الأصناف، ثم يطابق المستلِم الكمية الواصلة
+ * فعلاً ويؤكّد كل بند. بعدها يبقى الاستلام «معلّقاً» حتى يعتمده المشرف.
+ * لا يُدخل هذا الجدول شيئاً إلى المخزون: المخزون يأتي من فوديكس وحده، فيبقى
+ * الاستلام المعتمد «بانتظار رفع المحاسب» إلى أن تصل فاتورة فوديكس بالرقم نفسه
+ * فتُربط به آلياً. جدول جديد فقط.
+ * ══════════════════════════════════════════════════════════════════ */
+
+export const supplierReceipts = pgTable(
+  "supplier_receipts",
+  {
+    id: serial().primaryKey(),
+    branchId: integer("branch_id")
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    businessDate: date("business_date").notNull(),
+    /** kiosk = من شاشة الدخول بالوجه، app = من تطبيق الموظف، admin = من لوحة الإدارة */
+    source: text().notNull().default("app"),
+    /** face | pin | session */
+    verifyMethod: text("verify_method").notNull().default("session"),
+    /** draft = صُوّرت ولم تُؤكَّد، pending = بانتظار المشرف، approved | rejected */
+    status: text().notNull().default("draft"),
+    supplier: text().notNull().default(""),
+    invoiceNumber: text("invoice_number").notNull().default(""),
+    invoiceDate: date("invoice_date"),
+    invoiceTotal: money("invoice_total"),
+    /** أصناف الفاتورة بصيغة JSON: الاسم، الصنف المطابق، كمية الفاتورة، الواصل فعلاً، السعر */
+    linesJson: text("lines_json").notNull().default("[]"),
+    /** عدد البنود التي يختلف فيها الواصل فعلاً عن المكتوب في الفاتورة */
+    diffCount: integer("diff_count").notNull().default(0),
+    photoKey: text("photo_key").notNull().default(""),
+    /** ملاحظة قراءة النموذج (وضوح الصورة...) */
+    aiNote: text("ai_note").notNull().default(""),
+    notes: text().notNull().default(""),
+    receivedByEmployeeId: integer("received_by_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }),
+    reviewedByEmployeeId: integer("reviewed_by_employee_id").references(() => employees.id, {
+      onDelete: "set null",
+    }),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    reviewNote: text("review_note").notNull().default(""),
+    /** مستند الشراء المقابل في فوديكس بعد رفع المحاسب (عمود عادي بلا مفتاح أجنبي) */
+    foodicsDocId: integer("foodics_doc_id"),
+    foodicsLinkedAt: timestamp("foodics_linked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("supplier_receipts_branch_date_idx").on(table.branchId, table.businessDate),
+    index("supplier_receipts_status_idx").on(table.branchId, table.status),
+  ],
+);

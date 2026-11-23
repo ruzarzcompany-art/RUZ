@@ -180,7 +180,7 @@ export function decodePhoto(
   return { data, contentType: match[1] };
 }
 
-async function savePhoto(key: string, data: Buffer, contentType: string): Promise<void> {
+export async function savePhoto(key: string, data: Buffer, contentType: string): Promise<void> {
   const store = photoStore();
   await store.set(
     key,
@@ -189,7 +189,7 @@ async function savePhoto(key: string, data: Buffer, contentType: string): Promis
   await store.set(`${key}.type`, contentType);
 }
 
-async function loadPhoto(key: string): Promise<{ data: Buffer; contentType: string } | null> {
+export async function loadPhoto(key: string): Promise<{ data: Buffer; contentType: string } | null> {
   if (!key) return null;
   const store = photoStore();
   const buffer = await store.get(key, { type: "arrayBuffer" });

@@ -373,6 +373,27 @@ table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid 
   w.document.close();
 }
 
+/* ── استلام المورد بتصوير الفاتورة ─────────────────────────────── */
+
+async function loadSupplierReceipts() {
+  const branchId = () => el("inventory-branch").value || "";
+  if (!state.supplierReview) {
+    const { mountSupplierReview } = await import("../supplier-review.js");
+    state.supplierReview = mountSupplierReview(el("sup-admin-review"), { getBranchId: branchId });
+  }
+  const res = await state.supplierReview.refresh();
+  // نموذج التصوير لمن يملك الاستلام فقط — يُبنى عند أول حاجة
+  el("sup-admin-capture-box").hidden = !res?.canReceive;
+  if (res?.canReceive && !state.supplierCapture) {
+    const { mountSupplierReceive } = await import("../supplier-receive.js");
+    state.supplierCapture = mountSupplierReceive(el("sup-admin-capture"), {
+      getBranchId: branchId,
+      fromAdmin: true,
+      onSubmitted: () => state.supplierReview.refresh(),
+    });
+  }
+}
+
 /* ── التبويبات ─────────────────────────────────────────────────── */
 
 async function showTab(tab) {
@@ -382,6 +403,7 @@ async function showTab(tab) {
   setAlert(el("stk-alert"), "");
   if (tab === "stock") await loadItems();
   if (tab === "receive") await loadDocs();
+  if (tab === "invoices") await loadSupplierReceipts();
   if (tab === "prices") await loadPrices();
   if (tab === "waste") await loadWaste();
   if (tab === "count") {

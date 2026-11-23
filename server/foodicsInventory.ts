@@ -872,6 +872,10 @@ export async function runInventoryTick(budgetMs = 20_000) {
     } catch (error) {
       console.error(`[inventory] فرع ${branch.id}:`, (error as Error).message);
     }
+    // فواتير رفعها المحاسب للتوّ تُربط باستلامات المورد المصوَّرة المعتمدة
+    await import("./supplierReceipts.js")
+      .then((m) => m.linkReceipts(branch.id))
+      .catch((error) => console.error(`[supplier-receipt] فرع ${branch.id}:`, (error as Error).message));
     reminded += await remindUnconfirmed(branch);
     await runWasteTick(branch).catch((error) => console.error(`[waste] فرع ${branch.id}:`, (error as Error).message));
     await checkTablesWithoutInvoice(branch).catch((error) => console.error(`[leakage] فرع ${branch.id}:`, (error as Error).message));

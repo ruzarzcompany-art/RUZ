@@ -293,6 +293,14 @@ export const ALERT_TYPES: Record<string, AlertTypeSpec> = {
     severity: 2,
     action: "مقارنة الفاتورة بالفاتورة السابقة للصنف، وسؤال المشتري والمندوب عن سبب التغيّر، وطلب عرض سعر من مورد آخر إن لزم.",
   },
+  receipt_pending_approval: {
+    label: "استلام من مورد بانتظار اعتماد المشرف",
+    role: "warehouse",
+    urgent: false,
+    suspicion: false,
+    severity: 3,
+    action: "افتح المخزون ← «استلام المورد»، طابق صورة الفاتورة بالكميات الواصلة، ثم اعتمد أو ارفض.",
+  },
   receipt_not_confirmed: {
     label: "استلام في فوديكس لم يؤكّده أحد",
     role: "warehouse",
