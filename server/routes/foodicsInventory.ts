@@ -26,6 +26,7 @@ import {
   confirmStockDoc,
   docView,
   itemsWithStock,
+  exportFoodics,
   probeFoodics,
   syncConsumption,
   syncInventoryItems,
@@ -247,6 +248,23 @@ stockRouter.post("/stock/test", ...canManage, async (req: AuthedRequest, res: Re
 });
 
 /** فحص قراءة فقط لمسار مخزون في فوديكس — لمعرفة الحقول الفعلية (مثل مسار الأرصدة). */
+/** تصدير للتحليل فقط: صفحة كاملة من مسار مخزون في فوديكس بلا حفظ. */
+stockRouter.post("/stock/export", ...canManage, async (req: AuthedRequest, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const path = (asString(body.path, 120) ?? "").trim().replace(/^\/+/, "");
+  const params: Record<string, string> = {};
+  if (body.params && typeof body.params === "object") {
+    for (const [k, v] of Object.entries(body.params as Record<string, unknown>).slice(0, 8)) {
+      if (/^[a-z_[\]]{1,40}$/.test(k) && typeof v === "string") params[k] = v.slice(0, 100);
+    }
+  }
+  try {
+    res.json({ ok: true, ...(await exportFoodics(path, params)) });
+  } catch (error) {
+    fail(res, error);
+  }
+});
+
 stockRouter.post("/stock/probe", ...canManage, async (req: AuthedRequest, res: Response) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const path = (asString(body.path, 120) ?? "").trim().replace(/^\/+/, "");
