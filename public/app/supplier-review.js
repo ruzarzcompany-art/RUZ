@@ -118,18 +118,29 @@ export function mountSupplierReview(container, { getBranchId = () => "", compact
       const diff = Number(line.actualQty) - Number(line.invoiceQty);
       const tr = node("tr", { class: diff !== 0 ? "row--attention" : "" }, [
         node("td", { text: line.itemName && line.itemName !== line.name ? `${line.name} ← ${line.itemName}` : line.name }),
-        node("td", { text: `${qty(line.invoiceQty)} ${line.unit}` }),
-        node("td", { text: `${qty(line.actualQty)} ${line.unit}` }),
+        node("td", { text: line.unit || "—" }),
+        node("td", { text: qty(line.invoiceQty) }),
+        node("td", { text: qty(line.actualQty) }),
         node("td", { text: diff === 0 ? "مطابق" : diff < 0 ? `ناقص ${qty(-diff)}` : `زائد ${qty(diff)}` }),
         node("td", { text: line.unitPrice ? formatMoney(line.unitPrice) : "—" }),
+        node("td", { text: line.lineTotal ? formatMoney(line.lineTotal) : "—" }),
       ]);
-      if (!line.itemId) tr.lastChild.textContent += " · غير مربوط بصنف";
+      if (!line.itemId) tr.firstChild.textContent += " · غير مربوط بصنف";
       body.append(tr);
+    }
+    const linesTotal = r.lines.reduce((sum, line) => sum + Number(line.lineTotal || 0), 0);
+    if (linesTotal) {
+      body.append(
+        node("tr", {}, [
+          node("td", { colSpan: 6, text: "مجموع إجمالي تكلفة البنود" }),
+          node("td", {}, [node("strong", { text: formatMoney(linesTotal) })]),
+        ]),
+      );
     }
     box.append(
       node("div", { class: "table-wrap" }, [
         node("table", { class: "table" }, [
-          node("thead", {}, [node("tr", {}, ["الصنف", "في الفاتورة", "الواصل فعلاً", "الفرق", "سعر الوحدة"].map((text) => node("th", { text })))]),
+          node("thead", {}, [node("tr", {}, ["الصنف", "الوحدة", "الكمية في الفاتورة", "الواصل فعلاً", "الفرق", "تكلفة الوحدة", "إجمالي التكلفة"].map((text) => node("th", { text })))]),
           body,
         ]),
       ]),
