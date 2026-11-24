@@ -57,6 +57,11 @@ export interface ReceiptLine {
   actualQty: number;
   unitPrice: number;
   lineTotal: number;
+  /**
+   * عدد الحبات داخل الوحدة المكتوبة في الفاتورة (كرتون فيه 12 حبة = 12).
+   * 0 أو 1 = الوحدة مفردة. الكمية والتكلفة تبقيان بوحدة الفاتورة.
+   */
+  packSize?: number;
   /** أكّد المستلِم هذا البند بعد عدّه */
   confirmed: boolean;
   /** ثقة القراءة: high | medium | low */
@@ -155,7 +160,11 @@ export async function analyzeInvoice(image: Buffer, contentType: string): Promis
                   name: { type: "string", description: "item name exactly as written on the invoice" },
                   itemId: { type: ["integer", "null"], description: "id of the matching inventory item, or null" },
                   quantity: { type: "number" },
-                  unit: { type: "string" },
+                  unit: { type: "string", description: "the unit the quantity is counted in, as written (carton, box, kg, piece...)" },
+                  packSize: {
+                    type: "number",
+                    description: "pieces inside ONE unit when the unit is a carton/box/pack/shrink (e.g. '12×1L', '24 حبة', 'كرتون 12' → 12). 0 if not written on the invoice.",
+                  },
                   unitPrice: { type: "number" },
                   lineTotal: { type: "number" },
                   confidence: { type: "string", enum: ["high", "medium", "low"] },
@@ -186,6 +195,8 @@ export async function analyzeInvoice(image: Buffer, contentType: string): Promis
               "Rules:",
               "- One entry per item line, in the order written. Do not include totals, VAT, discount or delivery rows as lines.",
               "- quantity is the delivered quantity written on the invoice, in the unit written on it. Convert Arabic-Indic digits to Western digits.",
+              "- quantity counts the unit written on the invoice (4 cartons → quantity 4, unit كرتون). Do NOT multiply it by the pack contents; report the pieces per carton/box/pack in packSize only when the invoice shows it (in the item name, size or packing column), otherwise 0.",
+              "- unitPrice is the price of one such unit (one carton), and lineTotal is quantity × unitPrice before VAT.",
               "- Never invent a line or a number. If a value is unreadable use 0 and set confidence to low.",
               "- invoiceDate must be Gregorian YYYY-MM-DD; convert a Hijri date only if you are sure, otherwise leave it empty.",
               "- itemId: choose the id of the inventory item below that is clearly the same product (same thing, even if the wording or language differs). If no item clearly matches, use null. Do not force a match.",
@@ -215,6 +226,7 @@ export async function analyzeInvoice(image: Buffer, contentType: string): Promis
     const item = byId.get(Number(line.itemId));
     const quantity = round3(amount(line.quantity));
     const unitPrice = round2(amount(line.unitPrice));
+    const pack = Math.round(amount(line.packSize));
     return {
       name: text(line.name, 200) || item?.name || "صنف غير مقروء",
       itemId: item?.id ?? null,
@@ -224,6 +236,7 @@ export async function analyzeInvoice(image: Buffer, contentType: string): Promis
       actualQty: quantity,
       unitPrice,
       lineTotal: round2(amount(line.lineTotal) || quantity * unitPrice),
+      packSize: pack > 1 && pack <= 10_000 ? pack : 0,
       confirmed: false,
       confidence: levels.includes(String(line.confidence)) ? String(line.confidence) : "low",
     };
@@ -495,6 +508,9 @@ export async function linkReceipts(branchId: number): Promise<number> {
       used.add(match);
       const expected = match.received || match.ordered;
       if (round3(line.actualQty) === round3(expected)) continue;
+      // الفاتورة بالكرتون وفوديكس بالحبة (4 كرتون × 12 = 48 حبة): مطابق
+      const pack = Number(line.packSize) || 0;
+      if (pack > 1 && round3(line.actualQty * pack) === round3(expected)) continue;
       diffs.push({ sku: match.sku, name: match.name, actual: line.actualQty });
       // فرق الكمية يبلّغه تأكيد استلام فوديكس نفسه؛ هنا فقط إن كان المستند مؤكَّداً من قبل
       if (!awaiting) issues.push(`${match.name}: فوديكس ${expected} ${match.unit} — الواصل فعلاً ${line.actualQty}`);

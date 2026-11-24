@@ -118,9 +118,9 @@ export function mountSupplierReview(container, { getBranchId = () => "", compact
       const diff = Number(line.actualQty) - Number(line.invoiceQty);
       const tr = node("tr", { class: diff !== 0 ? "row--attention" : "" }, [
         node("td", { text: line.itemName && line.itemName !== line.name ? `${line.name} ← ${line.itemName}` : line.name }),
-        node("td", { text: line.unit || "—" }),
+        node("td", { text: `${line.unit || "—"}${line.packSize > 1 ? ` × ${line.packSize} حبة` : ""}` }),
         node("td", { text: qty(line.invoiceQty) }),
-        node("td", { text: qty(line.actualQty) }),
+        node("td", { text: `${qty(line.actualQty)}${line.packSize > 1 ? ` (= ${qty(line.actualQty * line.packSize)} حبة)` : ""}` }),
         node("td", { text: diff === 0 ? "مطابق" : diff < 0 ? `ناقص ${qty(-diff)}` : `زائد ${qty(diff)}` }),
         node("td", { text: line.unitPrice ? formatMoney(line.unitPrice) : "—" }),
         node("td", { text: line.lineTotal ? formatMoney(line.lineTotal) : "—" }),

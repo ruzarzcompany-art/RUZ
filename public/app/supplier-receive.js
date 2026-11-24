@@ -166,9 +166,17 @@ export function mountSupplierReceive(container, { ticket = "", getBranchId = () 
     const unit = node("input", { type: "text", maxLength: 40, value: line.unit || "", placeholder: "كيلو، كرتون، حبة..." });
     const price = node("input", { type: "number", step: "any", min: "0", inputMode: "decimal", value: line.unitPrice ? String(line.unitPrice) : "" });
     const total = node("input", { type: "number", step: "any", min: "0", inputMode: "decimal" });
+    const pack = node("input", { type: "number", step: "1", min: "0", inputMode: "numeric", value: line.packSize > 1 ? String(line.packSize) : "", placeholder: "مثال: 12" });
+    const packNote = node("span", { class: "hint" });
     const paintTotal = () => {
       const value = lineCost(line);
       total.value = value ? String(value) : "";
+      const size = Number(line.packSize) || 0;
+      const quantity = Number(line.actualQty ?? line.invoiceQty) || 0;
+      packNote.textContent =
+        size > 1 && quantity > 0
+          ? `${qty(quantity)} ${line.unit || "وحدة"} × ${size} = ${qty(quantity * size)} حبة${line.unitPrice ? ` · تكلفة الحبة ${formatMoney(round2(line.unitPrice / size))}` : ""}`
+          : "";
     };
     const ok = node("button", { class: "btn btn--primary btn--sm", type: "button" });
     const remove = node("button", { class: "btn btn--ghost btn--xs", type: "button", text: "حذف البند" });
@@ -212,6 +220,12 @@ export function mountSupplierReceive(container, { ticket = "", getBranchId = () 
     });
     unit.addEventListener("input", () => {
       line.unit = unit.value.trim();
+      paintTotal();
+      unconfirm();
+    });
+    pack.addEventListener("input", () => {
+      line.packSize = Math.round(Number(pack.value)) || 0;
+      paintTotal();
       unconfirm();
     });
     price.addEventListener("input", () => {
@@ -248,11 +262,13 @@ export function mountSupplierReceive(container, { ticket = "", getBranchId = () 
       node("div", { class: "form-grid__fields" }, [
         field("الصنف في المخزون", select),
         field("الوحدة", unit),
+        field("عدد الحبات في الوحدة (كرتون/شدّة)", pack),
         field("الكمية في الفاتورة", invoice),
         field("الكمية الواصلة فعلاً", actual),
         field("تكلفة الوحدة", price),
         field("إجمالي التكلفة", total),
       ]),
+      packNote,
       node("div", { class: "row row--wrap" }, [ok, diffNote, remove]),
     );
     line.paint = paint;
@@ -340,7 +356,7 @@ export function mountSupplierReceive(container, { ticket = "", getBranchId = () 
   });
 
   addLine.addEventListener("click", () => {
-    const line = { name: "", itemId: null, itemName: "", unit: "", invoiceQty: 0, actualQty: null, unitPrice: 0, lineTotal: 0, confirmed: false, confidence: "high" };
+    const line = { name: "", itemId: null, itemName: "", unit: "", invoiceQty: 0, actualQty: null, unitPrice: 0, lineTotal: 0, packSize: 0, confirmed: false, confidence: "high" };
     state.lines.push(line);
     linesBox.append(lineCard(line));
     paintProgress();
