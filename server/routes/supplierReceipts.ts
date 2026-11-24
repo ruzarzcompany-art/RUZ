@@ -333,6 +333,7 @@ supplierReceiptsRouter.post("/supplier-receipts/:id/submit", receiverAuth, async
     const invoiceQty = asNumber(line.invoiceQty) ?? 0;
     const actualQty = asNumber(line.actualQty);
     const unitPrice = asNumber(line.unitPrice) ?? 0;
+    const packSize = Math.round(asNumber(line.packSize) ?? 0);
     if (!name) return fail(400, `${label}: اختر الصنف`);
     if (actualQty === null || actualQty < 0 || actualQty > 1_000_000) return fail(400, `«${name}»: اكتب الكمية الواصلة فعلاً`);
     if (invoiceQty < 0 || invoiceQty > 1_000_000 || unitPrice < 0 || unitPrice > 1_000_000) return fail(400, `«${name}»: رقم غير منطقي`);
@@ -346,6 +347,7 @@ supplierReceiptsRouter.post("/supplier-receipts/:id/submit", receiverAuth, async
       actualQty: round3(actualQty),
       unitPrice: round2(unitPrice),
       lineTotal: round2(actualQty * unitPrice),
+      packSize: packSize > 1 && packSize <= 10_000 ? packSize : 0,
       confirmed: true,
       confidence: asEnum(line.confidence, ["high", "medium", "low"] as const) ?? "high",
     });
