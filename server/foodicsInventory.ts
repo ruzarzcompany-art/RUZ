@@ -1011,8 +1011,34 @@ export async function testInventory(branch: BranchRow) {
  * فحص قراءة فقط لأي مسار مخزون في فوديكس (للمالك): يعيد أول سجلين كما هما
  * لمعرفة أسماء الحقول الفعلية في الحساب. لا يكتب شيئاً في فوديكس.
  */
+const PROBE_PATH = /^(inventory|purchase|transfer|warehouse|branches|supplier|reports\/inventory|stock|quantity_adjust|inventory_count|production|waste)[a-z_/0-9-]*$/;
+const PRIVATE_KEYS = new Set(["pin", "email", "cc_emails", "password", "token", "api_token"]);
+
+/** يحذف الحقول الحساسة (رموز الدخول والبريد) من رد فوديكس قبل إعادته. */
+function scrub(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(scrub);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([k]) => !PRIVATE_KEYS.has(k))
+        .map(([k, v]) => [k, scrub(v)]),
+    );
+  }
+  return value;
+}
+
+/**
+ * تصدير للتحليل فقط: صفحة كاملة (50 صفاً) من مسار مخزون في فوديكس كما هي،
+ * بلا حفظ أي شيء في «سِجل». للمدير فقط، وبنفس قائمة المسارات المسموحة للفحص.
+ */
+export async function exportFoodics(path: string, params: Record<string, string>) {
+  if (!PROBE_PATH.test(path)) throw new FoodicsError("المسار غير مسموح", 400);
+  const body = await foodicsGet(path, { ...params, per_page: "50" });
+  return { path, meta: body.meta ?? null, data: scrub(Array.isArray(body.data) ? body.data : []) };
+}
+
 export async function probeFoodics(path: string, params: Record<string, string>) {
-  if (!/^(inventory|purchase|transfer|warehouse|branches|supplier|reports\/inventory|stock|quantity_adjust|inventory_count|production|waste)[a-z_/0-9-]*$/.test(path)) {
+  if (!PROBE_PATH.test(path)) {
     throw new FoodicsError("المسار غير مسموح للفحص", 400);
   }
   const body = await foodicsGet(path, { per_page: "2", ...params });
