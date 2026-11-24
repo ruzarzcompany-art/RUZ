@@ -16,6 +16,9 @@ const PHOTO_QUALITY = 0.78;
 const STATUS_BADGES = { pending: "badge--warn", approved: "badge--ok", rejected: "badge--disputed" };
 
 const qty = (v) => String(Math.round(Number(v || 0) * 1000) / 1000);
+const round2 = (v) => Math.round(Number(v || 0) * 100) / 100;
+/** إجمالي تكلفة البند = الكمية الواصلة فعلاً (وإن لم تُكتب فكمية الفاتورة) × تكلفة الوحدة */
+const lineCost = (line) => round2((line.actualQty ?? line.invoiceQty ?? 0) * (line.unitPrice || 0));
 
 function node(tag, props = {}, children = []) {
   const element = document.createElement(tag);
@@ -106,6 +109,7 @@ export function mountSupplierReceive(container, { ticket = "", getBranchId = () 
   const notes = node("textarea", { rows: 2, maxLength: 1000, placeholder: "نقص، تالف، بديل..." });
   const linesBox = node("div", { class: "sup-lines" });
   const progress = node("p", { class: "hint" });
+  const linesSum = node("p", { class: "hint sup-sum" });
   const send = node("button", { class: "btn btn--primary", type: "button" }, [
     node("span", { class: "btn__label", text: "إرسال الاستلام للمشرف" }),
     node("span", { class: "btn__spinner" }),
@@ -120,10 +124,11 @@ export function mountSupplierReceive(container, { ticket = "", getBranchId = () 
       field("تاريخ الفاتورة", invoiceDate),
       field("إجمالي الفاتورة", invoiceTotal),
     ]),
-    node("p", { class: "hint", text: "عُدّ كل صنف وصل، ثم اضغط «تأكيد» عليه. إن اختلف الواصل عن الفاتورة فاكتب الكمية الواصلة فعلاً قبل التأكيد." }),
+    node("p", { class: "hint", text: "عُدّ كل صنف وصل وراجع وحدته وكميته وتكلفة الوحدة وإجمالي التكلفة كما في الفاتورة، ثم اضغط «تأكيد» عليه. إن اختلف الواصل عن الفاتورة فاكتب الكمية الواصلة فعلاً قبل التأكيد." }),
     linesBox,
     node("div", { class: "row row--wrap" }, [confirmAll, addLine, retake]),
     field("ملاحظات (اختياري)", notes, "field--wide"),
+    linesSum,
     progress,
     send,
   ]);
@@ -145,6 +150,8 @@ export function mountSupplierReceive(container, { ticket = "", getBranchId = () 
       ? `أُكّد ${done} من ${state.lines.length} صنف${diffs ? ` — ${diffs} بفرق عن الفاتورة` : ""}.`
       : "لا أصناف بعد — أضف الأصناف يدوياً أو أعد التصوير.";
     send.disabled = state.lines.length === 0 || done !== state.lines.length;
+    const sum = round2(state.lines.reduce((total, line) => total + lineCost(line), 0));
+    linesSum.textContent = state.lines.length ? `مجموع إجمالي تكلفة البنود: ${formatMoney(sum)} (قارنه بإجمالي الفاتورة قبل الضريبة).` : "";
   }
 
   function lineCard(line) {
@@ -156,6 +163,13 @@ export function mountSupplierReceive(container, { ticket = "", getBranchId = () 
     const select = node("select", {}, itemOptions(line.itemId));
     const invoice = node("input", { type: "number", step: "any", min: "0", inputMode: "decimal", value: qty(line.invoiceQty) });
     const actual = node("input", { type: "number", step: "any", min: "0", inputMode: "decimal", value: qty(line.actualQty), class: "sup-actual" });
+    const unit = node("input", { type: "text", maxLength: 40, value: line.unit || "", placeholder: "كيلو، كرتون، حبة..." });
+    const price = node("input", { type: "number", step: "any", min: "0", inputMode: "decimal", value: line.unitPrice ? String(line.unitPrice) : "" });
+    const total = node("input", { type: "number", step: "any", min: "0", inputMode: "decimal" });
+    const paintTotal = () => {
+      const value = lineCost(line);
+      total.value = value ? String(value) : "";
+    };
     const ok = node("button", { class: "btn btn--primary btn--sm", type: "button" });
     const remove = node("button", { class: "btn btn--ghost btn--xs", type: "button", text: "حذف البند" });
     const diffNote = node("span", { class: "hint" });
@@ -180,6 +194,7 @@ export function mountSupplierReceive(container, { ticket = "", getBranchId = () 
       line.itemName = item?.name ?? "";
       if (item) {
         line.unit = line.unit || item.unit;
+        unit.value = line.unit;
         if (!line.name) line.name = item.name;
         title.textContent = line.name;
       }
@@ -187,12 +202,31 @@ export function mountSupplierReceive(container, { ticket = "", getBranchId = () 
     });
     invoice.addEventListener("input", () => {
       line.invoiceQty = Number(invoice.value) || 0;
+      paintTotal();
       unconfirm();
     });
     actual.addEventListener("input", () => {
       line.actualQty = actual.value === "" ? null : Number(actual.value);
+      paintTotal();
       unconfirm();
     });
+    unit.addEventListener("input", () => {
+      line.unit = unit.value.trim();
+      unconfirm();
+    });
+    price.addEventListener("input", () => {
+      line.unitPrice = Number(price.value) || 0;
+      paintTotal();
+      unconfirm();
+    });
+    // كتابة الإجمالي كما في الفاتورة تحسب تكلفة الوحدة تلقائياً
+    total.addEventListener("input", () => {
+      const quantity = Number(line.actualQty ?? line.invoiceQty) || 0;
+      line.unitPrice = quantity > 0 ? round2((Number(total.value) || 0) / quantity) : 0;
+      price.value = line.unitPrice ? String(line.unitPrice) : "";
+      unconfirm();
+    });
+    total.addEventListener("change", paintTotal);
     ok.addEventListener("click", () => {
       if (!line.confirmed) {
         if (!line.name && !line.itemId) return setAlert(alert, "اختر الصنف أولاً", "error");
@@ -213,12 +247,16 @@ export function mountSupplierReceive(container, { ticket = "", getBranchId = () 
       head,
       node("div", { class: "form-grid__fields" }, [
         field("الصنف في المخزون", select),
-        field(`في الفاتورة${line.unit ? ` (${line.unit})` : ""}`, invoice),
-        field("الواصل فعلاً", actual),
+        field("الوحدة", unit),
+        field("الكمية في الفاتورة", invoice),
+        field("الكمية الواصلة فعلاً", actual),
+        field("تكلفة الوحدة", price),
+        field("إجمالي التكلفة", total),
       ]),
       node("div", { class: "row row--wrap" }, [ok, diffNote, remove]),
     );
     line.paint = paint;
+    paintTotal();
     paint();
     return card;
   }
