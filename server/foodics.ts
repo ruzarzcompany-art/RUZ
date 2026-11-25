@@ -1092,7 +1092,13 @@ export interface OrdersFilter {
   state?: string;
   channel?: string;
   q?: string;
+  /** yes = فواتير فيها خصم، no = بدون خصم */
+  discount?: "yes" | "no";
+  /** تصنيف طريقة الدفع: cash | card | foodics | delivery_app | other */
+  payKind?: string;
 }
+
+const likeTerm = (v: string) => `%${v.replace(/[%_\\]/g, (m) => `\\${m}`)}%`;
 
 function ordersWhere(branchId: number, f: OrdersFilter) {
   const conds = [
@@ -1102,8 +1108,15 @@ function ordersWhere(branchId: number, f: OrdersFilter) {
   ];
   if (f.state) conds.push(eq(foodicsOrders.state, f.state));
   if (f.channel) conds.push(eq(foodicsOrders.channel, f.channel));
+  if (f.discount === "yes") conds.push(sql`${foodicsOrders.discount} > 0`);
+  if (f.discount === "no") conds.push(sql`${foodicsOrders.discount} <= 0`);
+  if (f.payKind) {
+    conds.push(
+      sql`exists (select 1 from jsonb_array_elements(${foodicsOrders.paymentsJson}::jsonb) as pk where pk->>'kind' = ${f.payKind})`,
+    );
+  }
   if (f.q) {
-    const term = `%${f.q.replace(/[%_\\]/g, (m) => `\\${m}`)}%`;
+    const term = likeTerm(f.q);
     conds.push(sql`(${foodicsOrders.reference} ilike ${term} or ${foodicsOrders.creatorName} ilike ${term} or ${foodicsOrders.itemsJson} ilike ${term})`);
   }
   return and(...conds);
@@ -1142,7 +1155,7 @@ export async function listFoodicsOrders(branchId: number, f: OrdersFilter, page:
 }
 
 /** ملخّص الفترة: الإجمالي، حسب الشهر، حسب القناة، حسب طريقة الدفع، وأكثر الأصناف مبيعاً. */
-export async function foodicsOrdersSummary(branchId: number, f: OrdersFilter) {
+export async function foodicsOrdersSummary(branchId: number, f: OrdersFilter, lite = false) {
   const db = getDb();
   const where = ordersWhere(branchId, { ...f, state: undefined });
   const closed = sql`${foodicsOrders.state} = 'closed'`;
@@ -1176,28 +1189,12 @@ export async function foodicsOrdersSummary(branchId: number, f: OrdersFilter) {
     .groupBy(sql`1`)
     .orderBy(sql`1 desc`);
 
-  const byChannel = await db
-    .select({
-      channel: foodicsOrders.channel,
-      invoices: sql<number>`count(*)::int`,
-      sales: sql<number>`coalesce(sum(${foodicsOrders.total}), 0)`,
-    })
-    .from(foodicsOrders)
-    .where(and(where, closed))
-    .groupBy(foodicsOrders.channel);
-
-  // طرق الدفع والأصناف من حقول JSON مباشرة في القاعدة
-  const payRes = await db.execute(sql`
-    select p->>'name' as name, p->>'kind' as kind, count(*)::int as count, coalesce(sum((p->>'amount')::float8), 0) as amount
-    from ${foodicsOrders}, jsonb_array_elements(${foodicsOrders.paymentsJson}::jsonb) as p
-    where ${where} and ${closed}
-    group by 1, 2 order by 4 desc limit 20`);
-  const itemRes = await db.execute(sql`
-    select i->>'name' as name, coalesce(sum((i->>'quantity')::float8), 0) as quantity, coalesce(sum((i->>'amount')::float8), 0) as amount
-    from ${foodicsOrders}, jsonb_array_elements(${foodicsOrders.itemsJson}::jsonb) as i
-    where ${where} and ${closed} and coalesce((i->>'voided')::boolean, false) = false
-    group by 1 order by 2 desc limit 20`);
-  const rowsOf = (r: any): any[] => (Array.isArray(r) ? r : (r?.rows ?? []));
+  // lite: الواجهة الجديدة تطلب المربعات الثلاثة كلٌّ بتصفيته من /breakdown
+  const [byChannel, payments, topItems] = lite ? [[], [], []] : await Promise.all([
+    ordersByChannel(branchId, { ...f, state: "closed" }),
+    ordersByPayment(branchId, { ...f, state: "closed" }),
+    ordersTopItems(branchId, { ...f, state: "closed" }),
+  ]);
 
   const invoices = Number(totals?.invoices ?? 0);
   const sales = round2(Number(totals?.sales ?? 0));
@@ -1215,8 +1212,70 @@ export async function foodicsOrdersSummary(branchId: number, f: OrdersFilter) {
       lastDate: totals?.lastDate ?? null,
     },
     monthly: monthly.map((m) => ({ ...m, sales: round2(Number(m.sales)), discounts: round2(Number(m.discounts)) })),
-    byChannel: byChannel.map((c) => ({ ...c, sales: round2(Number(c.sales)) })),
-    payments: rowsOf(payRes).map((p) => ({ name: String(p.name ?? ""), kind: String(p.kind ?? ""), count: Number(p.count), amount: round2(Number(p.amount)) })),
-    topItems: rowsOf(itemRes).map((i) => ({ name: String(i.name ?? ""), quantity: round2(Number(i.quantity)), amount: round2(Number(i.amount)) })),
+    byChannel,
+    payments,
+    topItems,
   };
+}
+
+const rowsOf = (r: any): any[] => (Array.isArray(r) ? r : (r?.rows ?? []));
+
+/** المبيعات حسب نوع الطلب — تحترم كل عوامل التصفية بما فيها الحالة. */
+export async function ordersByChannel(branchId: number, f: OrdersFilter) {
+  const rows = await getDb()
+    .select({
+      channel: foodicsOrders.channel,
+      invoices: sql<number>`count(*)::int`,
+      sales: sql<number>`coalesce(sum(${foodicsOrders.total}), 0)`,
+      discounts: sql<number>`coalesce(sum(${foodicsOrders.discount}), 0)`,
+    })
+    .from(foodicsOrders)
+    .where(ordersWhere(branchId, f))
+    .groupBy(foodicsOrders.channel)
+    .orderBy(sql`3 desc`);
+  return rows.map((c) => ({
+    channel: c.channel,
+    invoices: Number(c.invoices),
+    sales: round2(Number(c.sales)),
+    discounts: round2(Number(c.discounts)),
+  }));
+}
+
+/** طرق الدفع من حقل JSON مباشرة؛ payKind هنا يحصر سطور الدفع نفسها بالتصنيف. */
+export async function ordersByPayment(branchId: number, f: OrdersFilter) {
+  const where = ordersWhere(branchId, { ...f, payKind: undefined });
+  const kind = f.payKind ? sql`and p->>'kind' = ${f.payKind}` : sql``;
+  const res = await getDb().execute(sql`
+    select p->>'name' as name, p->>'kind' as kind, count(*)::int as count, coalesce(sum((p->>'amount')::float8), 0) as amount
+    from ${foodicsOrders}, jsonb_array_elements(${foodicsOrders.paymentsJson}::jsonb) as p
+    where ${where} ${kind}
+    group by 1, 2 order by 4 desc limit 50`);
+  return rowsOf(res).map((p) => ({
+    name: String(p.name ?? ""),
+    kind: String(p.kind ?? ""),
+    count: Number(p.count),
+    amount: round2(Number(p.amount)),
+  }));
+}
+
+/** أكثر الأصناف مبيعاً: الترتيب بالكمية أو بالمبلغ، مع بحث باسم الصنف. */
+export async function ordersTopItems(
+  branchId: number,
+  f: OrdersFilter,
+  opts: { sort?: "quantity" | "amount"; limit?: number; item?: string } = {},
+) {
+  const where = ordersWhere(branchId, f);
+  const limit = Math.min(100, Math.max(1, Math.floor(opts.limit ?? 20)));
+  const order = opts.sort === "amount" ? sql`3 desc` : sql`2 desc`;
+  const item = opts.item ? sql`and i->>'name' ilike ${likeTerm(opts.item)}` : sql``;
+  const res = await getDb().execute(sql`
+    select i->>'name' as name, coalesce(sum((i->>'quantity')::float8), 0) as quantity, coalesce(sum((i->>'amount')::float8), 0) as amount
+    from ${foodicsOrders}, jsonb_array_elements(${foodicsOrders.itemsJson}::jsonb) as i
+    where ${where} and coalesce((i->>'voided')::boolean, false) = false ${item}
+    group by 1 order by ${order} limit ${sql.raw(String(limit))}`);
+  return rowsOf(res).map((i) => ({
+    name: String(i.name ?? ""),
+    quantity: round2(Number(i.quantity)),
+    amount: round2(Number(i.amount)),
+  }));
 }

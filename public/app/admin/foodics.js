@@ -294,23 +294,78 @@ function isoToday() {
 function setRange(kind) {
   const today = isoToday();
   el("fo-to").value = today;
-  if (kind === "month") el("fo-from").value = `${today.slice(0, 8)}01`;
+  if (kind === "today") el("fo-from").value = today;
+  else if (kind === "month") el("fo-from").value = `${today.slice(0, 8)}01`;
   else if (kind === "year") el("fo-from").value = `${today.slice(0, 5)}01-01`;
   else el("fo-from").value = "2015-01-01";
 }
 
-function foQuery(extra = {}) {
-  const params = new URLSearchParams({
-    branchId: String(fo.branchId),
-    from: el("fo-from").value,
-    to: el("fo-to").value,
-    ...extra,
-  });
-  for (const [key, id] of [["state", "fo-state"], ["channel", "fo-channel"], ["q", "fo-q"]]) {
-    const v = el(id).value.trim();
-    if (v) params.set(key, v);
+const foForm = (key) => document.querySelector(`[data-fo-box="${key}"]`);
+const FO_BOXES = ["channel", "payments", "items", "orders"];
+
+/** استعلام مربع واحد: حقول نموذجه غير الفارغة + الفرع. */
+function boxQuery(key, extra = {}) {
+  const params = new URLSearchParams({ branchId: String(fo.branchId) });
+  for (const [k, v] of new FormData(foForm(key))) {
+    const value = String(v).trim();
+    if (value) params.set(k, value);
   }
+  for (const [k, v] of Object.entries(extra)) params.set(k, v);
   return params.toString();
+}
+
+/** ينسخ الفترة العامة إلى كل المربعات. */
+function syncBoxDates() {
+  for (const key of FO_BOXES) {
+    const form = foForm(key);
+    form.elements.from.value = el("fo-from").value;
+    form.elements.to.value = el("fo-to").value;
+  }
+}
+
+/** وصف التصفية المختارة — يظهر في رأس الورقة المطبوعة. */
+function boxMeta(key) {
+  const form = foForm(key);
+  const parts = [`الفترة ${form.elements.from.value || "—"} إلى ${form.elements.to.value || "—"}`];
+  for (const field of form.querySelectorAll("select, input[type=search]")) {
+    if (field.name === "pageSize" || field.name === "limit") continue;
+    const label = field.closest("label")?.querySelector(".field__label")?.textContent ?? "";
+    const value = field.tagName === "SELECT" ? field.selectedOptions[0]?.textContent : field.value.trim();
+    if (field.value && value) parts.push(`${label}: ${value}`);
+  }
+  return parts.join(" · ");
+}
+
+function printBox(key) {
+  const source = el(`fo-${key}-body`).querySelector("table");
+  if (!source) return note("لا بيانات للطباعة في هذا المربع.", "warn");
+  const copy = source.cloneNode(true);
+  // تفاصيل الأصناف تُطبع نصاً ظاهراً لا قائمة مطوية
+  for (const d of copy.querySelectorAll("details")) {
+    const text = [...d.querySelectorAll("li")].map((li) => li.textContent).join("، ");
+    d.replaceWith(document.createTextNode(text));
+  }
+  const esc = (x) => String(x ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const title = `فواتير فوديكس — ${el(`fo-${key}-title`).textContent}`;
+  const extra = key === "orders" ? ` · ${el("fo-pager").querySelector(".hint")?.textContent ?? "صفحة 1 من 1"}` : "";
+  const html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${esc(title)}</title>
+<style>@page{size:A4 ${key === "orders" ? "landscape" : "portrait"};margin:12mm}body{font-family:Tahoma,Arial,sans-serif;color:#111}h1{font-size:18px;margin:0 0 4px}.meta{font-size:12px;color:#444;margin-bottom:10px}
+table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #999;padding:4px;text-align:right}th{background:#eee}tr.total td{font-weight:bold;background:#f6f6f6}</style></head>
+<body><h1>${esc(title)}</h1><div class="meta">${esc(boxMeta(key) + extra)}</div>${copy.outerHTML}
+<script>window.onload=()=>window.print()</script></body></html>`;
+  const w = window.open("", "_blank");
+  if (!w) return note("اسمح بالنوافذ المنبثقة للطباعة.", "warn");
+  w.document.write(html);
+  w.document.close();
+}
+
+const pct = (part, whole) => (whole ? `${Math.round((part / whole) * 100)}%` : "—");
+
+/** جدول بسطر إجمالي أخير مميَّز. */
+function tableWithTotal(headers, rows, total, emptyText) {
+  const node = table(headers, rows.length ? [...rows, total] : [], emptyText);
+  node.querySelector("tbody tr:last-child")?.classList.add("total");
+  return node;
 }
 
 function statBox(title, value, sub) {
@@ -349,12 +404,13 @@ async function loadFoStatus() {
 async function loadFoSummary() {
   const box = el("fo-summary");
   box.replaceChildren(para("جارٍ حساب الملخّص…"));
-  const res = await api(`/foodics/orders/summary?${foQuery()}`);
+  const params = new URLSearchParams({ branchId: String(fo.branchId), from: el("fo-from").value, to: el("fo-to").value, lite: "1" });
+  const res = await api(`/foodics/orders/summary?${params}`);
   if (!res.ok) {
     box.replaceChildren(para(res.error ?? "تعذّر تحميل الملخّص"));
     return;
   }
-  const { totals: t, monthly, byChannel, payments, topItems } = res.summary;
+  const { totals: t, monthly } = res.summary;
   const stats = document.createElement("div");
   stats.className = "row row--wrap";
   stats.append(
@@ -373,25 +429,53 @@ async function loadFoSummary() {
       monthly.map((m) => [m.month, String(m.invoices), money(m.sales), money(m.invoices ? m.sales / m.invoices : 0), money(m.discounts), String(m.voids), String(m.returns)]),
       "لا بيانات.",
     ),
-    heading("حسب نوع الطلب"),
-    table(
-      ["النوع", "الفواتير", "المبيعات", "النسبة"],
-      byChannel.map((c) => [CHANNEL_TEXT[c.channel] ?? c.channel, String(c.invoices), money(c.sales), t.sales ? `${Math.round((c.sales / t.sales) * 100)}%` : "—"]),
-      "لا بيانات.",
-    ),
-    heading("طرق الدفع"),
-    table(
-      ["طريقة الدفع", "التصنيف", "العدد", "المبلغ"],
-      payments.map((p) => [p.name, PAY_KIND_TEXT[p.kind] ?? p.kind, String(p.count), money(p.amount)]),
-      "لا بيانات.",
-    ),
-    heading("أكثر 20 صنفاً مبيعاً"),
-    table(
-      ["الصنف", "الكمية", "المبلغ"],
-      topItems.map((i) => [i.name || "—", String(i.quantity), money(i.amount)]),
-      "لا بيانات.",
-    ),
   );
+}
+
+async function loadBreakdown(key) {
+  const body = el(`fo-${key}-body`);
+  body.replaceChildren(para("جارٍ التحميل…"));
+  const res = await api(`/foodics/orders/breakdown?${boxQuery(key, { part: key })}`);
+  if (!res.ok) {
+    body.replaceChildren(para(res.error ?? "تعذّر التحميل"));
+    return;
+  }
+  const rows = res.rows;
+  if (key === "channel") {
+    const invoices = rows.reduce((a, c) => a + c.invoices, 0);
+    const sales = rows.reduce((a, c) => a + c.sales, 0);
+    const discounts = rows.reduce((a, c) => a + c.discounts, 0);
+    body.replaceChildren(
+      tableWithTotal(
+        ["النوع", "الفواتير", "المبيعات", "الخصومات", "متوسط الفاتورة", "النسبة"],
+        rows.map((c) => [CHANNEL_TEXT[c.channel] ?? c.channel, String(c.invoices), money(c.sales), money(c.discounts), money(c.invoices ? c.sales / c.invoices : 0), pct(c.sales, sales)]),
+        ["الإجمالي", String(invoices), money(sales), money(discounts), money(invoices ? sales / invoices : 0), sales ? "100%" : "—"],
+        "لا بيانات مطابقة.",
+      ),
+    );
+  } else if (key === "payments") {
+    const count = rows.reduce((a, p) => a + p.count, 0);
+    const amount = rows.reduce((a, p) => a + p.amount, 0);
+    body.replaceChildren(
+      tableWithTotal(
+        ["طريقة الدفع", "التصنيف", "العدد", "المبلغ", "النسبة"],
+        rows.map((p) => [p.name || "—", PAY_KIND_TEXT[p.kind] ?? p.kind, String(p.count), money(p.amount), pct(p.amount, amount)]),
+        ["الإجمالي", "", String(count), money(amount), amount ? "100%" : "—"],
+        "لا بيانات مطابقة.",
+      ),
+    );
+  } else {
+    const form = foForm("items");
+    const byAmount = form.elements.sort.value === "amount";
+    el("fo-items-title").textContent = `أكثر ${form.elements.limit.value} صنفاً مبيعاً${byAmount ? " (بالمبلغ)" : ""}`;
+    body.replaceChildren(
+      table(
+        ["#", "الصنف", "الكمية", "المبلغ"],
+        rows.map((i, n) => [String(n + 1), i.name || "—", String(i.quantity), money(i.amount)]),
+        "لا أصناف مطابقة.",
+      ),
+    );
+  }
 }
 
 function orderDetails(o) {
@@ -409,15 +493,15 @@ function orderDetails(o) {
 }
 
 async function loadFoList() {
-  const box = el("fo-list");
+  const box = el("fo-orders-body");
   box.replaceChildren(para("جارٍ تحميل الفواتير…"));
-  const res = await api(`/foodics/orders?${foQuery({ page: String(fo.page) })}`);
+  const res = await api(`/foodics/orders?${boxQuery("orders", { page: String(fo.page) })}`);
   if (!res.ok) {
     box.replaceChildren(para(res.error ?? "تعذّر تحميل الفواتير"));
     return;
   }
+  el("fo-orders-title").textContent = `الفواتير (${res.total.toLocaleString("ar-SA")})`;
   box.replaceChildren(
-    heading(`الفواتير (${res.total.toLocaleString("ar-SA")})`),
     table(
       ["التاريخ", "رقم الفاتورة", "الوقت", "النوع", "الحالة", "الإجمالي", "الخصم", "الدفع", "الكاشير", "التجهيز", "الأصناف"],
       res.orders.map((o) => {
@@ -462,9 +546,16 @@ async function loadFoList() {
   }
 }
 
-async function loadFoAll() {
+function loadBox(key) {
+  if (key !== "orders") return loadBreakdown(key);
   fo.page = 1;
-  await Promise.all([loadFoSummary(), loadFoList()]);
+  return loadFoList();
+}
+
+/** الفترة العامة تُنسخ لكل المربعات ثم يُحمَّل كل شيء. */
+async function loadFoAll() {
+  syncBoxDates();
+  await Promise.all([loadFoSummary(), ...FO_BOXES.map(loadBox)]);
 }
 
 async function runBackfill(event) {
@@ -532,6 +623,20 @@ function wireFo() {
     setRange(range);
     loadFoAll();
   });
+  for (const key of FO_BOXES) {
+    const form = foForm(key);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      loadBox(key);
+    });
+    form.querySelector("[data-fo-print]").addEventListener("click", () => printBox(key));
+    form.querySelector("[data-fo-clear]").addEventListener("click", () => {
+      form.reset();
+      form.elements.from.value = el("fo-from").value;
+      form.elements.to.value = el("fo-to").value;
+      loadBox(key);
+    });
+  }
   el("fo-backfill-form").addEventListener("submit", runBackfill);
   el("fo-backfill-stop").addEventListener("click", () => {
     fo.stop = true;
