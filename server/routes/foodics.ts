@@ -11,6 +11,7 @@
  *   POST /api/foodics/backfill                سحب كل الفواتير السابقة صفحةً صفحة (أرشيف)
  *   GET  /api/foodics/orders?branchId=&from=&to=&state=&channel=&q=&page=   أرشيف الفواتير
  *   GET  /api/foodics/orders/summary?branchId=&from=&to=                    ملخّص الفترة
+ *   GET  /api/foodics/orders/breakdown?part=channel|payments|items&…        مربعات التحليل بتصفية مستقلة
  */
 
 import { Router, type Response } from "express";
@@ -28,6 +29,9 @@ import {
   foodicsDaySales,
   foodicsOrdersSummary,
   listFoodicsOrders,
+  ordersByChannel,
+  ordersByPayment,
+  ordersTopItems,
   foodicsStatus,
   saveFoodicsToken,
   syncBranch,
@@ -223,12 +227,16 @@ function ordersFilter(req: AuthedRequest, timeZone: string) {
   const state = asString(req.query.state, 20) ?? "";
   const channel = asString(req.query.channel, 20) ?? "";
   const q = (asString(req.query.q, 100) ?? "").trim();
+  const discount = asString(req.query.discount, 5) ?? "";
+  const payKind = asString(req.query.payKind, 20) ?? "";
   return {
     from: from <= to ? from : to,
     to: from <= to ? to : from,
     state: ["closed", "void", "returned", "open", "other"].includes(state) ? state : undefined,
     channel: ["dine_in", "takeaway", "delivery", "drive_thru"].includes(channel) ? channel : undefined,
     q: q || undefined,
+    discount: discount === "yes" || discount === "no" ? (discount as "yes" | "no") : undefined,
+    payKind: ["cash", "card", "foodics", "delivery_app", "other"].includes(payKind) ? payKind : undefined,
   };
 }
 
@@ -239,7 +247,41 @@ foodicsRouter.get("/foodics/orders/summary", ...canRead, async (req: AuthedReque
     return;
   }
   const filter = ordersFilter(req, branch.timezone);
-  res.json({ ok: true, filter, summary: await foodicsOrdersSummary(branch.id, filter) });
+  res.json({ ok: true, filter, summary: await foodicsOrdersSummary(branch.id, filter, req.query.lite === "1") });
+});
+
+/**
+ * مربعات التحليل، لكل مربع تصفيته المستقلة:
+ * part = channel | payments | items. الحالة الافتراضية «مدفوعة»، و state=all لكل الحالات.
+ */
+foodicsRouter.get("/foodics/orders/breakdown", ...canRead, async (req: AuthedRequest, res: Response) => {
+  const branch = await loadBranch(branchIdOf(req, req.query.branchId));
+  if (!branch) {
+    res.status(400).json({ ok: false, error: "اختر الفرع" });
+    return;
+  }
+  const base = ordersFilter(req, branch.timezone);
+  const filter = { ...base, state: req.query.state === "all" ? undefined : (base.state ?? "closed") };
+  const part = asString(req.query.part, 20) ?? "";
+  try {
+    if (part === "channel") {
+      res.json({ ok: true, filter, rows: await ordersByChannel(branch.id, filter) });
+    } else if (part === "payments") {
+      res.json({ ok: true, filter, rows: await ordersByPayment(branch.id, filter) });
+    } else if (part === "items") {
+      const item = (asString(req.query.item, 100) ?? "").trim() || undefined;
+      const rows = await ordersTopItems(branch.id, filter, {
+        sort: req.query.sort === "amount" ? "amount" : "quantity",
+        limit: asNumber(req.query.limit) ?? 20,
+        item,
+      });
+      res.json({ ok: true, filter, rows });
+    } else {
+      res.status(400).json({ ok: false, error: "قسم غير معروف" });
+    }
+  } catch (error) {
+    fail(res, error);
+  }
 });
 
 foodicsRouter.get("/foodics/orders", ...canRead, async (req: AuthedRequest, res: Response) => {
@@ -250,7 +292,8 @@ foodicsRouter.get("/foodics/orders", ...canRead, async (req: AuthedRequest, res:
   }
   const filter = ordersFilter(req, branch.timezone);
   const page = Math.max(1, Math.floor(asNumber(req.query.page) ?? 1));
-  const pageSize = 50;
+  const size = Math.floor(asNumber(req.query.pageSize) ?? 50);
+  const pageSize = [20, 50, 100].includes(size) ? size : 50;
   const result = await listFoodicsOrders(branch.id, filter, page, pageSize);
   res.json({ ok: true, filter, page, pageSize, ...result });
 });

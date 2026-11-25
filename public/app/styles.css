@@ -977,6 +977,20 @@ select option {
   align-self: end;
 }
 
+/* مربعات فواتير فوديكس: لكل مربع تصفيته وطباعته */
+.fo-box {
+  margin-top: 1.25rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0.6rem;
+}
+
+.fo-box tr.total td {
+  font-weight: 700;
+  border-top: 2px solid var(--line);
+}
+
 /* ── الجداول ────────────────────────────────────────────────── */
 
 .table-wrap {

@@ -3206,9 +3206,172 @@
         <form id="fo-filter" class="filters">
           <label class="field field--sm"><span class="field__label">من</span><input id="fo-from" type="date" /></label>
           <label class="field field--sm"><span class="field__label">إلى</span><input id="fo-to" type="date" /></label>
+          <div class="row row--wrap">
+            <button class="btn btn--primary btn--sm" type="submit">عرض</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-range="today">اليوم</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-range="month">هذا الشهر</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-range="year">هذه السنة</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-range="all">الكل</button>
+          </div>
+        </form>
+        <p class="hint">الفترة هنا تُطبَّق على الملخّص وعلى كل المربعات. ولكل مربع بالأسفل تصفيته الخاصة وطباعته.</p>
+        <div id="fo-summary"></div>
+
+        <div class="fo-box">
+          <h3 class="card__title card__title--sm" id="fo-channel-title">حسب نوع الطلب</h3>
+          <form class="filters" data-fo-box="channel">
+          <label class="field field--sm"><span class="field__label">من</span><input name="from" type="date" /></label>
+          <label class="field field--sm"><span class="field__label">إلى</span><input name="to" type="date" /></label>
           <label class="field field--sm">
             <span class="field__label">الحالة</span>
-            <select id="fo-state">
+            <select name="state">
+              <option value="closed">مدفوعة</option>
+              <option value="void">ملغاة</option>
+              <option value="returned">مرتجعة</option>
+              <option value="open">مفتوحة</option>
+              <option value="all">كل الحالات</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الخصم</span>
+            <select name="discount">
+              <option value="">الكل</option>
+              <option value="yes">فيها خصم</option>
+              <option value="no">بدون خصم</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">طريقة الدفع</span>
+            <select name="payKind">
+              <option value="">الكل</option>
+              <option value="cash">نقد</option>
+              <option value="card">شبكة</option>
+              <option value="foodics">فوديكس باي</option>
+              <option value="delivery_app">تطبيق توصيل</option>
+              <option value="other">أخرى</option>
+            </select>
+          </label>
+          <div class="row row--wrap">
+            <button class="btn btn--primary btn--sm" type="submit">عرض</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-print>طباعة</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-clear>مسح التصفية</button>
+          </div>
+          </form>
+          <div id="fo-channel-body"></div>
+        </div>
+
+        <div class="fo-box">
+          <h3 class="card__title card__title--sm" id="fo-payments-title">طرق الدفع</h3>
+          <form class="filters" data-fo-box="payments">
+          <label class="field field--sm"><span class="field__label">من</span><input name="from" type="date" /></label>
+          <label class="field field--sm"><span class="field__label">إلى</span><input name="to" type="date" /></label>
+          <label class="field field--sm">
+            <span class="field__label">نوع الطلب</span>
+            <select name="channel">
+              <option value="">الكل</option>
+              <option value="dine_in">محلي</option>
+              <option value="takeaway">سفري</option>
+              <option value="delivery">توصيل</option>
+              <option value="drive_thru">سيارات</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">تصنيف الدفع</span>
+            <select name="payKind">
+              <option value="">الكل</option>
+              <option value="cash">نقد</option>
+              <option value="card">شبكة</option>
+              <option value="foodics">فوديكس باي</option>
+              <option value="delivery_app">تطبيق توصيل</option>
+              <option value="other">أخرى</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الحالة</span>
+            <select name="state">
+              <option value="closed">مدفوعة</option>
+              <option value="void">ملغاة</option>
+              <option value="returned">مرتجعة</option>
+              <option value="open">مفتوحة</option>
+              <option value="all">كل الحالات</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الخصم</span>
+            <select name="discount">
+              <option value="">الكل</option>
+              <option value="yes">فيها خصم</option>
+              <option value="no">بدون خصم</option>
+            </select>
+          </label>
+          <div class="row row--wrap">
+            <button class="btn btn--primary btn--sm" type="submit">عرض</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-print>طباعة</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-clear>مسح التصفية</button>
+          </div>
+          </form>
+          <div id="fo-payments-body"></div>
+        </div>
+
+        <div class="fo-box">
+          <h3 class="card__title card__title--sm" id="fo-items-title">أكثر 20 صنفاً مبيعاً</h3>
+          <form class="filters" data-fo-box="items">
+          <label class="field field--sm"><span class="field__label">من</span><input name="from" type="date" /></label>
+          <label class="field field--sm"><span class="field__label">إلى</span><input name="to" type="date" /></label>
+          <label class="field field--sm">
+            <span class="field__label">نوع الطلب</span>
+            <select name="channel">
+              <option value="">الكل</option>
+              <option value="dine_in">محلي</option>
+              <option value="takeaway">سفري</option>
+              <option value="delivery">توصيل</option>
+              <option value="drive_thru">سيارات</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الترتيب حسب</span>
+            <select name="sort">
+              <option value="quantity">الكمية</option>
+              <option value="amount">المبلغ</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">عدد الأصناف</span>
+            <select name="limit">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+          <label class="field field--sm"><span class="field__label">بحث باسم الصنف</span><input name="item" type="search" placeholder="مثال: دجاج" /></label>
+          <div class="row row--wrap">
+            <button class="btn btn--primary btn--sm" type="submit">عرض</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-print>طباعة</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-clear>مسح التصفية</button>
+          </div>
+          </form>
+          <div id="fo-items-body"></div>
+        </div>
+
+        <div class="fo-box">
+          <h3 class="card__title card__title--sm" id="fo-orders-title">الفواتير</h3>
+          <form class="filters" data-fo-box="orders">
+          <label class="field field--sm"><span class="field__label">من</span><input name="from" type="date" /></label>
+          <label class="field field--sm"><span class="field__label">إلى</span><input name="to" type="date" /></label>
+          <label class="field field--sm">
+            <span class="field__label">النوع</span>
+            <select name="channel">
+              <option value="">الكل</option>
+              <option value="dine_in">محلي</option>
+              <option value="takeaway">سفري</option>
+              <option value="delivery">توصيل</option>
+              <option value="drive_thru">سيارات</option>
+            </select>
+          </label>
+          <label class="field field--sm">
+            <span class="field__label">الحالة</span>
+            <select name="state">
               <option value="">الكل</option>
               <option value="closed">مدفوعة</option>
               <option value="void">ملغاة</option>
@@ -3217,25 +3380,41 @@
             </select>
           </label>
           <label class="field field--sm">
-            <span class="field__label">نوع الطلب</span>
-            <select id="fo-channel">
+            <span class="field__label">الخصم</span>
+            <select name="discount">
               <option value="">الكل</option>
-              <option value="dine_in">محلي</option>
-              <option value="takeaway">سفري</option>
-              <option value="delivery">توصيل</option>
-              <option value="drive_thru">سيارات</option>
+              <option value="yes">فيها خصم</option>
+              <option value="no">بدون خصم</option>
             </select>
           </label>
-          <label class="field field--sm"><span class="field__label">بحث</span><input id="fo-q" type="search" placeholder="رقم الفاتورة، الكاشير، الصنف" /></label>
+          <label class="field field--sm">
+            <span class="field__label">طريقة الدفع</span>
+            <select name="payKind">
+              <option value="">الكل</option>
+              <option value="cash">نقد</option>
+              <option value="card">شبكة</option>
+              <option value="foodics">فوديكس باي</option>
+              <option value="delivery_app">تطبيق توصيل</option>
+              <option value="other">أخرى</option>
+            </select>
+          </label>
+          <label class="field field--sm"><span class="field__label">بحث</span><input name="q" type="search" placeholder="رقم الفاتورة، الكاشير، الصنف" /></label>
+          <label class="field field--sm">
+            <span class="field__label">عدد الأسطر</span>
+            <select name="pageSize">
+              <option value="20">20</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
           <div class="row row--wrap">
             <button class="btn btn--primary btn--sm" type="submit">عرض</button>
-            <button class="btn btn--ghost btn--xs" type="button" data-fo-range="month">هذا الشهر</button>
-            <button class="btn btn--ghost btn--xs" type="button" data-fo-range="year">هذه السنة</button>
-            <button class="btn btn--ghost btn--xs" type="button" data-fo-range="all">الكل</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-print>طباعة</button>
+            <button class="btn btn--ghost btn--xs" type="button" data-fo-clear>مسح التصفية</button>
           </div>
-        </form>
-        <div id="fo-summary"></div>
-        <div id="fo-list"></div>
+          </form>
+          <div id="fo-orders-body"></div>
+        </div>
         <div id="fo-pager" class="row row--wrap"></div>
       </section>
 
