@@ -359,11 +359,18 @@ table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid 
   w.document.close();
 }
 
+/** مربعات الفواتير لها تصفيتها وعدد أسطرها وطباعتها — فلا تُضاف لها أدوات الجداول العامة مرة ثانية. */
+function ownTools(node) {
+  const t = node.matches?.("table") ? node : node.querySelector?.("table");
+  if (t) t.dataset.noTools = "";
+  return node;
+}
+
 const pct = (part, whole) => (whole ? `${Math.round((part / whole) * 100)}%` : "—");
 
 /** جدول بسطر إجمالي أخير مميَّز. */
 function tableWithTotal(headers, rows, total, emptyText) {
-  const node = table(headers, rows.length ? [...rows, total] : [], emptyText);
+  const node = ownTools(table(headers, rows.length ? [...rows, total] : [], emptyText));
   node.querySelector("tbody tr:last-child")?.classList.add("total");
   return node;
 }
@@ -469,11 +476,11 @@ async function loadBreakdown(key) {
     const byAmount = form.elements.sort.value === "amount";
     el("fo-items-title").textContent = `أكثر ${form.elements.limit.value} صنفاً مبيعاً${byAmount ? " (بالمبلغ)" : ""}`;
     body.replaceChildren(
-      table(
+      ownTools(table(
         ["#", "الصنف", "الكمية", "المبلغ"],
         rows.map((i, n) => [String(n + 1), i.name || "—", String(i.quantity), money(i.amount)]),
         "لا أصناف مطابقة.",
-      ),
+      )),
     );
   }
 }
@@ -502,7 +509,7 @@ async function loadFoList() {
   }
   el("fo-orders-title").textContent = `الفواتير (${res.total.toLocaleString("ar-SA")})`;
   box.replaceChildren(
-    table(
+    ownTools(table(
       ["التاريخ", "رقم الفاتورة", "الوقت", "النوع", "الحالة", "الإجمالي", "الخصم", "الدفع", "الكاشير", "التجهيز", "الأصناف"],
       res.orders.map((o) => {
         const [text, kind] = STATE_TEXT[o.state] ?? STATE_TEXT.other;
@@ -521,7 +528,7 @@ async function loadFoList() {
         ];
       }),
       "لا فواتير مطابقة.",
-    ),
+    )),
   );
   const pages = Math.max(1, Math.ceil(res.total / res.pageSize));
   const pager = el("fo-pager");
