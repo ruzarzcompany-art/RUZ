@@ -134,12 +134,12 @@ export const ALERT_TYPES: Record<string, AlertTypeSpec> = {
     action: "متابعة المحطة فوراً، والتأكد من توفر التحضير المسبق للصنف.",
   },
   customer_wait: {
-    label: "عميل ينتظر أكثر من الحد المعتمد بدون خدمة",
+    label: "تأخّر طلب العميل أكثر من الحد المعتمد",
     role: "gm",
     urgent: true,
     suspicion: false,
     severity: 2,
-    action: "توجيه أقرب موظف صالة لخدمة العميل فوراً.",
+    action: "متابعة الطلب في المطبخ وإيصاله للطاولة فوراً، والاعتذار للعميل عن التأخير.",
   },
   camera_down: {
     label: "توقف أو حجب كاميرا",
@@ -2465,6 +2465,16 @@ export async function alertFramePayload(alertId: number) {
   return frameImagePayload(frame);
 }
 
+/** تسمية اللقطة إن حُفظت معها (لقطات متابعة الطلب: عند الجلوس ← بعد 5 دقائق ← …). */
+function frameCaption(analysisJson: string | null): { caption?: string } {
+  try {
+    const caption = (JSON.parse(analysisJson || "{}") as { caption?: unknown }).caption;
+    return typeof caption === "string" && caption ? { caption: caption.slice(0, 80) } : {};
+  } catch {
+    return {};
+  }
+}
+
 /** كل صور الدليل المرتبطة بتنبيه، مرتبة زمنياً (قبل الحدث ← لحظته). */
 export async function alertFramesPayload(alertId: number, limit = MAX_EVIDENCE_FRAMES) {
   const db = getDb();
@@ -2474,7 +2484,7 @@ export async function alertFramesPayload(alertId: number, limit = MAX_EVIDENCE_F
     .where(and(sql`${alertId} = ANY(${surveillanceFrames.alertIds})`, ne(surveillanceFrames.imageKey, "")))
     .orderBy(desc(surveillanceFrames.capturedAt))
     .limit(Math.min(Math.max(limit, 1), MAX_EVIDENCE_FRAMES));
-  const out: Array<{ id: number; capturedAt: Date; image: string }> = [];
+  const out: Array<{ id: number; capturedAt: Date; image: string; caption?: string }> = [];
   for (const frame of frames.reverse()) {
     const image = await loadImage(frame.imageKey).catch(() => null);
     if (image) {
@@ -2482,6 +2492,7 @@ export async function alertFramesPayload(alertId: number, limit = MAX_EVIDENCE_F
         id: frame.id,
         capturedAt: frame.capturedAt,
         image: `data:${image.contentType};base64,${image.data.toString("base64")}`,
+        ...frameCaption(frame.analysisJson),
       });
     }
   }

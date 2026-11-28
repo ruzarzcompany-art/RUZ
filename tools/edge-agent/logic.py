@@ -3,14 +3,15 @@
 كل الإحداثيات نِسَب من عرض الصورة وارتفاعها (0–1)، وكل الأوقات ثوانٍ (epoch).
 الكاشف يعطي في كل لحظة صناديق الأشخاص فقط؛ وهنا تتحول إلى حالات:
 
-    TableTracker      طاولة: فاضية ← جلس عملاء ← (وصلهم موظف؟) ← غادروا ← نُظّفت؟
+    TableTracker      طاولة: فاضية ← جلس عملاء ← (وصل طلبهم؟) ← غادروا ← نُظّفت؟
     QueueTracker      طابور الكاشير فوق الحد لمدة متصلة
     IntrusionTracker  شخص في منطقة ممنوعة خارج ساعات العمل
     DoorCounter       عدّ العابرين لخط الباب في الاتجاهين
 
-وصول الموظف للطاولة يُستنتج من العدد لا من التعرّف على الأشخاص: إذا زاد عدد
-مَن حول الطاولة عن عدد الجالسين لبضع ثوانٍ ثم عاد كما كان، فقد وقف عندها أحد
-(موظف). وإن بقيت الزيادة فهو عميل انضم إليهم.
+العميل في المطعم يطلب من الكاشير ثم يجلس، فالجلوس معناه أن الطلب قيد التجهيز.
+لذلك تُتابَع الطاولة بثلاث لقطات: عند الجلوس، وبعد نصف المهلة (5 دقائق)، وعند
+نهايتها (10 دقائق). اللقطتان الأخيرتان يتحقق منهما الخادم: هل وصل الطلب للطاولة؟
+فإن انتهت المهلة والطلب لم يصل خرج تنبيه واحد بتأخير الطلب مع اللقطات الثلاث.
 """
 
 from __future__ import annotations
@@ -112,7 +113,8 @@ class Smoother:
 
 @dataclass
 class TableConfig:
-    wait_seconds: float = 300.0  # مهلة وصول الموظف بعد جلوس العملاء
+    wait_seconds: float = 600.0  # مهلة وصول الطلب بعد جلوس العملاء (ثم تنبيه التأخير)
+    mid_seconds: float = 0.0  # موعد لقطة المتابعة الوسطى — 0 = نصف المهلة
     clear_seconds: float = 60.0  # مهلة تنظيف الطاولة بعد مغادرتهم
     occupy_seconds: float = 20.0  # وجود متصل يُعدّ بعده العملاء جالسين
     vacate_seconds: float = 30.0  # خلوّ متصل تُعدّ بعده الطاولة فاضية
@@ -145,7 +147,11 @@ class TableTracker:
         self.rise_since: float | None = None
         self.drop_since: float | None = None
         self.first_visit_seconds: int | None = None
-        self.unattended_sent = False
+        # متابعة الطلب: لقطة وسطى ثم نهائية، وحكم الخادم على كل منهما
+        self.served_seconds: int | None = None
+        self.mid_sent = False
+        self.final_sent = False
+        self.late = False
         # بعد المغادرة
         self.checks = 0
         self.check_pending = False
@@ -161,7 +167,7 @@ class TableTracker:
             "zoneId": self.zone_id,
             "seatedAt": self.seated_at,
             "leftAt": self.left_at,
-            "firstVisitSeconds": self.first_visit_seconds,
+            "servedSeconds": self.served_seconds,
             "clearedSeconds": self.cleared_seconds,
             "people": self.max_people,
         }
@@ -174,17 +180,62 @@ class TableTracker:
         self.max_people = self.baseline
         self.zero_since = None
 
+    def _seated_event(self, now: float) -> dict:
+        """لقطة الجلوس: تبقى في الجهاز وتُرفق بتنبيه التأخير إن وقع."""
+        return {"type": "table_seated", "zoneId": self.zone_id, "since": self.seated_at, "at": now, "people": self.baseline, "wantImage": True}
+
+    def _order_checks(self, now: float) -> list[dict]:
+        """لقطة المتابعة الوسطى ثم النهائية ما دام الطلب لم يُرَ على الطاولة."""
+        if self.served_seconds is not None or self.seated_at is None:
+            return []
+        config = self.config
+        waited = now - self.seated_at
+        mid = config.mid_seconds if 0 < config.mid_seconds < config.wait_seconds else config.wait_seconds / 2
+        stage = None
+        if not self.final_sent and waited >= config.wait_seconds:
+            self.final_sent = True
+            self.mid_sent = True
+            stage = "final"
+        elif not self.mid_sent and waited >= mid:
+            self.mid_sent = True
+            stage = "mid"
+        if stage is None:
+            return []
+        return [
+            {
+                "type": "table_order_check",
+                "stage": stage,
+                "zoneId": self.zone_id,
+                "since": self.seated_at,
+                "at": now,
+                "seconds": int(waited),
+                "people": self.baseline,
+                "wantImage": True,
+            }
+        ]
+
+    def on_order_verdict(self, since: float | None, seconds: int, verdict: str | None) -> None:
+        """رد الخادم على لقطة متابعة الطلب: served / waiting / late / unclear / None."""
+        if self.state != "occupied" or self.seated_at is None or since != self.seated_at:
+            return  # الجلسة تغيّرت قبل وصول الرد
+        if verdict == "served":
+            if self.served_seconds is None:
+                self.served_seconds = int(seconds)
+            self.late = False
+        elif verdict == "late":
+            self.late = True
+
     # ── التحديث ──
 
     def live(self, now: float) -> dict:
-        """الحالة اللحظية للعرض المباشر: فارغة | waiting | served | vacated."""
+        """الحالة اللحظية للعرض المباشر: فارغة | waiting (ينتظر الطلب) | served | vacated."""
         if self.state == "occupied" and self.seated_at is not None:
-            waiting = self.first_visit_seconds is None
+            waiting = self.served_seconds is None
             return {
                 "state": "waiting" if waiting else "served",
                 "seconds": int(now - self.seated_at),
                 "people": self.count,
-                "alert": waiting and self.unattended_sent,
+                "alert": waiting and self.late,
             }
         if self.state == "vacated" and self.left_at is not None:
             seconds = int(now - self.left_at)
@@ -210,6 +261,7 @@ class TableTracker:
         if self.state == "empty":
             if self.presence_since is not None and now - self.presence_since >= config.occupy_seconds:
                 self._start_session(self.presence_since, count)
+                events.append(self._seated_event(now))
             return events
 
         if self.state == "occupied":
@@ -247,25 +299,7 @@ class TableTracker:
                 else:
                     self.drop_since = None
 
-            waited = now - self.seated_at
-            if (
-                self.first_visit_seconds is None
-                and not self.unattended_sent
-                and self.rise_since is None  # لا أحد واقف عند الطاولة الآن
-                and waited >= config.wait_seconds
-            ):
-                self.unattended_sent = True
-                events.append(
-                    {
-                        "type": "table_unattended",
-                        "zoneId": self.zone_id,
-                        "since": self.seated_at,
-                        "at": now,
-                        "seconds": int(waited),
-                        "people": self.baseline,
-                        "wantImage": True,
-                    }
-                )
+            events += self._order_checks(now)
             return events
 
         # ── vacated: فضيت وتنتظر التنظيف ──
@@ -276,6 +310,7 @@ class TableTracker:
                 # بقاء طويل = عملاء جدد جلسوا قبل التحقق من نظافتها
                 events.append(self._session_event())
                 self._start_session(self.staff_since, count)
+                events.append(self._seated_event(now))
             return events
 
         if self.staff_since is not None:

@@ -57,9 +57,9 @@ function describe(zone, elapsed) {
   const seconds = (live.seconds ?? 0) + (live.state === "empty" || live.state === "ok" ? 0 : elapsed);
   if (zone.kind === "table") {
     if (live.state === "waiting") {
-      return { color: live.alert ? COLORS.alert : COLORS.waiting, text: `${name} · ينتظر موظف ${clock(seconds)}`, alert: live.alert };
+      return { color: live.alert ? COLORS.alert : COLORS.waiting, text: `${name} · ينتظر الطلب ${clock(seconds)}`, alert: live.alert };
     }
-    if (live.state === "served") return { color: COLORS.served, text: `${name} · مخدومة ${clock(seconds)}`, alert: false };
+    if (live.state === "served") return { color: COLORS.served, text: `${name} · وصل الطلب ${clock(seconds)}`, alert: false };
     if (live.state === "vacated") {
       return { color: live.alert ? COLORS.alert : COLORS.vacated, text: `${name} · تحتاج تنظيف ${clock(seconds)}`, alert: live.alert };
     }
@@ -166,7 +166,7 @@ function renderStatus() {
   }
   box.append(
     chip(`الطاولات المشغولة: ${busy} من ${tables.length}`, "badge--reviewed"),
-    chip(`تنتظر موظف: ${count("waiting")}`, count("waiting") ? "badge--warn" : "badge--ok"),
+    chip(`تنتظر الطلب: ${count("waiting")}`, count("waiting") ? "badge--warn" : "badge--ok"),
     chip(`تحتاج تنظيف: ${count("vacated")}`, count("vacated") ? "badge--warn" : "badge--ok"),
   );
   if (zones.some((zone) => zone.kind === "queue")) box.append(chip(`في الطابور: ${queue}`, "badge--reviewed"));

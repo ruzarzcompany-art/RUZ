@@ -148,7 +148,7 @@ const ZONE_FINDINGS: Record<string, string[]> = {
 
 const FINDING_GUIDE: Record<string, string> = {
   customer_waiting_unserved:
-    "customers visibly waiting (queue at counter, or seated table with no food/menu) with no staff member attending them",
+    "customers visibly waiting with no staff member attending them: a queue at the counter. Customers here order and pay at the cashier BEFORE sitting, so a seated table without food is waiting for its order — table order delays are tracked separately, do NOT report seated tables under this type",
   staff_phone: "an employee (in uniform / behind the counter / in the kitchen) using a mobile phone while on duty",
   staff_gathering: "three or more employees standing together chatting instead of working",
   customer_dispute: "a visible argument or heated confrontation involving a customer",

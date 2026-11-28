@@ -2368,7 +2368,7 @@ export const controlZones = pgTable(
   (table) => [index("control_zones_branch_camera_idx").on(table.branchId, table.cameraId)],
 );
 
-/** control_table_sessions — كل جلسة طاولة: متى جلسوا، متى وصلهم الموظف، متى نُظّفت. */
+/** control_table_sessions — كل جلسة طاولة: متى جلسوا، متى وصل طلبهم، متى نُظّفت. */
 export const controlTableSessions = pgTable(
   "control_table_sessions",
   {
@@ -2380,7 +2380,7 @@ export const controlTableSessions = pgTable(
     tableLabel: text("table_label").notNull().default(""),
     seatedAt: timestamp("seated_at", { withTimezone: true }).notNull(),
     leftAt: timestamp("left_at", { withTimezone: true }),
-    /** ثواني حتى أول وصول موظف — null إن لم يصل أحد */
+    /** ثواني من الجلوس حتى رؤية الطلب على الطاولة — null إن لم يُرَ (غادروا مبكراً أو تأخّر) */
     firstVisitSeconds: integer("first_visit_seconds"),
     /** ثواني من المغادرة حتى تنظيف الطاولة — null إن لم تُرصد */
     clearedSeconds: integer("cleared_seconds"),

@@ -211,10 +211,13 @@ class CameraState:
         self.zones: dict[int, dict] = {}
         self.trackers: dict[int, object] = {}
         self.signature: dict[int, str] = {}
+        # لقطات متابعة الطلب لكل طاولة (الجلوس ثم الوسطى): تبقى في الذاكرة فقط
+        # وتُرفق بتنبيه التأخير إن وقع — لا تُرسل ولا تُخزَّن إن وصل الطلب في وقته.
+        self.stage_shots: dict[int, list[tuple[float, str]]] = {}
 
     def apply(self, zones: list[dict], thresholds: dict) -> None:
         table_config = TableConfig(
-            wait_seconds=float(thresholds.get("tableWaitSeconds", 300)),
+            wait_seconds=float(thresholds.get("tableWaitSeconds", 600)),
             clear_seconds=float(thresholds.get("tableClearSeconds", 60)),
         )
         seen = set()
@@ -239,6 +242,7 @@ class CameraState:
             self.zones.pop(zone_id, None)
             self.trackers.pop(zone_id, None)
             self.signature.pop(zone_id, None)
+            self.stage_shots.pop(zone_id, None)
 
     def update(self, now: float, boxes: list, off_hours: bool) -> list[dict]:
         events: list[dict] = []
@@ -256,11 +260,31 @@ class CameraState:
                 tracker.update(now, boxes)
         return events
 
-    def attach_image(self, event: dict, frame, earlier: list | None = None, now: float | None = None) -> None:
-        if not event.pop("wantImage", False):
-            return
+    def attach_image(self, event: dict, frame, earlier: list | None = None, now: float | None = None) -> bool:
+        """يرفق لقطة الحدث. يُرجع False للحدث الذي يبقى في الجهاز ولا يُرسل (لقطة الجلوس)."""
+        wants = event.pop("wantImage", False)
         zone = self.zones.get(event["zoneId"])
-        if zone and zone["kind"] == "table" and event["type"] == "table_uncleared":
+        kind = event["type"]
+        if kind == "table_seated":
+            # أول ما يجلس العميل: لقطة تُحفظ هنا وتبدأ بها سلسلة متابعة الطلب
+            self.stage_shots[event["zoneId"]] = [(event["at"], encode_jpeg(frame, 800, 65))] if wants else []
+            return False
+        if not wants:
+            if kind == "table_session":
+                self.stage_shots.pop(event["zoneId"], None)
+            return True
+        if kind == "table_order_check" and zone:
+            # لقطة كاملة للدليل + قصّ للطاولة يتحقق منه الخادم: هل وصل الطلب؟
+            shots = self.stage_shots.setdefault(event["zoneId"], [])
+            event["image"] = encode_jpeg(frame, 960, 75)
+            event["crop"] = encode_jpeg(crop_zone(frame, zone["points"], 1.6), 900, 85)
+            if event.get("stage") == "final":
+                event["before"] = [
+                    {"image": image, "secondsBefore": round(event["at"] - at, 1)} for at, image in shots[-2:] if image
+                ]
+            else:
+                shots.append((event["at"], encode_jpeg(frame, 800, 65)))
+        elif zone and zone["kind"] == "table" and kind == "table_uncleared":
             event["image"] = encode_jpeg(crop_zone(frame, zone["points"]), 900, 85)
         else:
             event["image"] = encode_jpeg(frame, 960, 75)
@@ -269,6 +293,7 @@ class CameraState:
                 event["before"] = [
                     {"image": encode_jpeg(old, 800, 65), "secondsBefore": round(now - at, 1)} for at, old in earlier
                 ]
+        return True
 
     def live(self, now: float) -> list[dict]:
         """حالة كل منطقة الآن — تُرسل مع النبض لشاشة المراقبة المباشرة."""
@@ -365,7 +390,7 @@ class Agent:
 
     def status(self) -> dict:
         return {
-            "version": 1,
+            "version": 2,
             "uptimeMinutes": int((time.time() - self.started) / 60),
             "fps": self.fps,
             "cameras": [{"number": number, "ok": camera.ok} for number, camera in sorted(self.cameras.items())],
@@ -412,7 +437,7 @@ class Agent:
                     if not reply.get("ok") or not result.get("ok"):
                         log.warning("الخادم رفض الحدث %s: %s", event["type"], result.get("error") or reply.get("error"))
                     else:
-                        verdict = result.get("verdict") or ("dirty" if result.get("raised") else None)
+                        verdict = result.get("verdict") or ("dirty" if result.get("raised") and event["type"] == "table_uncleared" else None)
                         log.info("أُرسل %s (منطقة %s) ← %s", event["type"], event.get("zoneId"), result)
                     break
                 except Exception as error:
@@ -423,6 +448,10 @@ class Agent:
                 if isinstance(tracker, TableTracker):
                     for follow_up in tracker.on_verdict(time.time(), verdict):
                         self.enqueue(number, follow_up)
+            if event["type"] == "table_order_check" and number in self.states:
+                tracker = self.states[number].trackers.get(event["zoneId"])
+                if isinstance(tracker, TableTracker):
+                    tracker.on_order_verdict(event.get("since"), event.get("seconds", 0), verdict)
 
     def send_footfall(self, now: float) -> None:
         hour = datetime.fromtimestamp(now, timezone.utc).replace(minute=0, second=0, microsecond=0)
@@ -470,8 +499,8 @@ class Agent:
                     log.error("فشل الكشف على الكاميرا %s: %s", number, error)
                     continue
                 for event in state.update(tick, boxes, off_hours):
-                    state.attach_image(event, frame, earlier, tick)
-                    self.enqueue(number, event)
+                    if state.attach_image(event, frame, earlier, tick):
+                        self.enqueue(number, event)
             if tick - last_footfall >= FOOTFALL_SECONDS:
                 last_footfall = tick
                 self.send_footfall(tick)
@@ -541,7 +570,7 @@ class Agent:
 def run_on_file(args, config: dict) -> None:
     """يشغّل المنطق على مقطع بزمن المقطع نفسه (أسرع من الزمن الحقيقي) ويطبع الأحداث."""
     spec = json.loads(Path(args.zones).read_text(encoding="utf-8"))
-    thresholds = {"tableWaitSeconds": 300, "tableClearSeconds": 60, "queueMax": 4, "queueSeconds": 60, **spec.get("thresholds", {})}
+    thresholds = {"tableWaitSeconds": 600, "tableClearSeconds": 60, "queueMax": 4, "queueSeconds": 60, **spec.get("thresholds", {})}
     state = CameraState(args.camera)
     state.apply(spec["zones"], thresholds)
     detector = Detector(config.get("model", "yolo11n.pt"), float(config.get("confidence", 0.35)), int(config.get("imageSize", 640)))
@@ -561,14 +590,23 @@ def run_on_file(args, config: dict) -> None:
             boxes = detector.people(frame)
             for event in state.update(now, boxes, off_hours=bool(spec.get("offHours", False))):
                 wants = event.get("wantImage")
-                state.attach_image(event, frame)
+                if not state.attach_image(event, frame):
+                    print(f"[{now:7.1f}s] جلس عملاء على الطاولة (منطقة {event['zoneId']}) — لقطة الجلوس محفوظة")
+                    continue
                 image = event.pop("image", None)
+                event.pop("crop", None)
+                event.pop("before", None)
                 print(f"[{now:7.1f}s] {json.dumps(event, ensure_ascii=False)}")
                 if out_dir and wants and image:
                     (out_dir / f"{event['type']}_{event['zoneId']}_{int(now)}.jpg").write_bytes(base64.b64decode(image))
                 # في التجربة لا خادم: تُعدّ لقطة الطاولة «متسخة» لتظهر دورة إعادة التحقق
                 if event["type"] == "table_uncleared":
                     state.trackers[event["zoneId"]].on_verdict(now, "dirty")
+                # وبلا خادم لا يُعرف هل وصل الطلب: يُعدّ متأخراً لتظهر السلسلة كاملة
+                if event["type"] == "table_order_check":
+                    state.trackers[event["zoneId"]].on_order_verdict(
+                        event["since"], event["seconds"], "late" if event["stage"] == "final" else "waiting"
+                    )
             if args.verbose and index % (step * 10) == 0:
                 print(f"[{now:7.1f}s] أشخاص: {len(boxes)}")
         index += 1

@@ -836,7 +836,7 @@ function shotFigure(frame, index, total, title) {
   img.loading = "lazy";
   img.addEventListener("click", () => openShot(frame.image, title));
   const caption = document.createElement("figcaption");
-  const step = total > 1 ? (index === total - 1 ? "لحظة الحدث" : "قبل الحدث") : "لقطة الحدث";
+  const step = frame.caption || (total > 1 ? (index === total - 1 ? "لحظة الحدث" : "قبل الحدث") : "لقطة الحدث");
   caption.textContent = `${step} — ${shotTime(frame.capturedAt)}`;
   figure.append(img, caption);
   return figure;

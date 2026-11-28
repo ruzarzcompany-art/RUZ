@@ -100,7 +100,8 @@ export const ROUTES: Record<string, Route> = {
   camera_moved: { first: "owner", escalate: false, minor: true },
   // الخدمة → الموظف ثم المدير ثم المالك
   prep_overdue: { first: "staff", escalate: true, order: true, zone: "kitchen" },
-  customer_wait: { first: "staff", escalate: true, order: true },
+  // تأخّر طلب العميل على الطاولة: تنبيه واحد للمشرف (مدير المطعم) بلا تكرار ولا تصعيد
+  customer_wait: { first: "manager", escalate: false },
   dirty_table: { first: "staff", escalate: true, zone: "dining" },
   table_complaint: { first: "staff", escalate: true, zone: "dining" },
   cashier_queue: { first: "staff", escalate: true, zone: "cashier" },
@@ -1251,7 +1252,7 @@ export async function briefFacts(branch: BranchRow, date: string) {
       bad: reviews.filter((r) => r.rating > 0 && r.rating <= 3).map((r) => ({ rating: r.rating, comment: r.comment.slice(0, 200) })),
     },
     tableFeedback: { count: feedback.length, byCategory: Object.fromEntries(feedbackByCategory) },
-    tables: tableStats(sessions),
+    tables: tableStats(sessions, Math.round((await controlSettingsFor(branch.id)).tableWaitMinutes * 60)),
     footfall: footfallStats(footfall, foodics?.invoices ?? null),
     waste: report.waste.slice(0, 8),
     cameras: report.cameras,
@@ -1259,16 +1260,30 @@ export async function briefFacts(branch: BranchRow, date: string) {
   };
 }
 
-/** إحصاءات جلسات الطاولات من التحليل المباشر. */
-export function tableStats(sessions: Array<typeof controlTableSessions.$inferSelect>) {
+/**
+ * إحصاءات جلسات الطاولات من التحليل المباشر، وتقييم سرعة إيصال الطلبات.
+ * `firstVisitSeconds` = ثواني من الجلوس حتى رؤية الطلب على الطاولة (لقطة نصف المهلة
+ * أو نهايتها). السريع: وصل قبل نصف المهلة. المقبول: قبل نهايتها. المتأخر: انتهت
+ * المهلة والعميل جالس والطلب لم يُرَ.
+ */
+export function tableStats(sessions: Array<typeof controlTableSessions.$inferSelect>, waitSeconds = 600) {
   const mean = (list: number[]) => (list.length ? Math.round(list.reduce((s, n) => s + n, 0) / list.length) : null);
   const visits = sessions.filter((s) => s.firstVisitSeconds !== null).map((s) => s.firstVisitSeconds!);
   const cleared = sessions.filter((s) => s.clearedSeconds !== null).map((s) => s.clearedSeconds!);
+  const half = waitSeconds / 2 + 30;
+  const fast = visits.filter((v) => v <= half).length;
+  const onTime = visits.filter((v) => v > half && v <= waitSeconds + 30).length;
+  const sat = (s: (typeof sessions)[number]) => ((s.leftAt ?? new Date()).getTime() - s.seatedAt.getTime()) / 1000;
+  const late = visits.filter((v) => v > waitSeconds + 30).length + sessions.filter((s) => s.firstVisitSeconds === null && sat(s) >= waitSeconds).length;
+  const rated = fast + onTime + late;
   return {
     sessions: sessions.length,
-    avgFirstVisitSeconds: mean(visits),
-    maxFirstVisitSeconds: visits.length ? Math.max(...visits) : null,
-    leftWithoutVisit: sessions.filter((s) => s.leftAt && s.firstVisitSeconds === null).length,
+    waitSeconds,
+    servedFast: fast,
+    servedOnTime: onTime,
+    servedLate: late,
+    /** نسبة الطلبات التي وصلت داخل المهلة — null إن لم تُقيَّم جلسة بعد */
+    onTimePercent: rated ? Math.round(((fast + onTime) / rated) * 100) : null,
     avgClearSeconds: mean(cleared),
   };
 }
@@ -1301,7 +1316,7 @@ function fallbackBrief(facts: BriefFacts): string {
     facts.googleReviews.count ? `تقييمات قوقل: ${facts.googleReviews.count} بمتوسط ${facts.googleReviews.average}` : "",
     facts.tableFeedback.count ? `شكاوى الطاولات: ${facts.tableFeedback.count}` : "",
     facts.tables.sessions
-      ? `الطاولات: ${facts.tables.sessions} جلسة، متوسط وصول الموظف ${facts.tables.avgFirstVisitSeconds ?? "—"} ث، غادر بلا خدمة ${facts.tables.leftWithoutVisit}`
+      ? `الطاولات: ${facts.tables.sessions} جلسة — سرعة إيصال الطلبات: ${facts.tables.servedFast} خلال ${Math.round(facts.tables.waitSeconds / 120)} د، ${facts.tables.servedOnTime} خلال ${Math.round(facts.tables.waitSeconds / 60)} د، ${facts.tables.servedLate} متأخر`
       : "",
     facts.footfall.entries !== null
       ? `الداخلون: ${facts.footfall.entries}${facts.footfall.invoices !== null ? ` مقابل ${facts.footfall.invoices} فاتورة` : ""}`

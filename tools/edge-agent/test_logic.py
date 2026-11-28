@@ -27,8 +27,13 @@ def run(tracker, timeline, step=0.5, start=1000.0):
     return events, now
 
 
-def types(events):
-    return [event["type"] for _, event in events]
+def types(events, seated=True):
+    return [event["type"] for _, event in events if seated or event["type"] != "table_seated"]
+
+
+def after(events):
+    """أحداث ما بعد الجلوس — لاختبارات المغادرة والتنظيف التي لا تعنيها لقطة الجلوس."""
+    return [(at, event) for at, event in events if event["type"] != "table_seated"]
 
 
 def test_geometry():
@@ -42,52 +47,76 @@ def test_geometry():
     assert counts == {1: 1, 2: 0}, counts
 
 
-def test_unattended_fires_once_after_wait():
-    table = TableTracker(4, "4", TableConfig(wait_seconds=300, clear_seconds=60))
-    events, _ = run(table, [(10, 0), (400, 2)])
-    assert types(events) == ["table_unattended"], events
-    at, event = events[0]
-    assert 309 <= at <= 312, at  # جلسوا عند الثانية 10 ← التنبيه بعد 300 ثانية
-    assert event["people"] == 2 and 300 <= event["seconds"] <= 302
+def checks(events):
+    return [(at, e["stage"]) for at, e in events if e["type"] == "table_order_check"]
 
 
-def test_waiter_visit_cancels_alert():
-    table = TableTracker(4, "4", TableConfig(wait_seconds=300))
-    # جلس اثنان، وبعد دقيقتين وقف موظف 15 ثانية ثم ذهب
-    events, _ = run(table, [(120, 2), (15, 3), (300, 2)])
-    assert types(events) == [], events
-    assert 118 <= table.first_visit_seconds <= 122
+def test_three_snapshots_seated_mid_final():
+    table = TableTracker(4, "4", TableConfig(wait_seconds=600, clear_seconds=60))
+    events, _ = run(table, [(10, 0), (700, 2)])
+    # لقطة عند الجلوس، ثم بعد 5 دقائق، ثم بعد 10 — ولا شيء بعدها
+    assert types(events) == ["table_seated", "table_order_check", "table_order_check"], events
+    assert 29 <= events[0][0] <= 32, events[0][0]  # تأكّد الجلوس بعد 20 ثانية وجود
+    (mid_at, mid), (final_at, final) = checks(events)
+    assert mid == "mid" and 309 <= mid_at <= 312, mid_at
+    assert final == "final" and 609 <= final_at <= 612, final_at
+    assert events[2][1]["people"] == 2 and 600 <= events[2][1]["seconds"] <= 602
 
 
-def test_passerby_does_not_count_as_visit():
-    table = TableTracker(4, "4", TableConfig(wait_seconds=300))
-    # مارّ بجانب الطاولة ثانية ونصف فقط — لا يُلغي التنبيه
-    events, _ = run(table, [(120, 2), (1.5, 3), (300, 2)])
-    assert types(events) == ["table_unattended"], events
+def test_order_seen_at_mid_stops_follow_up():
+    table = TableTracker(4, "4", TableConfig(wait_seconds=600))
+    events, now = run(table, [(320, 2)])
+    assert checks(events) == [(events[1][0], "mid")], events
+    check = events[1][1]
+    table.on_order_verdict(check["since"], check["seconds"], "served")
+    assert table.live(now)["state"] == "served" and 299 <= table.served_seconds <= 302
+    more, now = run(table, [(400, 2)], start=now)
+    assert more == [], more  # لا لقطة نهائية ولا تنبيه
+    done, _ = run(table, [(40, 0)], start=now)
+    assert types(done) == ["table_session"] and done[0][1]["servedSeconds"] == table.served_seconds
 
 
-def test_friend_joining_is_not_a_visit():
-    table = TableTracker(4, "4", TableConfig(wait_seconds=300))
-    # انضم ثالث وبقي: ليس موظفاً، فالتنبيه يبقى قائماً
-    events, _ = run(table, [(60, 2), (400, 3)])
-    assert types(events) == ["table_unattended"], events
-    assert events[0][1]["people"] == 3
+def test_late_verdict_marks_table_alert_once():
+    table = TableTracker(4, "4", TableConfig(wait_seconds=600))
+    events, now = run(table, [(620, 2)])
+    mid, final = events[1][1], events[2][1]
+    table.on_order_verdict(mid["since"], mid["seconds"], "waiting")
+    assert table.live(now)["alert"] is False
+    table.on_order_verdict(final["since"], final["seconds"], "late")
+    assert table.live(now) == {"state": "waiting", "seconds": table.live(now)["seconds"], "people": 2, "alert": True}
+    more, _ = run(table, [(900, 2)], start=now)
+    assert more == [], more  # تنبيه واحد فقط مهما طال الجلوس
 
 
-def test_alert_waits_while_someone_is_standing_at_table():
-    table = TableTracker(4, "4", TableConfig(wait_seconds=300))
-    # الموظف وصل قبل انتهاء المهلة بثوانٍ وما زال واقفاً عندها: لا تنبيه
-    events, _ = run(table, [(295, 2), (20, 3), (60, 2)])
-    assert types(events) == [], events
+def test_staff_standing_at_table_does_not_cancel_follow_up():
+    table = TableTracker(4, "4", TableConfig(wait_seconds=600))
+    # وقوف موظف عند الطاولة لا يعني وصول الطلب — الحكم للقطة
+    events, _ = run(table, [(120, 2), (15, 3), (500, 2)])
+    assert [stage for _, stage in checks(events)] == ["mid", "final"], events
+
+
+def test_verdict_for_old_session_is_ignored():
+    table = TableTracker(4, "4", TableConfig(wait_seconds=600))
+    events, now = run(table, [(320, 2), (60, 0), (40, 2)])
+    old = events[1][1]
+    table.on_order_verdict(old["since"], old["seconds"], "served")
+    assert table.served_seconds is None
+
+
+def test_customers_leaving_early_get_no_check():
+    table = TableTracker(4, "4", TableConfig(wait_seconds=600))
+    events, _ = run(table, [(200, 2), (60, 0)])
+    assert types(events) == ["table_seated", "table_session"], events
+    assert events[1][1]["servedSeconds"] is None
 
 
 def test_detector_flicker_is_ignored():
-    table = TableTracker(4, "4", TableConfig(wait_seconds=300))
+    table = TableTracker(4, "4", TableConfig(wait_seconds=600))
     timeline = []
-    for _ in range(80):  # عدد يومض 2 ← 3 ← 2 لإطار واحد كل 5 ثوانٍ
+    for _ in range(140):  # عدد يومض 2 ← 3 ← 2 لإطار واحد كل 5 ثوانٍ
         timeline += [(4.5, 2), (0.5, 3)]
     events, _ = run(table, timeline)
-    assert types(events) == ["table_unattended"], events
+    assert types(events) == ["table_seated", "table_order_check", "table_order_check"], events
 
 
 def test_short_presence_never_becomes_session():
@@ -97,8 +126,9 @@ def test_short_presence_never_becomes_session():
 
 
 def test_vacate_then_uncleared_check_and_clean_verdict():
-    table = TableTracker(4, "4", TableConfig(wait_seconds=300, clear_seconds=60))
+    table = TableTracker(4, "4", TableConfig(wait_seconds=600, clear_seconds=60))
     events, now = run(table, [(100, 2), (10, 3), (100, 2), (120, 0)])
+    events = after(events)
     assert types(events) == ["table_session", "table_uncleared"], events
     session_at, session = events[0]
     check_at, check = events[1]
@@ -137,7 +167,7 @@ def test_checks_are_capped():
 def test_new_customers_before_cleaning_start_new_session():
     table = TableTracker(4, "4", TableConfig(clear_seconds=600))
     events, now = run(table, [(100, 2), (40, 0), (120, 3)])
-    assert types(events) == ["table_session", "table_session"], events
+    assert types(events) == ["table_seated", "table_session", "table_session", "table_seated"], events
     assert table.state == "occupied" and table.baseline == 3
 
 
