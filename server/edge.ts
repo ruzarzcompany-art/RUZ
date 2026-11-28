@@ -2,18 +2,21 @@
  * التحليل المباشر: استقبال أحداث «جهاز التحليل» داخل المطعم.
  *
  * الجهاز (tools/edge-agent) يقرأ بث الكاميرات محلياً ويكشف الأشخاص باستمرار،
- * ويعدّ لكل طاولة مرسومة: متى جلس العملاء، هل وصلهم موظف، ومتى غادروا.
+ * ويعدّ لكل طاولة مرسومة: متى جلس العملاء، هل وصل طلبهم، ومتى غادروا.
+ * العميل يطلب من الكاشير ثم يجلس، فالجلوس معناه أن الطلب قيد التجهيز.
  * لا يرسل إلى الخادم إلا عند وقوع حدث — مع لقطة واحدة دليلاً:
  *
- *   table_unattended  عملاء جالسون تجاوزوا المهلة بلا وصول موظف
+ *   table_order_check لقطة متابعة الطلب بعد نصف المهلة (mid) وعند نهايتها (final):
+ *                     يُتحقَّق منها هل وصل الطلب؛ والنهائية بلا طلب = تنبيه تأخير واحد
+ *   table_unattended  (نسخة الجهاز القديمة) عملاء جالسون تجاوزوا المهلة
  *   table_uncleared   طاولة فضيت وانتهت مهلة تنظيفها (تُتحقَّق باللقطة قبل التنبيه)
  *   queue_long        طابور الكاشير فوق الحد لمدة متصلة
  *   intrusion         شخص في منطقة ممنوعة خارج ساعات العمل
  *   table_session     ملخص جلسة طاولة انتهت (للإحصاء)
  *   footfall          عدد الداخلين والخارجين في الساعة
  *
- * الذكاء الاصطناعي لا يُستدعى هنا إلا للتحقق من لقطة الطاولة الفارغة، فتبقى
- * تكلفته بعدد الطاولات التي فضيت لا بعدد الدقائق.
+ * الذكاء الاصطناعي لا يُستدعى هنا إلا للتحقق من لقطة الطاولة (وصل الطلب؟ نُظّفت؟)،
+ * فتبقى تكلفته بعدد جلسات الطاولات (لقطتان على الأكثر لكل جلسة) لا بعدد الدقائق.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -278,6 +281,60 @@ async function verifyTable(image: Buffer): Promise<{ verdict: TableVerdict; note
   return { verdict, note: String(raw.note ?? "").slice(0, 300) };
 }
 
+type OrderVerdict = "served" | "waiting" | "empty" | "unclear";
+
+/** هل وصل الطلب إلى الطاولة؟ (العميل طلب ودفع عند الكاشير قبل أن يجلس) */
+async function verifyOrder(image: Buffer): Promise<{ verdict: OrderVerdict; note: string }> {
+  anthropic ??= new Anthropic();
+  const message = await anthropic.messages.create({
+    model: VISION_MODEL,
+    max_tokens: 300,
+    tools: [
+      {
+        name: "order_state",
+        description: "Report whether the food order has reached one restaurant dining table.",
+        input_schema: {
+          type: "object",
+          properties: {
+            state: { type: "string", enum: ["served", "waiting", "empty", "unclear"] },
+            note: { type: "string", description: "Short Arabic description of what is on the table and what the customers are doing." },
+          },
+          required: ["state"],
+        },
+      },
+    ],
+    tool_choice: { type: "tool", name: "order_state" },
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: image.toString("base64") } },
+          {
+            type: "text",
+            text: [
+              "This is a crop around ONE dining table from a restaurant CCTV camera (it may be low resolution and seen from above at an angle).",
+              "In this restaurant customers order and pay at the cashier FIRST, then sit down and wait for their food to be brought to the table.",
+              "Neighbouring tables may appear at the edges — judge ONLY the table in the centre of the crop.",
+              "Decide whether the order has reached this table:",
+              "- served: food is on the table or the customers are eating: plates, rice platters, bowls, trays with dishes, or food containers in front of them.",
+              "- waiting: customers are seated but there is no food on the table. A tissue box, condiment set, table number, phones, keys, bags, a receipt, or only water bottles / drinks still count as WAITING.",
+              "- empty: nobody is sitting at this table.",
+              "- unclear: too dark, blurred, blocked or too small to tell whether there is food.",
+              "Only answer served when you can actually see food dishes. If you are unsure between served and waiting, answer unclear.",
+              "Write the note in short Arabic. Call the order_state tool.",
+            ].join("\n"),
+          },
+        ],
+      },
+    ],
+  });
+  const block = message.content.find((item) => item.type === "tool_use");
+  if (!block || block.type !== "tool_use") throw new Error("لم يُرجع النموذج نتيجة");
+  const raw = block.input as { state?: unknown; note?: unknown };
+  const verdict = (["served", "waiting", "empty", "unclear"] as const).find((v) => v === raw.state) ?? "unclear";
+  return { verdict, note: String(raw.note ?? "").slice(0, 300) };
+}
+
 /* ── استقبال الأحداث ─────────────────────────────────────────── */
 
 function decodeImage(value: unknown): Buffer | null {
@@ -296,6 +353,7 @@ async function saveEvidence(input: {
   alertId: number;
   people: number;
   note: string;
+  caption?: string;
 }) {
   const db = getDb();
   const [frame] = await db
@@ -308,7 +366,7 @@ async function saveEvidence(input: {
       cameraState: "ok",
       peopleCount: input.people,
       findingsCount: 1,
-      analysisJson: JSON.stringify({ summary: input.note, findings: [] }),
+      analysisJson: JSON.stringify({ summary: input.note, findings: [], ...(input.caption ? { caption: input.caption } : {}) }),
       alertIds: [input.alertId],
     })
     .returning({ id: surveillanceFrames.id });
@@ -321,7 +379,7 @@ async function saveEvidence(input: {
 const MAX_BEFORE_SHOTS = 2;
 
 /** لقطات ما قبل الحدث كما يرسلها الجهاز: `[{ image, secondsBefore }]`، الأقدم أولاً. */
-export function earlierShots(value: unknown, at: Date): Array<{ image: Buffer; at: Date }> {
+export function earlierShots(value: unknown, at: Date, maxSeconds = 120): Array<{ image: Buffer; at: Date }> {
   if (!Array.isArray(value)) return [];
   const shots: Array<{ image: Buffer; at: Date }> = [];
   for (const item of value.slice(0, MAX_BEFORE_SHOTS)) {
@@ -329,7 +387,7 @@ export function earlierShots(value: unknown, at: Date): Array<{ image: Buffer; a
     const entry = item as Record<string, unknown>;
     const image = decodeImage(entry.image);
     const seconds = Number(entry.secondsBefore);
-    if (!image || !Number.isFinite(seconds) || seconds <= 0 || seconds > 120) continue;
+    if (!image || !Number.isFinite(seconds) || seconds <= 0 || seconds > maxSeconds) continue;
     shots.push({ image, at: new Date(at.getTime() - Math.round(seconds * 1000)) });
   }
   return shots.sort((a, b) => a.at.getTime() - b.at.getTime());
@@ -409,7 +467,11 @@ export async function ingestEdgeEvent(branch: BranchRow, raw: Record<string, unk
       tableLabel: zone.label,
       seatedAt,
       leftAt: raw.leftAt ? when(raw.leftAt, at) : null,
-      firstVisitSeconds: raw.firstVisitSeconds === null || raw.firstVisitSeconds === undefined ? null : int(raw.firstVisitSeconds, 24 * 3600),
+      // العمود يحمل «ثواني حتى رؤية الطلب على الطاولة». نسخة الجهاز القديمة ترسل وصول
+      // الموظف (firstVisitSeconds) — وفي المطعم الموظف يصل الطاولة حاملاً الطلب.
+      firstVisitSeconds: ((value: unknown) => (value === null || value === undefined ? null : int(value, 24 * 3600)))(
+        raw.servedSeconds !== undefined ? raw.servedSeconds : raw.firstVisitSeconds,
+      ),
       clearedSeconds: raw.clearedSeconds === null || raw.clearedSeconds === undefined ? null : int(raw.clearedSeconds, 24 * 3600),
       maxPeople: people,
     };
@@ -430,14 +492,46 @@ export async function ingestEdgeEvent(branch: BranchRow, raw: Record<string, unk
   let confidence = "high";
   let location = `الصالة — ${tableName}`;
   let verdict: string | undefined;
+  // تنبيه تأخير الطلب: دليله لقطات المتابعة (عند الجلوس ← نصف المهلة ← نهايتها)
+  let stageShots = false;
   const ref = `edge:${zone.id}:${type}:${Math.floor(when(raw.since, at).getTime() / 1000)}`;
 
-  if (type === "table_unattended") {
+  if (type === "table_order_check") {
+    if (zone.kind !== "table") return { ok: false, type, error: "المنطقة ليست طاولة" };
+    const final = raw.stage === "final";
+    const crop = decodeImage(raw.crop) ?? image;
+    let note = "";
+    let state: OrderVerdict = "unclear";
+    if (crop) {
+      try {
+        const result = await verifyOrder(crop);
+        state = result.verdict;
+        note = result.note;
+      } catch (error) {
+        console.error("[edge] تعذّر التحقق من وصول الطلب:", error instanceof Error ? error.message : error);
+      }
+    }
+    // وصل الطلب، أو قام العملاء: لا تنبيه. واللقطة الوسطى للمتابعة فقط — التنبيه
+    // واحد، ولا يخرج إلا عند نهاية المهلة والطلب لم يُرَ على الطاولة.
+    if (state === "served" || state === "empty" || !final) {
+      return { ok: true, type, raised: false, verdict: state === "empty" ? "unclear" : state };
+    }
+    verdict = "late";
+    alertType = "customer_wait";
+    const who = people === 1 ? "العميل جالس" : people > 1 ? `${people} عملاء جالسون` : "العملاء جالسون";
+    details =
+      state === "waiting"
+        ? `${tableName}: تأخّر الطلب — ${who} منذ ${minutesText(seconds)} والطلب لم يصل للطاولة، والعميل قد يتذمّر${note ? ` (${note})` : ""}. رصد مباشر من الكاميرا ${camera.cameraNumber}.`
+        : `${tableName}: ${who} منذ ${minutesText(seconds)} ولم يتأكد وصول الطلب للطاولة (اللقطة غير واضحة — راجع الصور). رصد مباشر من الكاميرا ${camera.cameraNumber}.`;
+    confidence = state === "waiting" ? "high" : "medium";
+    stageShots = true;
+  } else if (type === "table_unattended") {
+    // نسخة الجهاز القديمة (قبل لقطات متابعة الطلب): تستنتج من حركة الأشخاص حول
+    // الطاولة أن أحداً لم يصلها — أي أن الطلب لم يُحضَر بعد.
     if (zone.kind !== "table") return { ok: false, type, error: "المنطقة ليست طاولة" };
     alertType = "customer_wait";
-    const who = people === 1 ? "عميل جالس" : people > 1 ? `${people} عملاء جالسون` : "عملاء جالسون";
-    details = `${tableName}: ${who} منذ ${minutesText(seconds)} ولم يصلهم موظف (رصد مباشر من الكاميرا ${camera.cameraNumber}).`;
-    // وصول الموظف يُستنتج من حركة الأشخاص حول الطاولة، لا من تعرّف مؤكد
+    const who = people === 1 ? "العميل جالس" : people > 1 ? `${people} عملاء جالسون` : "العملاء جالسون";
+    details = `${tableName}: تأخّر الطلب — ${who} منذ ${minutesText(seconds)} ولم يُرصد وصول الطلب للطاولة (رصد مباشر من الكاميرا ${camera.cameraNumber}).`;
     confidence = "medium";
   } else if (type === "table_uncleared") {
     if (zone.kind !== "table") return { ok: false, type, error: "المنطقة ليست طاولة" };
@@ -496,9 +590,19 @@ export async function ingestEdgeEvent(branch: BranchRow, raw: Record<string, unk
   });
   if (!result.duplicate && image) {
     // تسلسل الدليل: لقطات قبل الحدث بثوانٍ (إن أرسلها الجهاز) ثم لقطة لحظة الحدث
-    const shots = [...earlierShots(raw.before, at), { image, at }];
-    for (const shot of shots) {
-      await saveEvidence({ branch, camera, image: shot.image, at: shot.at, alertId: result.id, people, note: details }).catch((error) =>
+    const shots = [...earlierShots(raw.before, at, stageShots ? 3600 : 120), { image, at }];
+    // لقطات متابعة الطلب تُسمّى بوقتها من الجلوس: عند الجلوس ← بعد 5 دقائق ← بعد 10 دقائق
+    const seated = stageShots ? when(raw.since, at).getTime() : 0;
+    for (const [index, shot] of shots.entries()) {
+      const elapsed = Math.round((shot.at.getTime() - seated) / 1000);
+      const caption = !stageShots
+        ? undefined
+        : index === shots.length - 1
+          ? `بعد ${minutesText(seconds)} — الطلب لم يصل`
+          : elapsed < 90
+            ? "عند الجلوس"
+            : `بعد ${minutesText(elapsed)} من الجلوس`;
+      await saveEvidence({ branch, camera, image: shot.image, at: shot.at, alertId: result.id, people, note: details, caption }).catch((error) =>
         console.error("[edge] تعذّر حفظ لقطة الدليل:", error instanceof Error ? error.message : error),
       );
     }
@@ -554,7 +658,7 @@ export async function edgeOverview(branch: BranchRow, date: string) {
     status,
     zones: zoneCount[0]?.count ?? 0,
     kinds: ZONE_KIND_LABELS,
-    tables: tableStats(sessions),
+    tables: tableStats(sessions, Math.round(settings.tableWaitMinutes * 60)),
     footfall: footfallStats(footfall, null),
   };
 }

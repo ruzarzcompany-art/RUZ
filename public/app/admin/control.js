@@ -455,8 +455,11 @@ function renderEdge() {
   if (t.sessions) {
     box.append(
       chip(`جلسات الطاولات اليوم: ${t.sessions}`, "badge--reviewed"),
-      chip(`متوسط وصول الموظف: ${duration(t.avgFirstVisitSeconds)}`, "badge--reviewed"),
-      chip(`غادروا بلا خدمة: ${t.leftWithoutVisit}`, t.leftWithoutVisit ? "badge--disputed" : "badge--ok"),
+      // تقييم سرعة إيصال الطلبات: من جلوس العميل حتى رؤية طلبه على الطاولة
+      chip(`وصل الطلب خلال ${Math.round(t.waitSeconds / 120)} د: ${t.servedFast}`, "badge--ok"),
+      chip(`خلال ${Math.round(t.waitSeconds / 60)} د: ${t.servedOnTime}`, "badge--reviewed"),
+      chip(`طلبات متأخرة: ${t.servedLate}`, t.servedLate ? "badge--disputed" : "badge--ok"),
+      ...(t.onTimePercent === null ? [] : [chip(`الالتزام بالوقت: ${t.onTimePercent}٪`, t.onTimePercent >= 90 ? "badge--ok" : "badge--warn")]),
       chip(`متوسط تنظيف الطاولة: ${duration(t.avgClearSeconds)}`, "badge--reviewed"),
     );
   }
